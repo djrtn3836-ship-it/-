@@ -1,0 +1,24 @@
+# Kiwoom API 설정 (Claude 피드백: Push 기반 + COM/STA 메시지 펌프)
+
+rate_limit:
+  capacity: 5
+  refill_rate: 5
+  burst: 5
+
+realtime:
+  enabled: true
+  buffer_size: 1000
+  max_subscriptions: 50         # Tier1 영구 구독
+
+reconnect:
+  max_attempts: 5
+  base_delay: 1.0
+  max_delay: 60.0
+
+timeout:
+  tr_request: 10.0
+  realtime: 30.0
+
+message_pump:
+  enabled: true
+  thread_pool_size: 1           # STA COM 전용 단일 스레드

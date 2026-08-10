@@ -1,0 +1,64 @@
+# v5.1.2 FINAL - 메인 설정 파일 (Claude 피드백 100% 반영)
+
+system:
+  name: "국내주식 전방위 감시 시스템"
+  version: "5.1.2"
+  mode: "shadow"  # shadow | paper | live
+
+universe:
+  kospi: true
+  kosdaq: true
+  tier1_count: 50              # Claude 피드백: 100→50 (안전 마진)
+  tier2_count: 400
+  tier3_count: 1850
+
+monitoring:
+  tier1_mode: "realtime_push"   # TR 폴링 → 실시간 Push
+  tier1_interval: 10
+  tier2_interval: 60
+  tier3_interval: 600
+  dynamic_promotion:
+    enabled: true
+    duration_sec: 300
+    max_slots: 50
+
+thresholds:
+  kospi:
+    price_change: 2.0
+    volume_ratio: 2.0
+  kosdaq:
+    price_change: 4.0
+    volume_ratio: 3.5
+
+position_sizing:
+  method: "fractional_kelly"
+  kelly_fraction: 0.25          # Quarter Kelly (Claude 피드백)
+  max_single_position_pct: 8.0  # 하드캡 8%
+  max_sector_concentration_pct: 25.0
+
+transaction_costs:
+  securities_tax: 0.0018        # 증권거래세 (매도 시)
+  brokerage_fee: 0.00015        # 수수료
+  slippage_model: "dynamic"     # 시총 티어 기반
+
+safety_guard:
+  kospi_drop: -3.0             # Claude 피드백: 통계적 근거 명시
+  vkospi_spike: 30.0
+  usdkrw_spike: 1350.0
+  feature_expired: 10.0
+  tr_latency: 3000
+  consecutive_loss_stop: 5
+  daily_loss_limit_pct: 3.0
+
+phase_transition:
+  shadow_to_paper:
+    min_days: 28
+    min_signals: 50
+    min_win_rate: 0.50
+    min_profit_factor: 1.30
+    max_mdd: 0.15
+    max_fp_ratio: 0.30
+
+telegram:
+  enabled: true
+  chat_id: "YOUR_CHAT_ID"

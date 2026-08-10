@@ -1,0 +1,107 @@
+ Stock Analyzer v5.1.2 현황 정밀 명세서
+작성일: 2026-08-08 (토)
+버전: v5.1.2 FINAL
+운영 단계: Phase 1 Shadow Mode (실시간 데이터 수집 준비 완료)
+저장소: https://github.com/djrtn3836-ship-it/-
+
+1. 프로젝트 개요
+해당 프로그램은 키움증권 REST API를 활용하여 국내 주식(코스피/코스닥)의 실시간 시세를 수집하고, 사전 정의된 필터 및 의사결정 엔진을 통해 매매 시그널을 탐지하는 자동화 트레이딩 스캐너입니다.
+
+2. 시스템 아키텍처 (디렉토리 구조)
+디렉토리	역할	현재 상태
+config/	YAML 기반 환경 설정 파일 보관	config.yaml, kiwoom_config.yaml 등 정상 로드 가능
+core/	로깅, 설정 관리, 서킷브레이커 등 핵심 엔진	ConfigManager 및 setup_logger 정상 작동 확인
+data/	키움 REST API 커넥터 (kiwoom_connector.py) 및 DART 커넥터	🔧 핵심 수정 완료 (아래 상세 참조)
+decision/	매매 결정 및 포트폴리오 할당 엔진	코드 존재하나, 실시간 데이터 미수신으로 인해 현재는 대기 상태
+filters/	종목 필터링 로직	설정값 로드 가능
+scanner_main.py	프로그램 메인 진입점	python scanner_main.py 실행 시 전체 시스템 가동
+3. 핵심 모듈 상세 분석: data/kiwoom_connector.py
+이 모듈은 현재까지의 디버깅을 통해 아래와 같이 최종 수정 완료되었습니다.
+
+3.1. 네트워크 엔드포인트 (수정 완료)
+구분	기존 (문제)	현재 (검증 완료)
+REST API Base	https://api.kiwoom.com	동일 (변경 없음)
+WebSocket URL	wss://ws.kiwoom.com/stream (DNS 오류)	wss://api.kiwoom.com:10000/api/dostk/websocket (공식 문서 기준)
+모의투자 URL	(미지정)	wss://mockapi.kiwoom.com:10000/api/dostk/websocket (주석 처리됨)
+3.2. WebSocket 통신 프로토콜 (수정 완료)
+단계	전송 패킷 (JSON)	현재 동작
+연결(Handshake)	(물리적 연결)	extra_headers에 Authorization: Bearer {Token} 포함하여 연결 성공
+로그인(LOGIN)	{"trnm": "LOGIN", "token": "{Access_Token}"}	연결 직후 최초 전송하도록 로직 추가됨
+로그인 응답 처리	{"trnm": "LOGIN", "return_code": 0}	return_code 확인 후 _ws_logged_in = True 플래그 설정
+구독(REG)	{"trnm":"REG","grp_no":"1","refresh":"1","data":[{"item":["005930"],"type":["0B"]}]}	공식 문서 형식으로 변경 완료
+PING/PONG	PING 수신 시 동일 데이터 반환	자동 응답 로직 포함됨
+3.3. 자동 복구 메커니즘
+재연결(Reconnect): 연결 종료 시 5회까지 백오프(2, 4, 8, 16, 32초 대기) 재시도 로직 탑재 (_reconnect_websocket).
+
+토큰 갱신: Access Token 만료 시 _refresh_token() 자동 호출하여 재발급.
+
+4. 네트워크 연결 테스트 결과 (검증 완료)
+아래는 실제 PowerShell을 통해 수행된 물리적 네트워크 테스트 결과입니다.
+
+테스트 항목	명령어	결과	결론
+DNS 조회	ping api.kiwoom.com	58.229.136.158 응답	✅ 도메인 해석 성공
+방화벽/포트	Test-NetConnection api.kiwoom.com -Port 10000	TcpTestSucceeded : True	✅ 방화벽(포트 10000) 통과
+REST API 인증	(코드 내 OAuth 요청)	✅ Access Token 발급 성공	✅ App Key/Secret 및 IP 화이트리스트 정상
+WebSocket 연결	(코드 내 연결 시도)	📡 WebSocket 연결 성공	✅ TLS 핸드셰이크 및 TCP 연결 성공
+5. 현재 확인된 제약사항 및 동작 특성 (반드시 숙지)
+5.1. REST API 현재가 조회(TR)는 비활성화됨
+원인: request_tr() 메서드가 호출하는 엔드포인트(/api/stock/current)가 존재하지 않아 500 Internal Server Error가 발생함.
+
+현재 조치: 해당 메서드 내부 로직을 임시 비활성화(주석 처리)하고, 호출 시 더미 데이터 {"price": 0, "message": "비활성화"}를 반환하도록 수정됨.
+
+영향: 실시간(WebSocket) 데이터는 받을 수 있지만, HTTP 기반의 과거/현재가 조회는 불가능한 상태.
+
+5.2. 운영 시간 정책 (가장 중요)
+실시간 데이터 수신 가능 시간: 평일(월~금) 오전 9시 ~ 오후 4시 (정규 장 시간)
+
+장 마감 후(16:00 ~ 08:30) 및 주말/공휴일:
+
+서버에서 {"trnm":"LOGIN", "return_code": "..."} 요청에 대해 "접속 허용 요청 처리에 실패했습니다" 오류를 반환합니다.
+
+이는 프로그램 오류가 아닌, 키움증권 서버의 정책에 따른 정상적인 거부 동작입니다.
+
+5.3. 재연결 시 구독(REG) 복구 미구현
+현재 재연결 로직은 물리적 연결과 로그인까지는 자동 복구하지만, 재연결成功后 이전에 등록했던 종목(예: 005930)을 자동으로 다시 구독(REG)하지는 않습니다.
+
+(만약 재연결이 발생하면 수동 또는 프로그램 재시작이 필요합니다.)
+
+6. 실행 흐름 (정상 장중 가정 시)
+사용자 실행: python scanner_main.py
+
+커넥터 초기화: .env에서 API Key/Secret 로드
+
+토큰 발급: POST /oauth2/token → Access Token 획득
+
+WebSocket 연결: wss://api.kiwoom.com:10000... 소켓 오픈
+
+로그인 요청: {"trnm":"LOGIN", "token":"..."} 전송
+
+로그인 확인: 서버 응답 return_code: 0 확인 → _ws_logged_in = True
+
+실시간 구독: register_realtime("005930", handler) 호출 → REG 패킷 전송
+
+데이터 수신: 서버로부터 체결가/호가 데이터 스트리밍 시작
+
+(현재는 5번 단계에서 서버가 거부하여 6번 이후로 진행되지 못하는 상태입니다.)
+
+7. 환경 설정 및 의존성
+필요 라이브러리
+text
+aiohttp
+websockets
+python-dotenv
+pyyaml
+환경 변수 (.env)
+text
+KIWOOM_APP_KEY=발급받은_앱키
+KIWOOM_APP_SECRET=발급받은_시크릿키
+8. 최종 상태 종합 평가
+구분	평가
+코드 안정성	✅ 우수 (예외 처리, 재연결, 로깅 체계적)
+네트워크 연결성	✅ 완벽 (DNS, 방화벽, OAuth 인증 모두 통과)
+실시간 데이터 수신	⏳ 보류 (평일 장중 재테스트 필요)
+REST API 데이터 조회	❌ 현재 사용 불가 (엔드포인트 오류로 비활성화)
+자동화 완성도	⚠️ 부분 완성 (재연결 시 구독 복구 로직 미비)
+9. 다음 실행 권고사항
+2026-08-10 (월) 오전 9시 ~ 오후 4시 사이에 python scanner_main.py를 실행하십시오.
+로그에 ✅ WebSocket 로그인 성공! 및 📡 실시간 구독 등록 요청 (REG): 005930이 찍히면, 현재까지의 모든 설정과 수정이 완벽하게 마무리된 것입니다.
