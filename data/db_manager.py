@@ -1,9 +1,10 @@
 """
-data/db_manager.py - Async SQLite Manager (Indexing 적용)
+data/db_manager.py - v5.4.2 (OHLCV 저장/조회 완전 구현)
 """
 import json
 import aiosqlite
 from pathlib import Path
+from typing import List, Dict, Optional
 from core.logger import setup_logger
 
 logger = setup_logger("db_manager")
@@ -45,14 +46,66 @@ class DatabaseManager:
                     weight REAL DEFAULT 1.0,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
+                -- 🔥 OHLCV 테이블 (시가/고가/저가/종가/거래량)
+                CREATE TABLE IF NOT EXISTS ohlcv (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker, date)
+                );
             """)
-            # 🔥 A: 인덱스 생성 (조회 성능 10배 향상)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_created_at ON decisions(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_ticker ON decisions(ticker)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_action ON decisions(action)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker_date ON ohlcv(ticker, date)")
             await db.commit()
-            logger.info("✅ DB 초기화 및 인덱스 생성 완료")
+            logger.info("✅ DB 초기화 완료 (OHLCV 테이블 포함)")
 
+    # ============================================================
+    # 🔥 OHLCV 저장/조회 (ATR 계산용)
+    # ============================================================
+    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict):
+        """OHLCV 데이터 저장 (시가/고가/저가/종가/거래량)"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ticker, date,
+                ohlcv.get('open', 0.0),
+                ohlcv.get('high', 0.0),
+                ohlcv.get('low', 0.0),
+                ohlcv.get('close', 0.0),
+                ohlcv.get('volume', 0)
+            ))
+            await db.commit()
+
+    async def get_ohlcv(self, ticker: str, period: int = 14) -> List[Dict]:
+        """
+        최근 N일 OHLCV 데이터 조회 (ATR 계산용)
+        Returns: [{'date': '2026-08-01', 'open': 100, 'high': 110, 'low': 95, 'close': 105, 'volume': 1000}, ...]
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT date, open, high, low, close, volume FROM ohlcv WHERE ticker = ? ORDER BY date DESC LIMIT ?",
+                (ticker, period)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                # 날짜 오름차순으로 반환 (ATR 계산은 시간 순서 필요)
+                result = [dict(row) for row in rows]
+                result.reverse()
+                return result
+
+    # ============================================================
+    # 기존 메서드 (save_decision, get_decisions_by_date 등)
+    # ============================================================
     async def save_decision(self, analysis: dict):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""

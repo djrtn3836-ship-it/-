@@ -1,8 +1,8 @@
 """
-feedback/feedback_learner.py - 성과 귀속 분석 및 모델 최적화 (v5.3.1)
-- 실제 수익률 계산 (ka10060 종가 기반)
-- close_price=0인 레코드 스킵 (데이터 부족 방지)
-- EMA 가중치 업데이트 및 Sharpe/Profit Factor 리포트
+feedback/feedback_learner.py - v5.4.4 (DB OHLCV 활용, API 중복 호출 제거 + 공휴일 인식)
+- _fetch_real_outcome: request_tr 대신 DB의 ohlcv 테이블 조회 (1순위)
+- API 폴백은 DB에 데이터가 없을 때만 최후의 수단으로 사용
+- 공휴일/주말 자동 스킵
 """
 
 import math
@@ -11,6 +11,7 @@ from typing import Optional, Dict, List
 from data.db_manager import DatabaseManager
 from report.telegram_sender import TelegramSender
 from core.logger import setup_logger
+from core.holiday_utils import is_trading_day  # 🔥 신규
 
 logger = setup_logger("feedback")
 
@@ -22,12 +23,20 @@ class FeedbackLearner:
         self.telegram = TelegramSender()
 
     async def run(self):
-        logger.info("🧠 기관용 피드백 학습 및 성과 귀속 파이프라인 가동...")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        decisions = await self.db.get_decisions_by_date(yesterday)
+        logger.info("🧠 피드백 학습 시작...")
+        
+        # 오늘 날짜 기준 전일
+        yesterday = (datetime.now() - timedelta(days=1))
+        # 🔥 거래일이 아니면 학습 스킵 (공휴일/주말)
+        if not is_trading_day(yesterday):
+            logger.info(f"📭 {yesterday.strftime('%Y-%m-%d')}은(는) 거래일이 아님 → 학습 스킵")
+            return
+        
+        yesterday_str = yesterday.strftime("%Y-%m-%d")
+        decisions = await self.db.get_decisions_by_date(yesterday_str)
 
         if not decisions:
-            logger.info(f"📭 {yesterday} 학습할 결정 기록이 없습니다.")
+            logger.info(f"📭 {yesterday_str} 학습할 결정 기록이 없습니다.")
             return
 
         logger.info(f"📊 {len(decisions)}개 타겟에 대한 성과 분석 중...")
@@ -37,7 +46,6 @@ class FeedbackLearner:
         for dec in decisions:
             outcome = await self._fetch_real_outcome(dec)
             if outcome:
-                # 🔥 [개선] close_price가 0이면 스킵 (데이터 부족)
                 if outcome.get('price_after_1d', 0) == 0:
                     skipped_count += 1
                     continue
@@ -47,8 +55,6 @@ class FeedbackLearner:
         if not outcomes:
             logger.warning(f"⚠️ 유효한 결과가 없어 가중치 조정 스킵 (스킵: {skipped_count}개)")
             return
-
-        logger.info(f"📊 유효 결과 {len(outcomes)}개 / 스킵 {skipped_count}개")
 
         prev_weights = await self.db.get_weights()
         total = len(outcomes)
@@ -67,11 +73,13 @@ class FeedbackLearner:
         sharpe_ratio = (mean_ret / std_dev) * math.sqrt(252) if std_dev > 0 else 0.0
 
         new_weights = await self._update_weights_ema(outcomes, prev_weights)
-
         await self._send_institutional_report(
-            yesterday, total, len(wins), accuracy, mean_ret, profit_factor, sharpe_ratio, prev_weights, new_weights
+            yesterday_str, total, len(wins), accuracy, mean_ret, profit_factor, sharpe_ratio, prev_weights, new_weights
         )
 
+    # ============================================================
+    # 🔥 핵심 개선: API 호출 제거, DB에서 OHLCV 조회 (1순위)
+    # ============================================================
     async def _fetch_real_outcome(self, decision: dict) -> Optional[dict]:
         ticker = decision['ticker']
         action = decision['action']
@@ -79,17 +87,31 @@ class FeedbackLearner:
         if price_at <= 0:
             return None
 
+        # 전일 날짜 계산
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        
         try:
-            if self.connector:
-                resp = await self.connector.request_tr(ticker, "일봉")
-                price_after = float(resp.get('close', 0))
-            else:
-                price_after = price_at
+            # 1. DB에서 OHLCV 데이터 조회 (최근 2일치, 오늘 포함)
+            ohlcv_list = await self.db.get_ohlcv(ticker, period=2)
+            
+            price_after = 0
+            if ohlcv_list and len(ohlcv_list) >= 2:
+                # 가장 최근 데이터의 종가 사용 (전일 종가)
+                price_after = ohlcv_list[-1].get('close', 0)
+                logger.debug(f"✅ DB에서 {ticker} 전일 종가 조회: {price_after:,.0f}")
+            
+            # 2. DB에 데이터가 없으면 API 폴백 (최후의 수단, 2순위)
+            if price_after <= 0:
+                logger.warning(f"⚠️ {ticker} DB 데이터 없음, API 폴백 시도")
+                if self.connector:
+                    resp = await self.connector.request_tr(ticker, "일봉")
+                    if resp and isinstance(resp, dict):
+                        price_after = float(resp.get('close', 0))
+                    
         except Exception as e:
             logger.error(f"❌ 가격 데이터 조회 실패 ({ticker}): {e}")
             return None
 
-        # 🔥 [개선] 가격이 0이면 유효하지 않은 데이터로 간주
         if price_after <= 0:
             return None
 

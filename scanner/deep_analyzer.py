@@ -1,12 +1,14 @@
 """
-Deep Analyzer v5.1.2
-후보군 심층 분석 (13개 지표 + 호가잔량)
-- 수정: 리포트용 종목명, 가격, 근거 텍스트 추가 반환
+scanner/deep_analyzer.py - v5.4.2 (ATR 자동 계산 + 실시간 업데이트)
+- 신호 발생 시 DB에서 14일 OHLCV 조회 → ATR 계산
+- ATR을 stock 딕셔너리에 추가하여 Telegram 전달
 """
 
-from typing import Dict, List, Optional
+import math
+from typing import Dict, List, Optional, Any
 
 from core.logger import setup_logger
+from data.db_manager import DatabaseManager
 from filters.macro_filter import MacroFilter
 from filters.sector_filter import SectorFilter
 from filters.stock_filter import StockFilter
@@ -16,11 +18,9 @@ from decision.hybrid_decider import HybridDecider
 
 logger = setup_logger("analyzer")
 
-
 class DeepAnalyzer:
-    """심층 분석기 (13개 지표 + 호가잔량 기반)"""
-
-    def __init__(self):
+    def __init__(self, db_manager: DatabaseManager = None):
+        self.db = db_manager
         self.macro = MacroFilter()
         self.sector = SectorFilter()
         self.stock = StockFilter()
@@ -28,38 +28,97 @@ class DeepAnalyzer:
         self.weighter = DynamicWeighter()
         self.decider = HybridDecider()
 
-    async def analyze(self, stock: Dict) -> Dict:
+    # ============================================================
+    # 🔥 ATR 계산 함수 (14일 기본값)
+    # ============================================================
+    async def calculate_atr(self, ticker: str, period: int = 14) -> float:
         """
-        심층 분석 실행
-
-        Args:
-            stock: 종목 데이터 (ticker, name, price, regime, flow, timestamp 등)
-
-        Returns:
-            분석 결과 (의사결정 + 리포트용 메타 정보 포함)
+        DB에서 OHLCV 데이터를 조회하여 ATR 계산
+        - period: 기본 14일
+        - 데이터 부족 시 0 반환 (Telegram에서 안내 표시)
         """
+        if not self.db:
+            logger.warning("⚠️ DB 매니저 없음, ATR 계산 불가")
+            return 0.0
+
         try:
-            # 1. 각 필터 점수 계산 (13개 지표 + 호가잔량)
+            ohlcv_list = await self.db.get_ohlcv(ticker, period)
+            if len(ohlcv_list) < 2:
+                logger.debug(f"ℹ️ {ticker} OHLCV 데이터 부족 (필요: {period}일, 현재: {len(ohlcv_list)}일)")
+                return 0.0
+
+            tr_values = []
+            for i in range(1, len(ohlcv_list)):
+                high = ohlcv_list[i]['high']
+                low = ohlcv_list[i]['low']
+                prev_close = ohlcv_list[i-1]['close']
+                
+                # True Range = max(고가-저가, |고가-전일종가|, |저가-전일종가|)
+                tr1 = high - low
+                tr2 = abs(high - prev_close)
+                tr3 = abs(low - prev_close)
+                tr = max(tr1, tr2, tr3)
+                tr_values.append(tr)
+
+            if len(tr_values) == 0:
+                return 0.0
+
+            # ATR = TR의 단순 이동평균
+            atr = sum(tr_values) / len(tr_values)
+            return round(atr, 2)
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} ATR 계산 오류: {e}")
+            return 0.0
+
+    # ============================================================
+    # 🔥 메인 분석 함수 (ATR 포함)
+    # ============================================================
+    async def analyze(self, stock: Dict) -> Dict:
+        try:
+            ticker = stock.get('ticker', '')
+            
+            # 1. 기존 필터 점수
             macro_score = self.macro.check(stock)
             sector_score = self.sector.check(stock)
             stock_score = self.stock.check(stock)
             korean_score = self.korean.check(stock)
 
-            # 2. 동적 가중치 (시장 국면/자금 흐름 기반)
+            # 2. 🔥 ATR 계산 (DB에서 14일 OHLCV 조회)
+            atr = await self.calculate_atr(ticker, 14) if self.db else 0.0
+
+            # 3. Imbalance 처리
+            imbalance = stock.get('imbalance', 0.5)
+            if not isinstance(imbalance, (int, float)) or imbalance < 0 or imbalance > 1:
+                imbalance = 0.5
+
+            action = stock.get('action', 'HOLD')
+            if action == 'BUY':
+                imbalance_factor = imbalance
+            elif action == 'SELL':
+                imbalance_factor = 1 - imbalance
+            else:
+                imbalance_factor = 0.5
+
+            # 4. 동적 가중치
             weights = self.weighter.calculate({
                 "regime": stock.get("regime", "Sideways"),
                 "flow": stock.get("flow", {})
             })
 
-            # 3. 최종 점수 (가중 합산)
-            final_score = (
+            # 5. 베이스 점수
+            base_score = (
                 macro_score["score"] * weights.get("trend_weight", 0.3) +
                 sector_score["score"] * weights.get("risk_weight", 0.2) +
                 stock_score["score"] * weights.get("flow_weight", 0.4) +
-                korean_score["score"] * 0.1  # 한국 특화 팩터 고정 가중치
+                korean_score["score"] * 0.1
             )
 
-            # 4. 하이브리드 의사결정 (BUY/SELL/HOLD + 신뢰도 + 근거)
+            # 6. 최종 점수 (Imbalance 10% 반영)
+            final_score = (base_score * 0.9) + (imbalance_factor * 0.1)
+            final_score = max(0.0, min(1.0, final_score))
+
+            # 7. 의사결정
             decision = self.decider.decide({
                 "score": final_score,
                 "macro": macro_score,
@@ -68,36 +127,38 @@ class DeepAnalyzer:
                 "korean": korean_score
             })
 
-            # 5. 종목명 확보 (없으면 티커로 대체)
-            ticker = stock.get("ticker", "")
-            stock_name = stock.get("name", stock.get("stock_name", ticker))
-
-            # 6. 리포트용 근거 텍스트 (decision에 있으면 사용, 없으면 기본값)
+            # 8. positives에 ATR 정보 추가
             positives = decision.get("reasons", decision.get("positives", ["다중 팩터 우위"]))
-            negatives = decision.get("risks", decision.get("negatives", ["시장 변동성"]))
-            counterfactuals = decision.get("counterfactuals", [])
+            pressure_text = stock.get('pressure', '')
+            if pressure_text and pressure_text not in positives:
+                positives.append(pressure_text)
+            
+            # ATR 정보 추가 (0이면 "수집 중")
+            if atr > 0:
+                positives.append(f"📊 ATR(14일): {atr:,.0f}원")
+            else:
+                positives.append("📊 ATR: 수집 중 (데이터 부족)")
 
-            # 7. 최종 반환 (기존 필드 + 리포트용 추가 필드)
             return {
-                # ---- 리포트/UI 표시용 필드 ----
-                "name": stock_name,                    # 종목명
-                "price": stock.get("price", 0.0),      # 현재가 (진입 참고가로 사용)
-                "positives": positives,                # 매수 근거 (리포트용)
-                "negatives": negatives,                # 매도/리스크 근거
-                "counterfactuals": counterfactuals,    # 반사실적 분석
-
-                # ---- 기존 코어 필드 ----
                 "ticker": ticker,
-                "action": decision["action"],          # "BUY" / "SELL" / "HOLD"
-                "score": final_score,                  # 0.0 ~ 1.0 정규화 점수
+                "name": stock.get("name", stock.get("ticker", "")),
+                "price": stock.get("price", 0.0),
+                "action": decision.get("action", "HOLD"),
+                "score": final_score,
                 "confidence": decision.get("confidence", 0.5),
-
-                # ---- 디버깅/심층 분석용 상세 점수 ----
+                "positives": positives,
+                "negatives": decision.get("risks", decision.get("negatives", ["시장 변동성 주의"])),
+                "counterfactuals": decision.get("counterfactuals", []),
+                "imbalance": imbalance,
+                "atr": atr,  # 🔥 ATR 전달 (Telegram에서 사용)
+                "entry_price": stock.get("entry_price", stock.get("price", 0.0)),
                 "details": {
                     "macro": macro_score["score"],
                     "sector": sector_score["score"],
                     "stock": stock_score["score"],
-                    "korean": korean_score["score"]
+                    "korean": korean_score["score"],
+                    "imbalance": imbalance,
+                    "atr": atr,
                 },
                 "timestamp": stock.get("timestamp", "")
             }
@@ -106,7 +167,7 @@ class DeepAnalyzer:
             logger.error(f"Analysis failed for {stock.get('ticker', 'unknown')}: {e}")
             return {
                 "ticker": stock.get("ticker", ""),
-                "name": stock.get("name", stock.get("stock_name", "")),
+                "name": stock.get("name", stock.get("ticker", "")),
                 "price": stock.get("price", 0.0),
                 "action": "ERROR",
                 "score": 0.0,
@@ -114,6 +175,7 @@ class DeepAnalyzer:
                 "positives": [],
                 "negatives": [],
                 "counterfactuals": [],
+                "atr": 0.0,
                 "details": {},
                 "error": str(e),
                 "timestamp": stock.get("timestamp", "")
