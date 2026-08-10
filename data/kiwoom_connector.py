@@ -1,6 +1,9 @@
 """
-Kiwoom REST API Connector v5.1.2 — 64비트 지원, 비동기 HTTP/WebSocket
-🔒 Rate Limiter 내장: 초당 5회 (실전) / 1회 (모의) 엄격 준수
+data/kiwoom_connector.py - v5.1.2 FINAL 최적화 완성본
+- WebSocket 실시간 연결 (LOGIN/REG/PING 자동 처리)
+- REST API TR 요청 (ka10060: 일봉 종가, ka10004: 현재가 호가)
+- Async Rate Limiter (초당 5회) 내장
+- 자동 토큰 갱신 및 재연결 백오프
 """
 
 import asyncio
@@ -9,6 +12,7 @@ import json
 import time
 import logging
 from typing import Dict, Optional, Callable, Any
+from datetime import datetime, timedelta
 
 import aiohttp
 import websockets
@@ -19,6 +23,9 @@ from core.logger import setup_logger
 logger = setup_logger("kiwoom_rest")
 
 
+# ============================================================
+# Async Rate Limiter (토큰 버킷 알고리즘)
+# ============================================================
 class AsyncRateLimiter:
     """
     비동기 토큰 버킷(Token Bucket) Rate Limiter
@@ -26,54 +33,49 @@ class AsyncRateLimiter:
     - per: 시간 기준 (기본 1.0초)
     """
     def __init__(self, rate: float, per: float = 1.0):
-        self.rate = rate                  # 초당 최대 요청 수
-        self.per = per                    # 기준 시간 (초)
-        self.tokens = rate                # 현재 보유 토큰 수 (처음은 최대로 채움)
+        self.rate = rate
+        self.per = per
+        self.tokens = rate
         self.last_refill = time.perf_counter()
         self._lock = asyncio.Lock()
 
     async def acquire(self):
-        """
-        토큰을 획득할 때까지 대기합니다.
-        - 토큰이 부족하면 충전될 때까지 asyncio.sleep으로 대기합니다.
-        """
+        """토큰을 획득할 때까지 대기 (Blocking 방식)"""
         async with self._lock:
             now = time.perf_counter()
             elapsed = now - self.last_refill
-
-            # 경과 시간만큼 토큰 충전 (최대 용량 초과 불가)
             refill_amount = elapsed * (self.rate / self.per)
             self.tokens = min(self.rate, self.tokens + refill_amount)
             self.last_refill = now
 
-            # 토큰이 1개 미만이면 사용 가능할 때까지 대기
             if self.tokens < 1:
-                # 1개 토큰이 충전되는 데 필요한 시간 계산
                 wait_time = (1 - self.tokens) / (self.rate / self.per)
                 logger.debug(f"⏳ Rate Limit 대기 중... ({wait_time:.3f}초 후 실행)")
                 await asyncio.sleep(wait_time)
 
-                # 대기 후 다시 시간 계산 및 토큰 차감
                 now = time.perf_counter()
                 elapsed = now - self.last_refill
                 self.tokens = min(self.rate, self.tokens + elapsed * (self.rate / self.per))
                 self.last_refill = now
                 self.tokens -= 1
             else:
-                # 토큰 1개 사용
                 self.tokens -= 1
 
 
+# ============================================================
+# 키움 REST API 커넥터 (메인 클래스)
+# ============================================================
 class KiwoomConnectorV512:
-    """키움 REST API 기반 커넥터 (64비트 호환) - Rate Limiter 내장"""
+    """키움 REST API + WebSocket 통합 커넥터 (64비트 호환)"""
 
     # ============================================================
-    # API 기본 설정 (🔥 2026-08-10 최종 수정)
+    # API 기본 설정 (공식 문서 기준)
     # ============================================================
-    REST_BASE_URL = "https://api.kiwoom.com"
-    # 실전 WebSocket (포트 10000 포함)
+    REST_BASE_URL = "https://api.kiwoom.com"  # 실전
+    # 모의투자: REST_BASE_URL = "https://mockapi.kiwoom.com"
+    
     WS_URL = "wss://api.kiwoom.com:10000/api/dostk/websocket"
-    # 모의투자일 경우: WS_URL = "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
+    # 모의투자: WS_URL = "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
 
     def __init__(self, rate_limit: float = 5.0):
         """
@@ -86,7 +88,7 @@ class KiwoomConnectorV512:
         self.access_token = None
         self.token_expires_at = 0
 
-        # ⭐ Rate Limiter 초기화 (기본 실전 5회/초)
+        # ⭐ Rate Limiter 초기화
         self._rate_limiter = AsyncRateLimiter(rate=rate_limit, per=1.0)
         logger.info(f"🔒 Rate Limiter 활성화: 초당 {rate_limit}회 (TR 요청)")
 
@@ -99,9 +101,7 @@ class KiwoomConnectorV512:
         self._realtime_handlers: Dict[str, Callable] = {}
         self._shutdown_event = asyncio.Event()
 
-        # TR 요청 콜백
-        self._tr_callbacks: Dict[str, Callable] = {}
-
+        # 상태 플래그
         self._is_connected = False
         self._ws_running = False
         self._ws_logged_in = False
@@ -109,7 +109,6 @@ class KiwoomConnectorV512:
     # ============================================================
     # 1. 연결 및 인증 (OAuth2)
     # ============================================================
-
     async def connect(self) -> bool:
         """REST API 로그인 및 WebSocket 연결"""
         logger.info("🔑 키움 REST API 로그인 시도...")
@@ -160,7 +159,6 @@ class KiwoomConnectorV512:
     # ============================================================
     # 2. WebSocket (실시간 데이터 수신)
     # ============================================================
-
     async def _connect_websocket(self):
         """WebSocket 연결 및 백그라운드 수신 시작"""
         if self._ws_task and not self._ws_task.done():
@@ -187,10 +185,7 @@ class KiwoomConnectorV512:
         self._ws_logged_in = False
 
         # 🔥 WebSocket 연결 직후, 로그인 패킷(LOGIN) 전송
-        login_packet = {
-            "trnm": "LOGIN",
-            "token": self.access_token
-        }
+        login_packet = {"trnm": "LOGIN", "token": self.access_token}
         await self._ws.send(json.dumps(login_packet))
         logger.info("📡 WebSocket LOGIN 패킷 전송 완료 (서버 응답 대기 중)")
 
@@ -266,7 +261,6 @@ class KiwoomConnectorV512:
     # ============================================================
     # 3. 실시간 구독 (REG)
     # ============================================================
-
     async def register_realtime(self, ticker: str, handler: Callable, fid_list: str = ""):
         """실시간 데이터 구독 요청 (키움 REG 패킷 형식)"""
         if not self._ws or not self._ws_running:
@@ -304,46 +298,108 @@ class KiwoomConnectorV512:
             logger.info(f"📡 실시간 구독 해제: {ticker}")
 
     # ============================================================
-    # 4. TR 요청 (REST API) - ⭐ Rate Limiter 적용 완료
+    # 4. TR 요청 (REST API) - 🔥 실제 API 연동 완성!
     # ============================================================
-
     async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
         """
         TR 요청 (REST API)
-        - 이 메서드는 호출되기 전에 반드시 Rate Limiter를 통과합니다.
-        - 초당 설정된 횟수를 초과할 경우 내부적으로 대기(Sleep) 후 실행됩니다.
+        - tr_type == "일봉" : ka10060 (종목별투자자기관별차트) → 종가(Close) 획득
+        - tr_type == "현재가" 또는 기타 : ka10004 (주식호가) → 매수/매도 최우선 호가 획득
         """
-        # ⭐⭐⭐ Rate Limiter 획득 (서버에 요청을 보내기 전에 대기)
+        # 1. Rate Limit 대기
         await self._rate_limiter.acquire()
         
-        # 토큰 갱신 체크
+        # 2. 토큰 갱신 체크
         if not self.access_token or time.time() > self.token_expires_at:
             await self._refresh_token()
 
-        # ---------- 실제 API 호출 영역 ----------
-        # 현재는 엔드포인트 미확정으로 더미 데이터 반환 (Rate Limiter는 정상 동작 중)
-        # 실제 엔드포인트 확인 후 아래 주석을 해제하고 사용하세요.
-        
-        logger.info(f"📊 TR 요청 실행 (Rate Limit 통과): {tr_type} {ticker}")
-        
-        # TODO: 실제 키움 REST API 엔드포인트로 교체 필요
-        # headers = {"Authorization": f"Bearer {self.access_token}"}
-        # url = f"{self.REST_BASE_URL}/api/dostk/..."  # 정확한 경로 필요
-        # async with self._session.get(url, params={"symbol": ticker}, headers=headers) as resp:
-        #     ...
-        
-        # 임시 더미 응답 (Rate Limiter 테스트용)
-        return {
-            "symbol": ticker,
-            "tr_type": tr_type,
-            "price": 0,
-            "message": "REST API 엔드포인트 확인 필요 (Rate Limiter는 정상 작동 중)"
+        # 3. 공통 헤더
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json;charset=UTF-8"
         }
+
+        # ================================================
+        # CASE 1: 일봉 종가 조회 (ka10060)
+        # ================================================
+        if tr_type == "일봉":
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            headers["api-id"] = "ka10060"
+            
+            body = {
+                "dt": yesterday,
+                "stk_cd": ticker,
+                "amt_qty_tp": "1",   # 금액
+                "trde_tp": "0",      # 순매수
+                "unit_tp": "1"       # 단주
+            }
+            url = f"{self.REST_BASE_URL}/api/dostk/chart"
+
+            try:
+                logger.info(f"📊 [ka10060] 종가 조회: {ticker} ({yesterday})")
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        chart_list = data.get('stk_invsr_orgn_chart', [])
+                        if chart_list and len(chart_list) > 0:
+                            close_price = float(chart_list[0].get('cur_prc', 0))
+                        else:
+                            logger.warning(f"⚠️ {ticker} 차트 데이터 없음 (비거래일 가능)")
+                            close_price = 0
+
+                        result = {"symbol": ticker, "close": close_price, "date": yesterday, "raw": data}
+                        if callback:
+                            callback(result)
+                        return result
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"❌ ka10060 실패 ({ticker}): {resp.status} - {error_text}")
+                        return {"error": resp.status, "message": error_text}
+            except Exception as e:
+                logger.error(f"❌ ka10060 예외: {e}")
+                return {"error": str(e)}
+
+        # ================================================
+        # CASE 2: 현재가 호가 조회 (ka10004)
+        # ================================================
+        else:
+            headers["api-id"] = "ka10004"
+            body = {"stk_cd": ticker}
+            url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
+
+            try:
+                logger.info(f"📊 [ka10004] 현재가 조회: {ticker}")
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        # 매수 최우선 호가 → 없으면 매도 최우선 호가
+                        current_price = data.get('buy_fpr_bid')
+                        if current_price:
+                            current_price = float(current_price)
+                        else:
+                            current_price = float(data.get('sel_fpr_bid', 0))
+
+                        result = {
+                            "symbol": ticker,
+                            "close": current_price,  # FeedbackLearner 호환성 유지
+                            "buy_price": data.get('buy_fpr_bid'),
+                            "sell_price": data.get('sel_fpr_bid'),
+                            "raw": data
+                        }
+                        if callback:
+                            callback(result)
+                        return result
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"❌ ka10004 실패 ({ticker}): {resp.status} - {error_text}")
+                        return {"error": resp.status, "message": error_text}
+            except Exception as e:
+                logger.error(f"❌ ka10004 예외: {e}")
+                return {"error": str(e)}
 
     # ============================================================
     # 5. 토큰 갱신
     # ============================================================
-
     async def _refresh_token(self):
         """Access Token 갱신"""
         logger.info("🔄 Access Token 갱신 중...")
@@ -366,7 +422,6 @@ class KiwoomConnectorV512:
     # ============================================================
     # 6. 연결 종료
     # ============================================================
-
     async def disconnect(self):
         """연결 종료"""
         logger.info("🔌 키움 REST API 연결 종료 중...")
@@ -398,7 +453,6 @@ class KiwoomConnectorV512:
     # ============================================================
     # 7. 상태 조회
     # ============================================================
-
     def is_connected(self) -> bool:
         return self._is_connected
 
