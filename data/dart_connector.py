@@ -1,21 +1,24 @@
 """
-DART Connector v5.1.2 — DART API 연동 및 Risk Score 계산
+DART Connector v5.2.0 — DART API 연동 및 Risk Score 계산 + 재무제표 조회 통합
 
 변경사항:
-1. DART Open API 연동
-2. Risk Score 0~100 계산
-3. Risk Level: NORMAL / WARNING / HIGH / CRITICAL
-4. 정규표현식 기반 공시 분류
+1. DART Open API 연동 (기존)
+2. Risk Score 0~100 계산 및 레벨 분류 (기존)
+3. 정규표현식 기반 공시 분류 (기존)
+4. [신규] 재무제표(매출/영업이익) 동기 조회 (PDF 보고서 연동용)
+5. [신규] 기업 기본 정보 조회
+6. [신규] 간편 공시 검색
 """
 
 import re
 import asyncio
 import aiohttp
+import requests  # 🔥 신규 추가: 동기식 재무제표 조회용
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ class DisclosureAnalysis:
 
 
 class DartConnector:
-    """DART Open API 연동 모듈"""
+    """DART Open API 연동 모듈 (Risk 분석 + 재무제표 통합)"""
     
     # Risk Score 가중치 (0~100)
     RISK_WEIGHTS = {
@@ -90,10 +93,10 @@ class DartConnector:
         self.daily_used = 0
         self.last_reset = datetime.now()
         
-        # 세션
+        # 세션 (비동기용)
         self._session: Optional[aiohttp.ClientSession] = None
         
-        # 정규표현식 패턴
+        # 정규표현식 패턴 (Risk 분석용)
         self.patterns = {
             'third_party_allotment': {
                 'pattern': r'제3자배정',
@@ -120,7 +123,10 @@ class DartConnector:
                 'weight': self.RISK_WEIGHTS['merger']
             }
         }
-    
+
+    # ============================================================
+    # 1. 비동기 연결 관리 (기존)
+    # ============================================================
     async def connect(self):
         """세션 연결"""
         if self._session is None:
@@ -133,7 +139,10 @@ class DartConnector:
             await self._session.close()
             self._session = None
         logger.info("DART Connector disconnected")
-    
+
+    # ============================================================
+    # 2. 공시 조회 및 Risk 분석 (기존, 비동기)
+    # ============================================================
     async def get_disclosures(self, corp_code: str, 
                               from_date: str, to_date: str,
                               deep_scan: bool = False) -> List[DisclosureAnalysis]:
@@ -183,7 +192,7 @@ class DartConnector:
             return []
     
     def _analyze_by_title(self, item: Dict) -> DisclosureAnalysis:
-        """공시 제목 분석"""
+        """공시 제목 분석 (기존)"""
         title = item.get('report_nm', '')
         corp_code = item.get('corp_code', '')
         date = item.get('rcept_de', '')
@@ -258,7 +267,7 @@ class DartConnector:
         return analysis
     
     async def _fetch_content(self, corp_code: str, rcept_no: str) -> Optional[str]:
-        """공시 본문 조회"""
+        """공시 본문 조회 (기존)"""
         if self._session is None:
             await self.connect()
         
@@ -283,9 +292,8 @@ class DartConnector:
             return None
     
     def _parse_document(self, raw_doc: str) -> str:
-        """HTML/XML 문서 파싱"""
+        """HTML/XML 문서 파싱 (기존)"""
         try:
-            import re
             text = re.sub(r'<[^>]+>', ' ', raw_doc)
             text = re.sub(r'\s+', ' ', text)
             return text.strip()
@@ -293,7 +301,7 @@ class DartConnector:
             return raw_doc
     
     def _analyze_by_content(self, analysis: DisclosureAnalysis):
-        """본문 내용 추가 분석"""
+        """본문 내용 추가 분석 (기존)"""
         content = analysis.content
         if not content:
             return
@@ -330,7 +338,7 @@ class DartConnector:
             return "매수"
     
     async def _check_rate_limit(self):
-        """일일 Rate Limit 체크"""
+        """일일 Rate Limit 체크 (기존)"""
         now = datetime.now()
         if (now - self.last_reset).days >= 1:
             self.daily_used = 0
@@ -343,7 +351,93 @@ class DartConnector:
             await asyncio.sleep(wait_seconds)
             self.daily_used = 0
             self.last_reset = datetime.now()
+
+    # ============================================================
+    # 3. 🔥 신규 추가: 재무제표 및 기본 정보 조회 (동기, PDF 보고서용)
+    # ============================================================
     
+    def get_financials_sync(self, corp_code: str, year: str = "2024") -> Optional[Dict]:
+        """
+        단일회사 재무제표 조회 (동기 방식)
+        - PDF 주간 보고서에서 매출, 영업이익 등 재무 데이터 수집용
+        - 사용 예: dart.get_financials_sync("00126380", "2024")
+        """
+        if not self.api_key:
+            logger.error("❌ DART_API_KEY 없음")
+            return None
+            
+        url = f"{self.base_url}/fnlttSinglAcnt.json"
+        params = {
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bsns_year": year,
+            "reprt_code": "11011"  # 11011=사업보고서(연간)
+        }
+        
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == '000':
+                    return data
+                else:
+                    logger.warning(f"⚠️ 재무제표 조회 실패 ({corp_code}): {data.get('message')}")
+                    return None
+            else:
+                logger.error(f"❌ HTTP 오류: {resp.status_code}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ 재무제표 요청 오류: {e}")
+            return None
+    
+    def get_company_info_sync(self, corp_code: str) -> Optional[Dict]:
+        """
+        기업 기본 정보 조회 (동기 방식)
+        - 회사명, 종목코드, 업종 등 조회
+        """
+        url = f"{self.base_url}/company.json"
+        params = {
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == '000':
+                    return data
+            return None
+        except Exception as e:
+            logger.error(f"❌ 기업 정보 조회 오류: {e}")
+            return None
+    
+    def search_notices_sync(self, corp_code: str, start_date: str = "20250101", limit: int = 10) -> Optional[List]:
+        """
+        최근 공시 검색 (동기 방식, 간편 버전)
+        - PDF 보고서에 최근 공시 내역 포함용
+        """
+        url = f"{self.base_url}/list.json"
+        params = {
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bgn_de": start_date,
+            "page_no": 1,
+            "page_count": limit
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == '000':
+                    return data.get('list', [])
+            return None
+        except Exception as e:
+            logger.error(f"❌ 공시 검색 오류: {e}")
+            return None
+
+    # ============================================================
+    # 4. 상태 조회 (기존)
+    # ============================================================
     def get_stats(self) -> Dict:
         return {
             'daily_used': self.daily_used,
