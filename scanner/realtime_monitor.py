@@ -1,164 +1,156 @@
 """
-scanner/realtime_monitor.py - v5.1.2 FINAL
-실시간 WebSocket 데이터 수신 및 조건 감지 (자동복구 + 재구독 지원)
+scanner/realtime_monitor.py - v5.3.2 (최적화: 변경된 종목만 스캔 + 키움 표준 호가 필드)
 """
-
 import asyncio
 import time
 from collections import deque
 from typing import Dict, List, Optional, Any
-from datetime import datetime
 
 from core.logger import setup_logger
-from data.stock_universe import get_universe  # 종목 리스트 로드 (없으면 기본값 사용)
+from data.stock_universe import get_universe
 
 logger = setup_logger("monitor")
 
-
 class RealtimeMonitor:
-    """실시간 WebSocket 데이터 모니터 (자동 복구 내장)"""
-
-    # 기본 감시 종목 (universe 로드 실패 시 fallback)
     DEFAULT_TICKERS = ["005930", "000660", "035420"]
 
     def __init__(self, kiwoom_connector):
-        """
-        Args:
-            kiwoom_connector: KiwoomConnectorV512 인스턴스
-        """
         self.kiwoom = kiwoom_connector
-        self._handler = self._on_data  # WebSocket 데이터 수신 핸들러
-
-        # ============================================================
-        # 🔥 [신규] 자동복구를 위한 구독 종목 저장소
-        # ============================================================
-        self._subscribed_tickers: List[str] = []  # 성공적으로 구독 등록된 종목 목록
-
-        # 실시간 데이터 저장소 (최근 100개 데이터 유지)
-        self._latest_data: Dict[str, Dict] = {}          # 최신 1건
-        self._history: Dict[str, deque] = {}             # 히스토리 (최대 100개)
+        self._handler = self._on_data
+        self._subscribed_tickers: List[str] = []
+        self._latest_data: Dict[str, Dict] = {}
+        self._history: Dict[str, deque] = {}
+        self._orderbook_history: Dict[str, deque] = {}
         self._history_limit = 100
-
-        # 감지 신호 임계값 (추후 config에서 로드 가능)
-        self.thresholds = {
-            "price_change_ratio": 0.02,   # 2% 이상 변동 시 감지
-            "volume_spike_ratio": 1.5,    # 평균 대비 1.5배 이상 거래량
-        }
-
-        # 스캔 상태
+        self._orderbook_limit = 50
+        self.thresholds = {"price_change_ratio": 0.02, "volume_spike_ratio": 1.5}
         self._is_running = False
-        self._last_scan_time = 0
-
-        # 종목 목록 (초기화 시 로드)
+        self._last_scan_time = 0.0  # 🔥 E: 마지막 스캔 시간
         self.tickers: List[str] = []
 
-    # ============================================================
-    # 1. 시작 및 구독 등록
-    # ============================================================
     async def start(self):
-        """모니터 시작: 종목 로드 → WebSocket 구독 등록"""
         if self._is_running:
             logger.warning("⚠️ 모니터가 이미 실행 중입니다.")
             return
 
-        logger.info("📡 RealtimeMonitor 시작 중...")
-
-        # 1) 종목 리스트 로드
+        logger.info("📡 RealtimeMonitor 시작 중... (호가잔량 포함)")
         try:
-            universe = get_universe()  # stock_universe.py에서 2300+ 종목 로드
-            self.tickers = list(universe.keys())[:10]  # 테스트용 상위 10개 (전체를 원하면 [:])
+            universe = get_universe()
+            self.tickers = list(universe.keys())[:10]
             if not self.tickers:
                 raise ValueError("Universe is empty")
             logger.info(f"📊 Universe 로드 완료: {len(self.tickers)}개 종목")
         except Exception as e:
-            logger.warning(f"⚠️ Universe 로드 실패 ({e}), 기본 종목 {self.DEFAULT_TICKERS} 사용")
+            logger.warning(f"⚠️ Universe 로드 실패 ({e}), 기본 종목 사용")
             self.tickers = self.DEFAULT_TICKERS
 
-        # 2) 각 종목 WebSocket 구독 등록 (REG 패킷 전송)
-        self._subscribed_tickers.clear()  # 기존 목록 초기화
+        self._subscribed_tickers.clear()
         for ticker in self.tickers:
             try:
-                await self.kiwoom.register_realtime(ticker, self._handler)
-                self._subscribed_tickers.append(ticker)  # 🔥 성공한 종목 저장
-                await asyncio.sleep(0.1)  # REG 요청 간격 (서버 부하 방지)
+                await self.kiwoom.register_realtime(ticker, self._handler, types=["0B", "0A"])
+                self._subscribed_tickers.append(ticker)
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.error(f"❌ {ticker} 구독 실패: {e}")
 
         self._is_running = True
+        self._last_scan_time = time.time()
         logger.info(f"✅ RealtimeMonitor 시작 완료 (구독 종목: {len(self._subscribed_tickers)}개)")
 
     # ============================================================
-    # 2. WebSocket 데이터 수신 핸들러
+    # 🔥 수정된 핵심: 키움 표준 호가 필드명 (buy_fpr_bid, sel_fpr_bid)
     # ============================================================
     def _on_data(self, data: Dict):
-        """
-        WebSocket에서 수신된 데이터를 처리하는 콜백
-        - kiwoom_connector.register_realtime()에서 호출됨
-        """
         try:
-            # 키움 응답 형식에 따라 ticker 추출
             ticker = data.get('ticker') or data.get('symbol') or data.get('item')
             if not ticker:
-                logger.warning(f"⚠️ 식별자 없는 데이터 수신: {data}")
                 return
 
-            # 현재가 추출 (data 구조에 따라 다를 수 있음)
-            price = data.get('price') or data.get('cur_prc') or data.get('last')
-            if price:
+            data_type = data.get('type')
+            parsed = {'ticker': ticker, 'timestamp': data.get('timestamp', time.time()), 'raw': data}
+
+            if data_type == '0B' or 'price' in data or 'cur_prc' in data:
+                price = data.get('price') or data.get('cur_prc') or data.get('last')
+                if price:
+                    try:
+                        price = float(price)
+                    except:
+                        price = 0.0
+                volume = data.get('volume') or data.get('acc_vol') or 0
                 try:
-                    price = float(price)
-                except (ValueError, TypeError):
-                    price = 0.0
+                    volume = int(volume)
+                except:
+                    volume = 0
 
-            # 거래량 추출
-            volume = data.get('volume') or data.get('acc_vol') or 0
-            try:
-                volume = int(volume)
-            except (ValueError, TypeError):
-                volume = 0
+                parsed['price'] = price
+                parsed['volume'] = volume
+                if ticker not in self._history:
+                    self._history[ticker] = deque(maxlen=self._history_limit)
+                self._history[ticker].append(parsed)
 
-            # 데이터 정리
-            parsed = {
-                'ticker': ticker,
-                'price': price,
-                'volume': volume,
-                'timestamp': data.get('timestamp', time.time()),
-                'raw': data
-            }
+            elif data_type == '0A' or 'buy_fpr_bid' in data or 'sel_fpr_bid' in data:
+                orderbook = {'bids': [], 'asks': []}
+                # 매수 호가 (buy_fpr_bid, buy_1th_pre_bid ~ buy_9th_pre_bid)
+                for i in range(1, 11):
+                    if i == 1:
+                        price_key, qty_key = 'buy_fpr_bid', 'buy_fpr_req'
+                    else:
+                        price_key, qty_key = f'buy_{i-1}th_pre_bid', f'buy_{i-1}th_pre_req'
+                    price = data.get(price_key); qty = data.get(qty_key)
+                    if price is not None and qty is not None:
+                        try:
+                            orderbook['bids'].append((float(price), int(qty)))
+                        except: pass
+                # 매도 호가 (sel_fpr_bid, sel_1th_pre_bid ~ sel_9th_pre_bid)
+                for i in range(1, 11):
+                    if i == 1:
+                        price_key, qty_key = 'sel_fpr_bid', 'sel_fpr_req'
+                    else:
+                        price_key, qty_key = f'sel_{i-1}th_pre_bid', f'sel_{i-1}th_pre_req'
+                    price = data.get(price_key); qty = data.get(qty_key)
+                    if price is not None and qty is not None:
+                        try:
+                            orderbook['asks'].append((float(price), int(qty)))
+                        except: pass
+                parsed['orderbook'] = orderbook
+                if ticker not in self._orderbook_history:
+                    self._orderbook_history[ticker] = deque(maxlen=self._orderbook_limit)
+                self._orderbook_history[ticker].append(parsed)
 
-            # 최신 데이터 저장
-            self._latest_data[ticker] = parsed
+            else:
+                parsed['raw_data'] = data
 
-            # 히스토리 저장
-            if ticker not in self._history:
-                self._history[ticker] = deque(maxlen=self._history_limit)
-            self._history[ticker].append(parsed)
+            if ticker in self._latest_data:
+                self._latest_data[ticker].update(parsed)
+            else:
+                self._latest_data[ticker] = parsed
 
         except Exception as e:
-            logger.error(f"❌ 데이터 핸들링 오류: {e}")
+            logger.error(f"❌ 데이터 핸들링 오류: {e}", exc_info=True)
 
     # ============================================================
-    # 3. 신호 스캔 (실시간 조건 감지)
+    # 🔥 E: 변경된 종목만 스캔 (성능 최적화)
     # ============================================================
     async def scan(self) -> List[Dict]:
-        """
-        현재 저장된 실시간 데이터를 기반으로 매매 신호를 감지합니다.
-        Returns:
-            감지된 종목 리스트 (각 항목: ticker, price, positives 등)
-        """
         if not self._is_running:
-            logger.warning("⚠️ 모니터가 실행 중이 아닙니다.")
             return []
 
         detected = []
         current_time = time.time()
+        changed_tickers = [
+            ticker for ticker, data in self._latest_data.items()
+            if data.get('timestamp', 0) > self._last_scan_time
+        ]
 
-        for ticker, data in self._latest_data.items():
+        if not changed_tickers:
+            return []
+
+        for ticker in changed_tickers:
+            data = self._latest_data.get(ticker, {})
             price = data.get('price', 0)
             if price <= 0:
                 continue
 
-            # 히스토리 조회 (이전 가격 비교)
             history = self._history.get(ticker, [])
             if len(history) < 2:
                 continue
@@ -168,81 +160,85 @@ class RealtimeMonitor:
             if prev_price <= 0:
                 continue
 
-            # 변동률 계산
             change_ratio = (price - prev_price) / prev_price
 
-            # === 조건 1: 급등/급락 (2% 이상) ===
+            orderbook = data.get('orderbook', {})
+            bids = orderbook.get('bids', [])
+            asks = orderbook.get('asks', [])
+
+            support_level = None
+            resistance_level = None
+            if bids:
+                max_bid = max(bids, key=lambda x: x[1])
+                support_level = max_bid[0]
+            if asks:
+                max_ask = max(asks, key=lambda x: x[1])
+                resistance_level = max_ask[0]
+
             if abs(change_ratio) >= self.thresholds["price_change_ratio"]:
                 action = "BUY" if change_ratio > 0 else "SELL"
                 positives = ["급등 감지"] if change_ratio > 0 else ["급락 감지"]
+                insight = ""
+                if support_level and price > support_level:
+                    insight = f" | 📈 지지선 {support_level:,.0f}원 상향 이탈"
+                elif resistance_level and price < resistance_level:
+                    insight = f" | 📉 저항선 {resistance_level:,.0f}원 하향 이탈"
 
-                # 추가 분석용 데이터 구성
-                stock_info = {
+                detected.append({
                     "ticker": ticker,
                     "price": price,
                     "action": action,
-                    "score": min(1.0, abs(change_ratio) * 10),  # 변동률 기반 점수
+                    "score": min(1.0, abs(change_ratio) * 10),
                     "confidence": min(0.9, 0.5 + abs(change_ratio) * 5),
-                    "positives": positives + [f"변동률: {change_ratio:+.2%}"],
+                    "positives": positives + [f"변동률: {change_ratio:+.2%}{insight}"],
                     "negatives": ["시장 변동성 주의"],
                     "timestamp": current_time,
-                    "momentum": change_ratio,  # 분석기에서 활용
+                    "momentum": change_ratio,
                     "volume": data.get('volume', 0),
-                    "regime": "Sideways",  # 추후 MacroFilter 연동 가능
+                    "regime": "Sideways",
                     "flow": {},
-                    "name": f"종목_{ticker}"  # fallback (DeepAnalyzer가 name을 덮어씀)
-                }
-                detected.append(stock_info)
+                    "name": f"종목_{ticker}",
+                    "support_level": support_level,
+                    "resistance_level": resistance_level,
+                })
 
         self._last_scan_time = current_time
         return detected
 
-    # ============================================================
-    # 4. 🔥 [신규] 재연결 시 전체 종목 재구독 (자동복구 핵심)
-    # ============================================================
     async def resubscribe_all(self):
-        """
-        WebSocket이 재연결된 후, 기존에 구독했던 모든 종목을 다시 REG(구독) 요청합니다.
-        - scanner_main.py의 reconnect_and_resubscribe()에서 호출됩니다.
-        """
         if not self._subscribed_tickers:
             logger.warning("⚠️ 재구독할 종목 목록이 비어 있습니다.")
             return
 
-        logger.info(f"🔄 저장된 {len(self._subscribed_tickers)}개 종목 재구독 시작...")
-
-        # 히스토리/최신 데이터는 유지 (재구독 후 다시 채워짐)
+        logger.info(f"🔄 저장된 {len(self._subscribed_tickers)}개 종목 재구독 시작... (호가+체결)")
         for ticker in self._subscribed_tickers:
             try:
-                await self.kiwoom.register_realtime(ticker, self._handler)
-                logger.debug(f"📡 재구독 완료: {ticker}")
-                await asyncio.sleep(0.05)  # 서버 부하 방지
+                await self.kiwoom.register_realtime(ticker, self._handler, types=["0B", "0A"])
+                await asyncio.sleep(0.05)
             except Exception as e:
                 logger.error(f"❌ 재구독 실패 ({ticker}): {e}")
+        logger.info(f"✅ 전체 종목 재구독 완료")
 
-        logger.info(f"✅ 전체 {len(self._subscribed_tickers)}개 종목 재구독 완료")
-
-    # ============================================================
-    # 5. 상태 및 유틸리티
-    # ============================================================
     def get_latest_price(self, ticker: str) -> Optional[float]:
-        """특정 종목의 최신가 조회"""
         data = self._latest_data.get(ticker)
         return data.get('price') if data else None
 
+    def get_orderbook(self, ticker: str) -> Optional[Dict]:
+        data = self._latest_data.get(ticker)
+        return data.get('orderbook') if data else None
+
     def get_subscribed_count(self) -> int:
-        """현재 구독 중인 종목 수"""
         return len(self._subscribed_tickers)
 
     def is_running(self) -> bool:
         return self._is_running
 
     async def stop(self):
-        """모니터 중지 (구독 해제)"""
         self._is_running = False
         for ticker in self._subscribed_tickers:
             await self.kiwoom.unregister_realtime(ticker)
         self._subscribed_tickers.clear()
         self._latest_data.clear()
         self._history.clear()
+        self._orderbook_history.clear()
         logger.info("🛑 RealtimeMonitor 중지 완료")

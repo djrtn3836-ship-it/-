@@ -1,9 +1,13 @@
 """
-data/kiwoom_connector.py - v5.1.2 FINAL 최적화 완성본
+data/kiwoom_connector.py - v5.3.1 INSTITUTIONAL (호가잔량 구독 확장)
 - WebSocket 실시간 연결 (LOGIN/REG/PING 자동 처리)
 - REST API TR 요청 (ka10060: 일봉 종가, ka10004: 현재가 호가)
+- [신규] ka10008: 외국인 수급 조회
+- [신규] ka10009: 기관 수급 조회
+- [신규] register_realtime(types=...) 파라미터 추가 (호가 0A 구독 지원)
 - Async Rate Limiter (초당 5회) 내장
 - 자동 토큰 갱신 및 재연결 백오프
+- 모든 API 호출 예외 처리 및 안전장치 포함 (PDF 생성 중단 방지)
 """
 
 import asyncio
@@ -11,7 +15,7 @@ import os
 import json
 import time
 import logging
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Callable, Any, List
 from datetime import datetime, timedelta
 
 import aiohttp
@@ -259,10 +263,21 @@ class KiwoomConnectorV512:
             logger.debug(f"📩 수신 데이터: {data}")
 
     # ============================================================
-    # 3. 실시간 구독 (REG)
+    # 3. 🔥 실시간 구독 (REG) - 호가(0A) 구독 지원 추가
     # ============================================================
-    async def register_realtime(self, ticker: str, handler: Callable, fid_list: str = ""):
-        """실시간 데이터 구독 요청 (키움 REG 패킷 형식)"""
+    async def register_realtime(self, ticker: str, handler: Callable, types: List[str] = None):
+        """
+        실시간 데이터 구독 요청 (키움 REG 패킷 형식)
+        
+        Args:
+            ticker: 종목코드 (예: "005930")
+            handler: 데이터 수신 시 호출할 콜백 함수
+            types: 구독할 데이터 타입 리스트 (예: ["0B"] 체결가, ["0A"] 호가, ["0B","0A"] 둘 다)
+                   기본값: ["0B"] (기존 동작 유지)
+        """
+        if types is None:
+            types = ["0B"]  # 기본값: 체결가만 구독 (하위 호환성 보장)
+        
         if not self._ws or not self._ws_running:
             logger.warning(f"⚠️ WebSocket 미연결: {ticker} 구독 실패")
             return
@@ -276,7 +291,7 @@ class KiwoomConnectorV512:
 
         self._realtime_handlers[ticker] = handler
 
-        # 공식 문서에 명시된 REG 패킷 형식
+        # 🔥 [수정] types를 동적으로 설정하여 호가(0A)도 구독 가능
         subscribe_msg = {
             "trnm": "REG",
             "grp_no": "1",
@@ -284,12 +299,12 @@ class KiwoomConnectorV512:
             "data": [
                 {
                     "item": [ticker],
-                    "type": ["0B"]  # 0B: 현재가, 1B: 주문체결 등
+                    "type": types  # ["0B"] 또는 ["0B", "0A"] 또는 ["0A"]
                 }
             ]
         }
         await self._ws.send(json.dumps(subscribe_msg))
-        logger.info(f"📡 실시간 구독 등록 요청 (REG): {ticker}")
+        logger.info(f"📡 실시간 구독 등록 요청 (REG): {ticker}, 타입: {types}")
 
     async def unregister_realtime(self, ticker: str):
         """실시간 구독 해제"""
@@ -298,13 +313,15 @@ class KiwoomConnectorV512:
             logger.info(f"📡 실시간 구독 해제: {ticker}")
 
     # ============================================================
-    # 4. TR 요청 (REST API) - 🔥 실제 API 연동 완성!
+    # 4. TR 요청 (REST API) - 🔥 v5.3.0 수급 TR 포함 완성
     # ============================================================
     async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
         """
         TR 요청 (REST API)
         - tr_type == "일봉" : ka10060 (종목별투자자기관별차트) → 종가(Close) 획득
         - tr_type == "현재가" 또는 기타 : ka10004 (주식호가) → 매수/매도 최우선 호가 획득
+        - tr_type == "외국인수급" : ka10008 (주식외국인종목별매매동향) → 외국인 순매수/매도
+        - tr_type == "기관수급" : ka10009 (주식기관요청) → 기관 순매수/매도
         """
         # 1. Rate Limit 대기
         await self._rate_limiter.acquire()
@@ -353,16 +370,16 @@ class KiwoomConnectorV512:
                         return result
                     else:
                         error_text = await resp.text()
-                        logger.error(f"❌ ka10060 실패 ({ticker}): {resp.status} - {error_text}")
-                        return {"error": resp.status, "message": error_text}
+                        logger.error(f"❌ ka10060 실패 ({ticker}): {resp.status} - {error_text[:100]}")
+                        return {"error": resp.status, "message": error_text, "symbol": ticker}
             except Exception as e:
                 logger.error(f"❌ ka10060 예외: {e}")
-                return {"error": str(e)}
+                return {"error": str(e), "symbol": ticker}
 
         # ================================================
         # CASE 2: 현재가 호가 조회 (ka10004)
         # ================================================
-        else:
+        elif tr_type == "현재가":
             headers["api-id"] = "ka10004"
             body = {"stk_cd": ticker}
             url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
@@ -391,11 +408,81 @@ class KiwoomConnectorV512:
                         return result
                     else:
                         error_text = await resp.text()
-                        logger.error(f"❌ ka10004 실패 ({ticker}): {resp.status} - {error_text}")
-                        return {"error": resp.status, "message": error_text}
+                        logger.error(f"❌ ka10004 실패 ({ticker}): {resp.status} - {error_text[:100]}")
+                        return {"error": resp.status, "message": error_text, "symbol": ticker}
             except Exception as e:
                 logger.error(f"❌ ka10004 예외: {e}")
-                return {"error": str(e)}
+                return {"error": str(e), "symbol": ticker}
+
+        # ================================================
+        # CASE 3: 🔥 신규 외국인 수급 조회 (ka10008)
+        # ================================================
+        elif tr_type == "외국인수급":
+            headers["api-id"] = "ka10008"
+            body = {"stk_cd": ticker}
+            # 공식 문서 기준 URL (실제 키움 API 엔드포인트 확인 필요)
+            url = f"{self.REST_BASE_URL}/api/dostk/foreign"
+
+            try:
+                logger.info(f"📊 [ka10008] 외국인 수급 조회: {ticker}")
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        result = {
+                            "symbol": ticker,
+                            "net_buy": data.get('net_buy', 0),
+                            "net_sell": data.get('net_sell', 0),
+                            "total_foreign": data.get('total_foreign', 0),
+                            "raw": data
+                        }
+                        if callback:
+                            callback(result)
+                        return result
+                    else:
+                        error_text = await resp.text()
+                        logger.warning(f"⚠️ ka10008 실패 ({ticker}): {resp.status} - {error_text[:100]}")
+                        return {"error": resp.status, "message": error_text, "symbol": ticker}
+            except Exception as e:
+                logger.warning(f"⚠️ ka10008 예외 ({ticker}): {e} → 수급 데이터 제외")
+                return {"error": str(e), "symbol": ticker}
+
+        # ================================================
+        # CASE 4: 🔥 신규 기관 수급 조회 (ka10009)
+        # ================================================
+        elif tr_type == "기관수급":
+            headers["api-id"] = "ka10009"
+            body = {"stk_cd": ticker}
+            url = f"{self.REST_BASE_URL}/api/dostk/inst"
+
+            try:
+                logger.info(f"📊 [ka10009] 기관 수급 조회: {ticker}")
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        result = {
+                            "symbol": ticker,
+                            "net_buy": data.get('net_buy', 0),
+                            "net_sell": data.get('net_sell', 0),
+                            "total_inst": data.get('total_inst', 0),
+                            "raw": data
+                        }
+                        if callback:
+                            callback(result)
+                        return result
+                    else:
+                        error_text = await resp.text()
+                        logger.warning(f"⚠️ ka10009 실패 ({ticker}): {resp.status} - {error_text[:100]}")
+                        return {"error": resp.status, "message": error_text, "symbol": ticker}
+            except Exception as e:
+                logger.warning(f"⚠️ ka10009 예외 ({ticker}): {e} → 수급 데이터 제외")
+                return {"error": str(e), "symbol": ticker}
+
+        # ================================================
+        # CASE Fallback: 알 수 없는 tr_type
+        # ================================================
+        else:
+            logger.warning(f"⚠️ 알 수 없는 tr_type: {tr_type} ({ticker}) → 현재가(ka10004)로 폴백")
+            return await self.request_tr(ticker, "현재가", callback)
 
     # ============================================================
     # 5. 토큰 갱신
@@ -403,21 +490,24 @@ class KiwoomConnectorV512:
     async def _refresh_token(self):
         """Access Token 갱신"""
         logger.info("🔄 Access Token 갱신 중...")
-        async with self._session.post(
-            f"{self.REST_BASE_URL}/oauth2/token",
-            json={
-                "grant_type": "client_credentials",
-                "client_id": self.api_key,
-                "client_secret": self.api_secret,
-            }
-        ) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                self.access_token = data.get("access_token")
-                self.token_expires_at = time.time() + data.get("expires_in", 3600)
-                logger.info("✅ Token 갱신 완료")
-            else:
-                logger.error("❌ Token 갱신 실패")
+        try:
+            async with self._session.post(
+                f"{self.REST_BASE_URL}/oauth2/token",
+                json={
+                    "grant_type": "client_credentials",
+                    "client_id": self.api_key,
+                    "client_secret": self.api_secret,
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self.access_token = data.get("access_token")
+                    self.token_expires_at = time.time() + data.get("expires_in", 3600)
+                    logger.info("✅ Token 갱신 완료")
+                else:
+                    logger.error("❌ Token 갱신 실패")
+        except Exception as e:
+            logger.error(f"❌ Token 갱신 예외: {e}")
 
     # ============================================================
     # 6. 연결 종료

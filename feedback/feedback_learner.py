@@ -1,12 +1,19 @@
-"""feedback/feedback_learner.py - 성과 귀속 분석 및 모델 최적화 (완전 한글화)"""
+"""
+feedback/feedback_learner.py - 성과 귀속 분석 및 모델 최적화 (v5.3.1)
+- 실제 수익률 계산 (ka10060 종가 기반)
+- close_price=0인 레코드 스킵 (데이터 부족 방지)
+- EMA 가중치 업데이트 및 Sharpe/Profit Factor 리포트
+"""
+
 import math
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, List
 from data.db_manager import DatabaseManager
 from report.telegram_sender import TelegramSender
 from core.logger import setup_logger
 
 logger = setup_logger("feedback")
+
 
 class FeedbackLearner:
     def __init__(self, kiwoom_connector=None, db_manager: DatabaseManager = None):
@@ -15,7 +22,7 @@ class FeedbackLearner:
         self.telegram = TelegramSender()
 
     async def run(self):
-        logger.info("🧠 기관용 피드백 학습 및 성과 귀속(Attribution) 파이프라인 가동...")
+        logger.info("🧠 기관용 피드백 학습 및 성과 귀속 파이프라인 가동...")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         decisions = await self.db.get_decisions_by_date(yesterday)
 
@@ -25,15 +32,23 @@ class FeedbackLearner:
 
         logger.info(f"📊 {len(decisions)}개 타겟에 대한 성과 분석 중...")
         outcomes = []
+        skipped_count = 0
+
         for dec in decisions:
             outcome = await self._fetch_real_outcome(dec)
             if outcome:
+                # 🔥 [개선] close_price가 0이면 스킵 (데이터 부족)
+                if outcome.get('price_after_1d', 0) == 0:
+                    skipped_count += 1
+                    continue
                 await self.db.save_outcome(outcome)
                 outcomes.append(outcome)
 
         if not outcomes:
-            logger.warning("⚠️ 수집된 결과 데이터가 없어 가중치 조정을 스킵합니다.")
+            logger.warning(f"⚠️ 유효한 결과가 없어 가중치 조정 스킵 (스킵: {skipped_count}개)")
             return
+
+        logger.info(f"📊 유효 결과 {len(outcomes)}개 / 스킵 {skipped_count}개")
 
         prev_weights = await self.db.get_weights()
         total = len(outcomes)
@@ -60,16 +75,22 @@ class FeedbackLearner:
     async def _fetch_real_outcome(self, decision: dict) -> Optional[dict]:
         ticker = decision['ticker']
         action = decision['action']
-        price_at = decision['price_at_decision']
+        price_at = decision.get('price_at_decision', decision.get('price', 0))
+        if price_at <= 0:
+            return None
 
         try:
             if self.connector:
                 resp = await self.connector.request_tr(ticker, "일봉")
-                price_after = float(resp.get('close', price_at))
+                price_after = float(resp.get('close', 0))
             else:
                 price_after = price_at
         except Exception as e:
             logger.error(f"❌ 가격 데이터 조회 실패 ({ticker}): {e}")
+            return None
+
+        # 🔥 [개선] 가격이 0이면 유효하지 않은 데이터로 간주
+        if price_after <= 0:
             return None
 
         return_1d = (price_after - price_at) / price_at if price_at > 0 else 0.0
@@ -127,13 +148,13 @@ class FeedbackLearner:
         msg = (
             f"<b>🧠 [퀀트 데스크] 모델 최적화 및 성과 보고서 ({date_str})</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>📈 1. 포트폴리오 성과 지표 (Portfolio Performance)</b>\n"
+            f"<b>📈 1. 포트폴리오 성과 지표</b>\n"
             f"• 총 분석 샘플: <b>{total}개 신호</b> | 예측 적중률: <b>{accuracy:.1%}</b> ({correct}/{total})\n"
             f"• 일간 평균 수익률: <code>{mean_ret:+.2f}%</code>\n"
             f"• 손익비 (Profit Factor): <code>{profit_factor:.2f}</code> | 연율화 샤프 지수: <code>{sharpe:.2f}</code>\n\n"
-            f"<b>⚙️ 2. 팩터 가중치 재조정 (Factor Weight Drift)</b>\n"
+            f"<b>⚙️ 2. 팩터 가중치 재조정 (Drift)</b>\n"
             + "\n".join(drift_lines) + "\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>실행 엔진: EMA 적응형 모델 최적화 엔진</i>"
+            f"<i>실행 엔진: EMA 적응형 모델 최적화</i>"
         )
         await self.telegram.send_raw(msg)
