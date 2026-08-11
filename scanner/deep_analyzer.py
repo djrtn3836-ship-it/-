@@ -1,7 +1,7 @@
 """
-scanner/deep_analyzer.py - v5.4.2 (ATR 자동 계산 + 실시간 업데이트)
-- 신호 발생 시 DB에서 14일 OHLCV 조회 → ATR 계산
-- ATR을 stock 딕셔너리에 추가하여 Telegram 전달
+scanner/deep_analyzer.py - v5.4.5 (load_weights 메서드 추가)
+- ATR 자동 계산 + Imbalance 점수 반영
+- load_weights: DB에서 가중치 로드 (scanner_main 호환)
 """
 
 import math
@@ -18,6 +18,7 @@ from decision.hybrid_decider import HybridDecider
 
 logger = setup_logger("analyzer")
 
+
 class DeepAnalyzer:
     def __init__(self, db_manager: DatabaseManager = None):
         self.db = db_manager
@@ -27,24 +28,30 @@ class DeepAnalyzer:
         self.korean = KoreanSpecialFilter()
         self.weighter = DynamicWeighter()
         self.decider = HybridDecider()
+        # 🔥 기본 가중치 (DB 로드 전까지 사용)
+        self.weights = {'momentum': 1.0, 'volume': 1.0, 'volatility': 1.0, 'macro': 1.0, 'sector': 1.0}
 
     # ============================================================
-    # 🔥 ATR 계산 함수 (14일 기본값)
+    # 🔥 [신규] load_weights 메서드 (scanner_main 호환)
+    # ============================================================
+    async def load_weights(self):
+        """DB에서 최신 가중치를 로드하여 메모리 캐시 갱신"""
+        if self.db:
+            self.weights = await self.db.get_weights()
+            logger.info(f"📊 최신 가중치 로드 완료: {self.weights}")
+        else:
+            logger.warning("⚠️ DB 매니저 없음 → 기본 가중치 사용")
+
+    # ============================================================
+    # ATR 계산 함수 (14일 기본값)
     # ============================================================
     async def calculate_atr(self, ticker: str, period: int = 14) -> float:
-        """
-        DB에서 OHLCV 데이터를 조회하여 ATR 계산
-        - period: 기본 14일
-        - 데이터 부족 시 0 반환 (Telegram에서 안내 표시)
-        """
         if not self.db:
-            logger.warning("⚠️ DB 매니저 없음, ATR 계산 불가")
             return 0.0
 
         try:
             ohlcv_list = await self.db.get_ohlcv(ticker, period)
             if len(ohlcv_list) < 2:
-                logger.debug(f"ℹ️ {ticker} OHLCV 데이터 부족 (필요: {period}일, 현재: {len(ohlcv_list)}일)")
                 return 0.0
 
             tr_values = []
@@ -52,8 +59,6 @@ class DeepAnalyzer:
                 high = ohlcv_list[i]['high']
                 low = ohlcv_list[i]['low']
                 prev_close = ohlcv_list[i-1]['close']
-                
-                # True Range = max(고가-저가, |고가-전일종가|, |저가-전일종가|)
                 tr1 = high - low
                 tr2 = abs(high - prev_close)
                 tr3 = abs(low - prev_close)
@@ -63,7 +68,6 @@ class DeepAnalyzer:
             if len(tr_values) == 0:
                 return 0.0
 
-            # ATR = TR의 단순 이동평균
             atr = sum(tr_values) / len(tr_values)
             return round(atr, 2)
 
@@ -72,7 +76,7 @@ class DeepAnalyzer:
             return 0.0
 
     # ============================================================
-    # 🔥 메인 분석 함수 (ATR 포함)
+    # 메인 분석 함수 (ATR 포함)
     # ============================================================
     async def analyze(self, stock: Dict) -> Dict:
         try:
@@ -84,7 +88,7 @@ class DeepAnalyzer:
             stock_score = self.stock.check(stock)
             korean_score = self.korean.check(stock)
 
-            # 2. 🔥 ATR 계산 (DB에서 14일 OHLCV 조회)
+            # 2. ATR 계산 (DB에서 14일 OHLCV 조회)
             atr = await self.calculate_atr(ticker, 14) if self.db else 0.0
 
             # 3. Imbalance 처리
@@ -100,7 +104,7 @@ class DeepAnalyzer:
             else:
                 imbalance_factor = 0.5
 
-            # 4. 동적 가중치
+            # 4. 동적 가중치 (메모리 캐시 사용)
             weights = self.weighter.calculate({
                 "regime": stock.get("regime", "Sideways"),
                 "flow": stock.get("flow", {})
@@ -133,7 +137,6 @@ class DeepAnalyzer:
             if pressure_text and pressure_text not in positives:
                 positives.append(pressure_text)
             
-            # ATR 정보 추가 (0이면 "수집 중")
             if atr > 0:
                 positives.append(f"📊 ATR(14일): {atr:,.0f}원")
             else:
@@ -150,7 +153,7 @@ class DeepAnalyzer:
                 "negatives": decision.get("risks", decision.get("negatives", ["시장 변동성 주의"])),
                 "counterfactuals": decision.get("counterfactuals", []),
                 "imbalance": imbalance,
-                "atr": atr,  # 🔥 ATR 전달 (Telegram에서 사용)
+                "atr": atr,
                 "entry_price": stock.get("entry_price", stock.get("price", 0.0)),
                 "details": {
                     "macro": macro_score["score"],
