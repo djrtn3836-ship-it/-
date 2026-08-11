@@ -3,6 +3,7 @@ core/exceptions.py - v5.6.0 FINAL (커스텀 예외 정의)
 - 도메인별 세분화된 예외 클래스 제공
 - 디버깅 및 오류 추적 용이
 """
+from typing import Optional  # 🔥 이 줄이 누락되었습니다.
 
 
 class KiwoomError(Exception):
