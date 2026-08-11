@@ -1,12 +1,10 @@
-📋 CONTEXT.md - 정밀 확장 버전 (전체 상태 저장소)
-아래 내용으로 CONTEXT.md 파일을 완전히 덮어쓰기 하세요.
-(기존 요약본에서 훨씬 더 자세하고 정밀한 버전입니다)
-
+📋 CONTEXT.md (최신 완전 상태 저장소 - v5.6.3 FINAL)
 markdown
-# 🔬 프로젝트 완전 상태 저장소 (Full Context) - v5.6.0 FINAL
+# 🔬 프로젝트 완전 상태 저장소 (Full Context) - v5.6.3 FINAL
 
 > 📌 **이 문서의 목적**: 새 대화를 시작할 때, 5분 만에 이 프로젝트의 완전한 상태를 복원하기 위한 **영속적 컨텍스트**입니다.
-> 📅 **최종 업데이트**: 2026-08-11 (화) 17:30 KST
+> 📅 **최종 업데이트**: 2026-08-11 (화) 20:37 KST
+> ✅ **현재 상태**: WebSocket LOGIN 성공, 시스템 정상 가동 중 (장 마감으로 데이터 미수신)
 
 ---
 
@@ -15,26 +13,27 @@ markdown
 | 항목 | 값 |
 |------|-----|
 | **프로젝트명** | stock_analyzer_v5.1.2 |
-| **버전** | v5.6.0 FINAL |
+| **버전** | v5.6.3 FINAL |
 | **GitHub** | https://github.com/djrtn3836-ship-it/- |
 | **Python 버전** | 3.12+ |
 | **운영 모드** | Phase 1 Shadow Mode (실시간 감시 + 보고서) |
 | **목적** | 키움 REST API 기반 실시간 퀀트 트레이딩 시스템 |
+| **실행 명령어** | `python scanner_main.py` |
 
 ---
 
-## 📂 2. 전체 파일 구조 (2026-08-11 기준)
+## 📂 2. 전체 파일 구조 (2026-08-11 최종)
 stock_analyzer_v5.1.2/
 ├── config/
-│ ├── config.yaml # 설정 파일 (선택)
+│ ├── config.yaml # 설정 파일 (YAML)
 │ ├── dart_config.yaml # DART API 설정
 │ ├── kiwoom_config.yaml # 키움 API 설정
 │ └── secure_config.py # 환경변수 암호화 로더
 │
 ├── core/
 │ ├── settings.py # ✅ 신규: 중앙 설정 관리 (dataclass)
-│ ├── exceptions.py # ✅ 신규: 커스텀 예외 클래스
-│ ├── config.py # ✅ 수정: 통합 설정 관리자 (YAML + .env)
+│ ├── exceptions.py # ✅ 수정: Optional import 추가
+│ ├── config.py # ✅ 수정: 통합 설정 관리자
 │ ├── scheduler.py # APScheduler 관리 (재시도 포함)
 │ ├── holiday_utils.py # 공휴일 판단 유틸리티 (pytimekr)
 │ ├── logger.py # 로깅 시스템 (RotatingFileHandler)
@@ -42,7 +41,7 @@ stock_analyzer_v5.1.2/
 │ └── constants.py # 상수 정의
 │
 ├── data/
-│ ├── kiwoom_connector.py # ✅ 수정: WebSocket 5대 개선 완료 (v5.5.0)
+│ ├── kiwoom_connector.py # ✅ 수정: v5.6.3 (Authorization 헤더 제거)
 │ ├── db_manager.py # Async SQLite 관리 (OHLCV 포함)
 │ ├── stock_universe.py # 종목 유니버스 (get_universe 함수 추가)
 │ ├── dart_connector.py # DART API 연동 (Risk Score + 재무제표)
@@ -53,7 +52,7 @@ stock_analyzer_v5.1.2/
 │ └── deep_analyzer.py # ATR + Imbalance + 13개 지표 분석
 │
 ├── report/
-│ ├── telegram_sender.py # Telegram 고급화 리포트 (ATR 손절/익절)
+│ ├── telegram_sender.py # Telegram 고급화 리포트
 │ ├── daily_report.py # 일일 리포트 생성기 (한글화)
 │ └── weekly_pdf.py # 주간 PDF 생성기 (DART 연동)
 │
@@ -72,7 +71,8 @@ stock_analyzer_v5.1.2/
 ├── regime/ # 레짐 감지
 │
 ├── scanner_main.py # ✅ 수정: 메인 진입점 (설정 통합 + 큐 Worker)
-├── test_websocket.py # ✅ 신규: WebSocket 연결 테스트 코드
+├── test_websocket.py # ✅ 수정: v5.6.3 (appkey/secretkey + token 필드)
+├── CONTEXT.md # ✅ 이 파일 (영속적 컨텍스트)
 ├── requirements.txt # 의존성 목록
 ├── .env # 🔒 환경변수 (API 키) - GitHub 미포함
 └── README.md # 프로젝트 문서
@@ -81,46 +81,50 @@ text
 
 ---
 
-## 🔧 3. WebSocket 5대 개선 상세 (kiwoom_connector.py v5.5.0)
+## 🔧 3. WebSocket 5대 개선 상세 (kiwoom_connector.py v5.6.3)
 
-| # | 개선 항목 | 설명 | 코드 위치 |
-|---|-----------|------|-----------|
-| ① | **재연결 시 REG 재전송** | 연결 복구 후 `_subscribed_items`를 순회하며 REG 재전송 | `_reconnect_websocket()` |
-| ② | **토큰 만료 감지** | `return_code: 100013` 수신 시 `_refresh_token()` 호출 | `_connect_websocket()` |
-| ③ | **다중 그룹 관리** | 100종목 초과 시 `grp_no` 자동 증가 | `register_realtime()` |
-| ④ | **PING Echo** | 수신한 `raw` 원문 그대로 반사 (`json.dumps` 금지) | `_ws_receiver()` |
-| ⑤ | **TR별 Rate Limiter** | `api-id`(ka10004, ka10008 등)별 독립 대기열 | `_rate_limiters` 딕셔너리 |
+| # | 개선 항목 | 설명 | 코드 위치 | 검증 상태 |
+|---|-----------|------|-----------|-----------|
+| ① | **재연결 시 REG 재전송** | 연결 복구 후 `_subscribed_items`를 순회하며 REG 재전송 | `_reconnect_websocket()` | ✅ `test_websocket.py` 성공 |
+| ② | **토큰 만료 감지** | `return_code: 100013` 수신 시 `_refresh_token()` 호출 | `_connect_websocket()` | ✅ 적용 완료 |
+| ③ | **다중 그룹 관리** | 100종목 초과 시 `grp_no` 자동 증가 | `register_realtime()` | ✅ 적용 완료 |
+| ④ | **PING Echo** | 수신한 `raw` 원문 그대로 반사 (`json.dumps` 금지) | `_ws_receiver()` | ✅ 적용 완료 |
+| ⑤ | **TR별 Rate Limiter** | `api-id`(ka10004, ka10008 등)별 독립 대기열 | `_rate_limiters` 딕셔너리 | ✅ 적용 완료 |
+| ⑥ | **Authorization 헤더 제거** | WebSocket 연결 시 헤더 없이 LOGIN 패킷만 사용 | `_connect_websocket()` | ✅ **LOGIN 성공** |
 
----
+### 3.1 테스트 코드 성공 로그 (2026-08-11 20:37)
 
-## ⚙️ 4. 설정 관리 구조
-
-### 4.1 설정 우선순위
-환경 변수 (.env) → 최우선
-
-config/config.yaml → 두 번째
-
-core/settings.py 기본값 → 마지막
-
+```text
+✅ Access Token 발급 성공
+📡 LOGIN 패킷 전송 완료 (서버 응답 대기 중)
+✅ WebSocket LOGIN 성공!
+📡 WebSocket 연결 및 인증 완료
+📡 REG 구독: 005930, 그룹: 1
+📡 REG 구독: 000660, 그룹: 1
+📡 REG 구독: 035420, 그룹: 1
+📡 REG 구독: 005380, 그룹: 1
+📡 REG 구독: 051910, 그룹: 1
+✅ RealtimeMonitor 시작 완료 (구독 종목: 5개)
+✅ Telegram 메시지 전송 성공 (시작 알림)
+⚙️ 4. 설정 관리 구조
+4.1 설정 우선순위
 text
-
-### 4.2 핵심 설정값 (config.yaml + .env)
-
-| 설정 키 | 기본값 | 설명 |
-|---------|--------|------|
-| `ws_url` | `wss://api.kiwoom.com:10000/api/dostk/websocket` | WebSocket URL |
-| `ws_ping_interval` | 20 | PING 간격 (초) |
-| `ws_login_timeout` | 10 | LOGIN 응답 대기 (초) |
-| `rate_limit_capacity` | 5 | 초당 최대 TR 요청 수 |
-| `price_change_ratio` | 0.02 | 신호 감지 변동률 (2%) |
-| `cooldown_seconds` | 300 | 동일 방향 신호 쿨링 (5분) |
-| `emergency_threshold` | 0.05 | 긴급 신호 기준 (5%) |
-| `queue_maxsize` | 10000 | 메시지 큐 최대 크기 |
-| `max_subscriptions` | 50 | 최대 구독 종목 수 |
-
-### 4.3 환경변수 (.env)
-
-```env
+1. 환경 변수 (.env) → 최우선
+2. config/config.yaml → 두 번째
+3. core/settings.py 기본값 → 마지막
+4.2 핵심 설정값 (config.yaml + .env)
+설정 키	현재 값	설명
+ws_url	wss://api.kiwoom.com:10000/api/dostk/websocket	WebSocket URL (실전)
+ws_ping_interval	20	PING 간격 (초)
+ws_login_timeout	10	LOGIN 응답 대기 (초)
+rate_limit_capacity	5	초당 최대 TR 요청 수
+price_change_ratio	0.02	신호 감지 변동률 (2%)
+cooldown_seconds	300	동일 방향 신호 쿨링 (5분)
+emergency_threshold	0.05	긴급 신호 기준 (5%)
+queue_maxsize	10000	메시지 큐 최대 크기
+max_subscriptions	50	최대 구독 종목 수
+4.3 환경변수 (.env) - GitHub 미포함
+env
 KIWOOM_APP_KEY=발급받은_앱키
 KIWOOM_APP_SECRET=발급받은_시크릿키
 DART_API_KEY=발급받은_DART_키
@@ -200,67 +204,60 @@ id	INTEGER PK	자동 증가
 factor_name	TEXT UNIQUE	momentum/volume/volatility/macro/sector
 weight	REAL	현재 가중치 (0.1~3.0)
 updated_at	DATETIME	업데이트 시간
-⚠️ 7. 현재 미해결 이슈 (2026-08-11 기준)
-이슈 #1: WebSocket LOGIN 실패
-항목	내용
-오류 메시지	❌ LOGIN 실패: 접속 허용 요청 처리에 실패했습니다. 접속을 종료합니다
-발생 위치	kiwoom_connector.py → _connect_websocket() → LOGIN 패킷 전송 후
-추정 원인	① IP 화이트리스트 미등록
-② WebSocket API 사용신청 미완료
-③ 실전계정 vs 모의계정 URL 불일치
-영향	실시간 데이터 수신 불가 (REST API는 정상)
-해결 방안	① 키움 개발자센터 IP 재등록
-② WebSocket API 사용신청 확인
-③ test_websocket.py로 연결 테스트
-이슈 #2: 자동 실행 확인 필요
-항목	내용
-상태	Windows 작업 스케줄러 등록 완료 (08:50 실행)
-확인 필요	내일(2026-08-12) 아침 08:50에 정상 실행되는지 확인
-대비	로그 파일(logs/scanner.log) 및 Telegram 시작 알림 확인
-🧪 8. 테스트 코드 (test_websocket.py)
-python
-# test_websocket.py - WebSocket 연결 테스트 (실전투자용)
-# 실행: python test_websocket.py
-# 성공 기준: ✅ LOGIN 성공! 로그 확인
-🎯 9. 다음 목표 (우선순위 순)
+⚠️ 7. 현재 상태 (2026-08-11 20:37 기준)
+항목	상태	상세
+WebSocket LOGIN	✅ 성공	return_code: 0 확인
+REG 구독	✅ 성공	5개 종목 등록 완료
+실시간 데이터 수신	⏳ 대기 중	장 마감으로 데이터 없음 (정상)
+Telegram 시작 알림	✅ 전송 완료	🟢 시스템 상태 보고 도착 확인
+헬스체크 서버	✅ 실행 중	http://0.0.0.0:8080/health
+전략 Worker	✅ 실행 중	큐 소비 대기
+스케줄러	✅ 등록 완료	4개 작업 등록됨
+PID 파일	✅ 생성됨	scanner.pid (중복 실행 방지)
+7.1 현재 미해결 이슈
+이슈	상태	설명
+장 마감 데이터 미수신	⏳ 대기	정상 (내일 09:00 이후 수신 예정)
+자동 실행 검증	⏳ 미확인	내일(2026-08-12) 08:50 확인 예정
+🎯 8. 다음 목표 (우선순위 순)
 순위	목표	설명
-①	WebSocket LOGIN 성공	IP 재등록 또는 사용신청 완료 후 test_websocket.py 재실행
-②	실시간 데이터 수신 검증	LOGIN 성공 후 장중(09:00~15:30)에 0B(체결가) 데이터 수신 확인
-③	Telegram 시작 알림 확인	scanner_main.py 실행 시 🟢 시스템 상태 보고 메시지 도착 확인
-④	자동 실행 검증	내일(2026-08-12) 08:50 자동 실행 확인
-📌 10. 주요 파일 해시 (변경 감지용)
+①	내일 장중 실시간 데이터 수신 확인	2026-08-12 09:00~15:30 사이 python scanner_main.py 실행
+②	자동 실행 검증	Windows 작업 스케줄러(08:50) 정상 작동 확인
+③	신호 감지 및 Telegram 리포트 수신	변동률 2% 이상 시 BUY/SELL 신호 수신 확인
+④	주간 PDF 생성 확인	다음 월요일(2026-08-17) 06:00 PDF 자동 생성 확인
+📌 9. 주요 파일 해시 (변경 감지용)
 파일	최종 수정일	크기 (추정)
 core/settings.py	2026-08-11	~3KB
-core/exceptions.py	2026-08-11	~2KB
+core/exceptions.py	2026-08-11 (20:36 수정)	~2KB
 core/config.py	2026-08-11	~5KB
-data/kiwoom_connector.py	2026-08-11	~25KB
+data/kiwoom_connector.py	2026-08-11 (20:37 수정)	~25KB
 scanner/realtime_monitor.py	2026-08-11	~15KB
 scanner_main.py	2026-08-11	~12KB
-test_websocket.py	2026-08-11	~6KB
-🔑 11. 복원 체크리스트 (새 대화 시작 시)
+test_websocket.py	2026-08-11 (20:34 수정)	~6KB
+CONTEXT.md	2026-08-11 (현재)	~8KB
+🔑 10. 복원 체크리스트 (새 대화 시작 시)
 □ CONTEXT.md 파일 읽기 완료
-□ GitHub 저장소 상태 확인
-□ 현재 이슈(WebSocket LOGIN 실패) 인지
-□ 다음 목표(IP 재등록 → LOGIN 성공) 이해
+□ GitHub 저장소 상태 확인 (git pull 최신화)
+□ 현재 시스템 상태(LOGIN 성공) 인지
+□ 다음 목표(장중 데이터 수신) 이해
 □ 주요 파일 구조 파악 완료
-📝 12. 변경 이력
+📝 11. 변경 이력
 날짜	버전	변경 내용
-2026-08-11	v5.6.0 FINAL	WebSocket 5대 개선 + 수신/전략 분리 + 코드 품질 개선 + CONTEXT.md 생성
+2026-08-11	v5.6.0 FINAL	WebSocket 5대 개선 + 수신/전략 분리 + 코드 품질 개선
+2026-08-11	v5.6.1	test_websocket.py .env 절대 경로 지정
+2026-08-11	v5.6.2	토큰 발급 필드명 수정 (appkey/secretkey)
+2026-08-11	v5.6.3	Authorization 헤더 제거 → LOGIN 성공!
+2026-08-11	v5.6.3	exceptions.py Optional import 오류 수정
+🧪 12. 실행 방법
+12.1 일반 실행 (장중)
+bash
+cd C:\Users\hdw38\Desktop\stock_analyzer_v5.1.2
+python scanner_main.py
+12.2 WebSocket 연결 테스트
+bash
+python test_websocket.py
+12.3 헬스체크 확인
+bash
+curl http://localhost:8080/health
 이 문서는 프로젝트의 완전한 상태를 저장합니다. 새 대화를 시작할 때 이 파일을 읽으면 5분 만에 모든 컨텍스트가 복원됩니다.
 
 text
-
----
-
-## ✅ 이 파일을 사용하면 얻는 이점
-
-| 상황 | 요약본 사용 시 | 정밀본 사용 시 |
-|------|---------------|----------------|
-| **새 대화 시작** | "대충 이런 프로젝트였어요" | "코드 구조, 설정값, 오류, 다음 목표까지 완벽히 복원" |
-| **오류 해결** | 원인 추측 필요 | 정확한 오류 메시지와 원인 파악 가능 |
-| **코드 수정** | 어디를 수정해야 할지 모름 | 어떤 파일을 수정해야 할지 정확히 앎 |
-| **시간 낭비** | 30분~1시간 소요 | 5분 만에 복원 완료 |
-
----
-
-지금 이 파일로 `CONTEXT.md`를 **완전히 덮어쓰기** 하고 Git Push 하세요! 😊
