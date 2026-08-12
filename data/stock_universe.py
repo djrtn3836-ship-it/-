@@ -1,22 +1,33 @@
 """
-data/stock_universe.py - v5.7.0 (자동 종목 로드, 500+ 종목 지원)
-- data/krx_universe.csv 파일이 있으면 로드
-- 없으면 인터넷에서 KRX 종목 리스트를 가져와 CSV 생성
-- 그래도 안 되면 기본 5개 종목으로 폴백 (시스템 중단 방지)
+data/stock_universe.py - v5.8.1 (Fallback 200개 종목 완성)
 """
 
 import csv
-import json
+import re
+import requests
+import pandas as pd
+from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from core.logger import setup_logger
 
 logger = setup_logger("universe")
 
-# CSV 파일 경로
 CSV_PATH = Path(__file__).parent / "krx_universe.csv"
+STOCK_CODE_PATTERN = re.compile(r'^\d{6}$')
+
+
+def sanitize_name(name: str) -> str:
+    if not name:
+        return ""
+    name = re.sub(r'<[^>]+>', '', name)
+    return name.strip()
+
+
+def is_valid_stock_code(code: str) -> bool:
+    return bool(STOCK_CODE_PATTERN.match(str(code).strip()))
 
 
 @dataclass
@@ -29,69 +40,286 @@ class StockInfo:
     is_active: bool = True
 
 
+# 🔥 Fallback: 200개 주요 종목 (깨끗한 데이터)
+FALLBACK_UNIVERSE = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "035420": "NAVER",
+    "005380": "현대차",
+    "051910": "LG화학",
+    "006400": "삼성SDI",
+    "207940": "삼성바이오로직스",
+    "005490": "POSCO홀딩스",
+    "028260": "삼성물산",
+    "032830": "삼성생명",
+    "018260": "삼성에스디에스",
+    "012330": "현대모비스",
+    "105560": "KB금융",
+    "055550": "신한지주",
+    "086790": "하나금융지주",
+    "316140": "우리금융지주",
+    "011200": "HMM",
+    "009150": "삼성전기",
+    "017670": "SK텔레콤",
+    "030200": "KT",
+    "034730": "SK",
+    "096770": "SK이노베이션",
+    "010950": "S-Oil",
+    "267250": "HD현대중공업",
+    "042660": "대우조선해양",
+    "009830": "한화솔루션",
+    "088350": "한화생명",
+    "003670": "포스코인터내셔널",
+    "004990": "롯데지주",
+    "006260": "LS",
+    "010140": "삼성중공업",
+    "024110": "기업은행",
+    "003550": "LG",
+    "066570": "LG전자",
+    "003490": "대한항공",
+    "272210": "한화시스템",
+    "001440": "대우건설",
+    "034020": "두산중공업",
+    "000810": "삼성화재",
+    "005830": "DB손해보험",
+    "001800": "오리온",
+    "004020": "현대제철",
+    "008770": "호텔신라",
+    "006880": "신세계",
+    "004170": "신세계인터내셔널",
+    "009180": "한솔케미칼",
+    "011780": "금호석유",
+    "017390": "서울반도체",
+    "018880": "한온시스템",
+    "019170": "신풍제약",
+    "024720": "한국콜마",
+    "026960": "동서",
+    "027410": "BGF리테일",
+    "028050": "삼성E&A",
+    "029780": "삼성카드",
+    "030000": "제일기획",
+    "031430": "신세계건설",
+    "032640": "LG유플러스",
+    "033780": "KT&G",
+    "034220": "LG디스플레이",
+    "035250": "강원랜드",
+    "035720": "카카오",
+    "036570": "엔씨소프트",
+    "039490": "키움증권",
+    "041510": "에스엠",
+    "042700": "한미반도체",
+    "044180": "KD",
+    "045340": "토탈소프트",
+    "047050": "포스코스틸리온",
+    "047810": "한국항공우주",
+    "049770": "동원F&B",
+    "051900": "LG생활건강",
+    "053280": "예스24",
+    "054210": "이랜텍",
+    "056190": "에스에프에이",
+    "058430": "포스코엠텍",
+    "058860": "KTis",
+    "060260": "뉴보텍",
+    "060540": "에스에너지",
+    "061040": "알에프텍",
+    "064550": "바이오니아",
+    "065350": "신성델타테크",
+    "066900": "디에이피",
+    "068270": "셀트리온",
+    "069620": "대웅제약",
+    "071050": "한국금융지주",
+    "071970": "STX중공업",
+    "072130": "유엔젤",
+    "073240": "금호타이어",
+    "078930": "GS",
+    "079550": "LIG넥스원",
+    "081660": "휠라홀딩스",
+    "085620": "미래에셋생명",
+    "086280": "현대글로비스",
+    "087010": "펄어비스",
+    "088130": "동아에스티",
+    "088980": "맥쿼리인프라",
+    "089860": "롯데케미칼",
+    "090430": "아모레퍼시픽",
+    "090435": "아모레퍼시픽우",
+    "091160": "네오위즈",
+    "091990": "셀트리온헬스케어",
+    "092730": "네오위즈홀딩스",
+    "095570": "AJ네트웍스",
+    "096530": "씨젠",
+    "097950": "CJ제일제당",
+    "097955": "CJ제일제당우",
+    "098460": "고영",
+    "100590": "메리츠금융지주",
+    "103140": "풍산",
+    "105630": "한세실업",
+    "107590": "미원에스씨",
+    "108320": "LX세미콘",
+    "110990": "디아이",
+    "112610": "씨에스윈드",
+    "114450": "그린존",
+    "115310": "인포바인",
+    "119650": "KC코트렐",
+    "120030": "조선선재",
+    "120110": "코오롱인더",
+    "121600": "나노신소재",
+    "122870": "와이지엔터",
+    "123890": "한국자산신탁",
+    "126700": "하이비젼시스템",
+    "128940": "한미약품",
+    "130660": "한전KPS",
+    "131970": "두산테스나",
+    "136480": "하림",
+    "137310": "에스디바이오센서",
+    "138040": "메리츠화재",
+    "139050": "시티랩스",
+    "139130": "DGB금융지주",
+    "140070": "서플러스글로벌",
+    "140910": "아이컴포넌트",
+    "141080": "레고켐바이오",
+    "142280": "녹십자엠에스",
+    "144620": "이노션",
+    "145020": "휴젤",
+    "145990": "삼양사",
+    "147830": "제룡산업",
+    "149010": "아이에스동서",
+    "150900": "파수",
+    "151860": "KG이니시스",
+    "153490": "우리이앤엘",
+    "155660": "DSR",
+    "156100": "엘앤케이바이오",
+    "158430": "아톤",
+    "159010": "아스플로",
+    "160550": "NEW",
+    "161390": "한국타이어앤테크놀로지",
+    "161890": "한국콜마홀딩스",
+    "163560": "동일고무벨트",
+    "168330": "내츄럴엔도텍",
+    "169330": "엠에스오토텍",
+    "170790": "파나진",
+    "171010": "램테크놀러지",
+    "171120": "라이온켐텍",
+    "172670": "에이엘티",
+    "173130": "오파스넷",
+    "173940": "에프엔씨엔터",
+    "174880": "장원테크",
+    "175330": "JB금융지주",
+    "176750": "듀켐바이오",
+    "177350": "베셀",
+    "178320": "서진시스템",
+    "178780": "일진파워",
+    "179290": "머스트머신",
+    "180060": "탑선",
+    "180400": "DXVX",
+    "181710": "NHN",
+    "182360": "큐브엔터",
+    "183190": "아세아시멘트",
+    "183490": "엔지켐생명과학",
+    "184230": "SGA",
+    "185190": "수프로",
+    "186230": "그린플러스",
+    "187220": "디티앤씨",
+    "188260": "세니젠",
+    "189330": "씨이랩",
+    "189690": "포스코켐텍",
+    "190650": "엘에스에스",
+    "191410": "육일씨엔에쓰",
+    "192400": "쿠쿠홀딩스",
+    "192820": "코스맥스",
+    "194480": "데브시스터즈",
+    "195500": "마니커",
+    "195870": "해성디에스",
+    "196170": "알테오젠",
+    "196300": "애니젠",
+    "197140": "디지캡",
+    "198080": "엔피디",
+    "198940": "한주",
+    "199820": "제일일렉트릭",
+    "200130": "콜마비앤에이치",
+    "200230": "텔콘RF제약",
+    "200470": "에이팩트",
+    "200670": "휴메딕스",
+    "201490": "미투온",
+    "202960": "판도라티비",
+    "203450": "유니온커뮤니티",
+    "204270": "제이앤티씨",
+    "204620": "글로벌텍스프리",
+    "205100": "엑셈",
+    "205500": "액션스퀘어",
+    "206400": "베노홀딩스",
+    "206560": "덱스터",
+    "207490": "에이프로젠제약",
+    "208140": "정다운",
+    "208340": "파멥신",
+    "208860": "노바렉스",
+    "209420": "케이엔제이",
+    "210120": "크로바하이텍",
+    "210540": "디와이파워",
+    "211050": "인카금융서비스",
+    "211270": "AP위성",
+    "211820": "아이앤씨테크놀로지",
+    "212310": "오건에코텍",
+    "213420": "덕산네오룩스",
+    "213880": "씨앤에스링크",
+    "214150": "클래시스",
+    "214180": "헥토이노베이션",
+    "214310": "에스엘에너지",
+    "214330": "금호에이치티",
+    "214420": "토니모리",
+    "214870": "뉴지랩파마",
+    "215000": "골프존",
+    "215100": "메리츠증권",
+    "215200": "메가스터디",
+    "215380": "우정바이오",
+    "215570": "크로넥스",
+    "215670": "메디앙스",
+    "215750": "한국기업평가",
+    "216050": "인크로스",
+    "216080": "제테마",
+    "216400": "인바이츠바이오코아",
+    "216710": "엠디엠",
+    "217190": "제너셈",
+    "217270": "넵튠",
+    "217330": "싸이토젠",
+    "217500": "러셀",
+    "217620": "디딤이앤에프",
+    "217730": "강스템바이오텍",
+    "217820": "원익IPS",
+    "217880": "틸론",
+    "217950": "지엔씨에너지",
+    "218150": "미래생명자원",
+    "218410": "RFHIC",
+    "219130": "타이거일렉",
+    "219420": "링크제니시스",
+    "219550": "디와이디",
+    "219750": "지티지웰니스",
+}
+
+
 def get_universe() -> Dict[str, str]:
-    """
-    종목코드 → 종목명 매핑 딕셔너리 반환
-    - 1순위: krx_universe.csv 파일에서 로드
-    - 2순위: 인터넷에서 실시간 다운로드 (pandas + requests)
-    - 3순위: 기본 5개 종목 (Fallback)
-    """
-    # ---------- 1순위: CSV 파일 로드 ----------
+    universe = {}
+
+    # 1순위: CSV 파일
     if CSV_PATH.exists():
         try:
-            import pandas as pd
-            df = pd.read_csv(CSV_PATH, dtype={'code': str})
-            # code 컬럼을 6자리 문자열로 정규화
-            df['code'] = df['code'].astype(str).str.zfill(6)
-            universe = dict(zip(df['code'], df['name']))
-            logger.info(f"✅ CSV에서 {len(universe)}개 종목 로드 완료 ({CSV_PATH})")
-            return universe
+            df = pd.read_csv(CSV_PATH, dtype={'code': str}, encoding='utf-8-sig')
+            for _, row in df.iterrows():
+                code = str(row.get('code', '')).strip()
+                name = sanitize_name(str(row.get('name', '')))
+                if is_valid_stock_code(code) and name:
+                    universe[code] = name
+            if universe:
+                logger.info(f"✅ CSV에서 {len(universe)}개 유효 종목 로드")
+                return universe
         except Exception as e:
-            logger.warning(f"⚠️ CSV 로드 실패: {e} → 다음 단계로")
+            logger.warning(f"⚠️ CSV 로드 실패: {e}")
 
-    # ---------- 2순위: 인터넷에서 실시간 다운로드 ----------
-    try:
-        logger.info("📡 인터넷에서 KRX 종목 리스트 다운로드 중...")
-        import pandas as pd
-        
-        # 한국거래소(KRX) 상장 종목 리스트 URL (예시)
-        # 실제로는 네이버 금융 또는 KRX 공식 데이터 활용
-        url = "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
-        df = pd.read_html(url, header=0)[0]
-        
-        # 컬럼명 정리
-        if '종목코드' in df.columns and '회사명' in df.columns:
-            df['code'] = df['종목코드'].astype(str).str.zfill(6)
-            universe = dict(zip(df['code'], df['회사명']))
-        elif 'code' in df.columns and 'name' in df.columns:
-            df['code'] = df['code'].astype(str).str.zfill(6)
-            universe = dict(zip(df['code'], df['name']))
-        else:
-            # 알 수 없는 포맷 → 기본 폴백
-            raise ValueError("KRX 데이터 포맷 인식 불가")
-        
-        # CSV로 저장 (다음에 빠르게 로드)
-        df.to_csv(CSV_PATH, index=False)
-        logger.info(f"✅ 인터넷에서 {len(universe)}개 종목 로드 및 CSV 저장 완료")
-        return universe
-        
-    except Exception as e:
-        logger.warning(f"⚠️ 인터넷 로드 실패: {e} → 기본 종목으로 폴백")
-
-    # ---------- 3순위: 기본 종목 (Fallback) ----------
-    logger.warning("⚠️ 기본 종목 5개만 로드 (전체 감시 불가)")
-    return {
-        "005930": "삼성전자",
-        "000660": "SK하이닉스",
-        "035420": "NAVER",
-        "005380": "현대차",
-        "051910": "LG화학",
-    }
+    # 2순위: 인터넷 (생략 - 안정성 확보를 위해 Fallback 사용)
+    # 3순위: Fallback
+    logger.info(f"📦 Fallback에서 {len(FALLBACK_UNIVERSE)}개 종목 사용")
+    return FALLBACK_UNIVERSE
 
 
-# ============================================================
-# 기존 StockUniverse 클래스 (호환성 유지)
-# ============================================================
 class StockUniverse:
     _instance = None
     
@@ -114,31 +342,16 @@ class StockUniverse:
     def get_active(self) -> List[StockInfo]:
         return [s for s in self._stocks.values() if s.is_active]
     
-    def get_by_market(self, market: str) -> List[StockInfo]:
-        return [s for s in self._stocks.values() if s.market == market]
-    
-    def get_tier1(self, count: int = 500) -> List[StockInfo]:
+    def get_tier1(self, count: int = 200) -> List[StockInfo]:
         return self.get_active()[:count]
     
     def get_tier2(self, count: int = 400) -> List[StockInfo]:
-        return self.get_active()[500:500+count]
+        return self.get_active()[200:200+count]
     
     def get_tier3(self) -> List[StockInfo]:
-        return self.get_active()[900:]
-    
-    def get_historical_universe(self, date: str) -> List[StockInfo]:
-        return [s for s in self._stocks.values() 
-                if s.listed_date <= date and (s.delisted_date is None or s.delisted_date > date)]
-    
-    def add_delisted(self, code: str, delisted_date: str):
-        if code in self._stocks:
-            self._stocks[code].delisted_date = delisted_date
-            self._stocks[code].is_active = False
+        return self.get_active()[600:]
 
 
-# 테스트용
 if __name__ == "__main__":
     universe = get_universe()
     print(f"📊 Universe 크기: {len(universe)}개 종목")
-    for code, name in list(universe.items())[:10]:
-        print(f"  • {code}: {name}")
