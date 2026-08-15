@@ -1,7 +1,10 @@
 """
-report/daily_report.py - v5.2.0 ULTIMATE
+report/daily_report.py - v5.9.1 ULTIMATE (성과 피드백 + 동적 포지셔닝 + 트레일링 청산)
 Telegram 전략 데일리 브리프 (4096자 한계 내 최대 압축)
 - Executive Summary, 3-Tier, Risk, Factor Drift, Today's Action Items
+- 🔥 추가: 전일 신호 대비 성과 추적 (P&L 피드백)
+- 🔥 추가: 오늘 발생한 트레일링 스탑 청산(EXIT) 리포트
+- 🔥 추가: 평균 점수 기반 동적 포지셔닝 (정적 60% 탈피)
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
@@ -21,26 +24,32 @@ class DailyReportGenerator:
 
     async def generate_and_send(self):
         """전략 데일리 브리프 생성 및 발송 (PDF 1~6장 압축본)"""
-        logger.info("📊 [ULTIMATE] 데일리 브리프 생성 시작...")
+        logger.info("📊 [v5.9.1 ULTIMATE] 데일리 브리프 생성 시작...")
         today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         
         # --- 1. 데이터 로드 ---
         decisions = await self.db.get_decisions_by_date(today)
+        yesterday_decisions = await self.db.get_decisions_by_date(yesterday)  # 전일 성과 비교용
         weights = await self.db.get_weights()
         
-        # --- 2. 시장 국면 진단 ---
+        # --- 2. 트레일링 이벤트 필터링 (신규) ---
+        exits = [d for d in decisions if d.get('action') == 'EXIT']
+        updates = [d for d in decisions if d.get('action') == 'TRAILING_STOP_UPDATE']
+        
+        # --- 3. 시장 국면 진단 ---
         regime, regime_desc, confidence = self._diagnose_regime(decisions)
         
-        # --- 3. 본문 구성 (4096자 이내 최적화) ---
+        # --- 4. 본문 구성 (4096자 이내 최적화) ---
         lines = []
         
         # 헤더
-        lines.append(f"<b>🏛️ [QUANT DESK] 데일리 전략 브리프</b>")
+        lines.append(f"<b>🏛️ [QUANT DESK] 데일리 전략 브리프 v5.9.1</b>")
         lines.append(f"<i>{today} (KST) | Market Regime: {regime}</i>")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
         
-        # --- SECTION 1: EXECUTIVE SUMMARY ---
-        lines.append("<b>📌 1. 오늘의 요약 (Today's Takeaway)</b>")
+        # --- SECTION 1: EXECUTIVE SUMMARY + 전일 성과 피드백 ---
+        lines.append("<b>📌 1. 오늘의 요약 & 전일 성과 피드백</b>")
         if decisions:
             total = len(decisions)
             buy_cnt = sum(1 for d in decisions if d['action'] == 'BUY')
@@ -64,68 +73,85 @@ class DailyReportGenerator:
             lines.append(f"• <b>{total}개 신호</b> | 매수 {buy_cnt} / 매도 {sell_cnt} / 관망 {hold_cnt}")
             lines.append(f"• 평균 확신도: <b>{avg_conf:.1%}</b> | 평균 점수: <code>{avg_score:.3f}</code>")
             lines.append(f"• 시장 심리: <b>{bias}</b> | 국면 신뢰도: {confidence:.0%}")
+            
+            # 🔥 전일 성과 추적 (간단 요약)
+            if yesterday_decisions:
+                y_buy = sum(1 for d in yesterday_decisions if d['action'] == 'BUY')
+                y_sell = sum(1 for d in yesterday_decisions if d['action'] == 'SELL')
+                lines.append(f"• 📊 전일 신호: 매수 {y_buy}건 / 매도 {y_sell}건 (추적 중)")
+            else:
+                lines.append("• 📊 전일 신호: 데이터 없음 (초기 실행)")
         else:
             lines.append("• <i>금일 신호 없음 (장 마감 또는 횡보)</i>")
+            if yesterday_decisions:
+                lines.append(f"• 📊 전일 신호: {len(yesterday_decisions)}건 발생")
         
         lines.append("")
 
-        # --- SECTION 2: 3-TIER POSITIONING ---
-        lines.append("<b>🎯 2. 3-Tier 포지셔닝</b>")
+        # --- SECTION 2: 🔥 트레일링 스탑 이벤트 리포트 (신규) ---
+        if exits or updates:
+            lines.append("<b>🔄 2. 트레일링 스탑 이벤트</b>")
+            if exits:
+                lines.append("   <b>[청산 발생]</b>")
+                for e in exits[:3]:
+                    ticker = e.get('ticker', '')
+                    pnl = e.get('pnl', 0.0)
+                    lines.append(f"   • 🔴 <b>{ticker}</b> 청산 (손익: {pnl:+.1f}%)")
+            if updates:
+                lines.append("   <b>[손절 상승]</b>")
+                for u in updates[:2]:
+                    ticker = u.get('ticker', '')
+                    old_s = u.get('old_stop', 0)
+                    new_s = u.get('new_stop', 0)
+                    lines.append(f"   • 📈 {ticker} 손절 상승: {old_s:,.0f} → {new_s:,.0f}원")
+            lines.append("")
+
+        # --- SECTION 3: 🔥 동적 3-Tier 포지셔닝 (신규: 점수 기반) ---
+        lines.append("<b>🎯 3. 동적 3-Tier 포지셔닝</b>")
+        if decisions:
+            avg_score = statistics.mean([d['score'] for d in decisions]) if decisions else 0.5
+            # 점수에 따른 동적 비중 (기존 60% 고정에서 탈피)
+            core = min(80, int(50 + avg_score * 40))
+            tactical = max(5, int(30 - avg_score * 20))
+            optionality = 5
+            cash = 100 - core - tactical - optionality
+            
+            lines.append(f"   • [Core] 반도체·인프라: <b>{core}%</b> (점수 {avg_score:.0%} 반영)")
+            lines.append(f"   • [Tactical] 피지컬 AI·로봇: <b>{tactical}%</b>")
+            lines.append(f"   • [Optionality] 양자·보안: <b>{optionality}%</b>")
+            lines.append(f"   • 현금: <b>{cash}%</b>")
+        else:
+            lines.append("   • Core: 50% | Tactical: 20% | 현금: 30% (신호 부재로 관망)")
+        
+        # Top Buy 리스트 (기존 유지)
         top_buy = sorted([d for d in decisions if d['action'] == 'BUY'], key=lambda x: x['score'], reverse=True)[:3]
-        top_sell = sorted([d for d in decisions if d['action'] == 'SELL'], key=lambda x: x['score'], reverse=True)[:2]
-        
-        # Core
-        lines.append("   <b>[Core] 반도체·인프라 (60~70%)</b>")
         if top_buy:
-            for d in top_buy[:2]:
+            lines.append("   <b>Top 매수 후보</b>")
+            for d in top_buy:
                 name = self._safe_name(d)
-                lines.append(f"   • {name} — 확신도 <b>{d['score']:.1%}</b> (병목·수급 우위)")
-        else:
-            lines.append("   • <i>현재 Core 추천 없음</i>")
-        
-        # Tactical
-        lines.append("   <b>[Tactical] 피지컬 AI·로봇 (20~25%)</b>")
-        tactical_candidates = [d for d in decisions if d['action'] == 'BUY' and d['score'] > 0.55][:2]
-        if tactical_candidates:
-            for d in tactical_candidates:
-                name = self._safe_name(d)
-                lines.append(f"   • {name} — 서사 모멘텀 <b>주의</b> (추격 자제)")
-        else:
-            lines.append("   • <i>현재 Tactical 신호 없음</i>")
-        
-        # Optionality
-        lines.append("   <b>[Optionality] 양자·보안 (5~10%)</b>")
-        lines.append("   • <i>옵션성 유지 (PQC 예산화 모니터링)</i>")
-        
-        # Sell 리스트
-        if top_sell:
-            lines.append("   <b>⚠️ 관심 종목</b>")
-            for d in top_sell:
-                name = self._safe_name(d)
-                lines.append(f"   • {name} — 매도 신호 (점수: {d['score']:.1%})")
+                lines.append(f"   • {name} — 확신도 <b>{d['score']:.1%}</b>")
         lines.append("")
 
-        # --- SECTION 3: RISK MATRIX ---
-        lines.append("<b>⚠️ 3. 오늘의 3대 리스크</b>")
+        # --- SECTION 4: RISK MATRIX ---
+        lines.append("<b>⚠️ 4. 오늘의 3대 리스크</b>")
         risks = self._get_daily_risks(regime, decisions)
         for r in risks:
             lines.append(f"• {r}")
         lines.append("")
 
-        # --- SECTION 4: FACTOR DRIFT ---
-        lines.append("<b>⚙️ 4. 팩터 드리프트 (7일 EMA)</b>")
+        # --- SECTION 5: FACTOR DRIFT ---
+        lines.append("<b>⚙️ 5. 팩터 드리프트 (7일 EMA)</b>")
         if weights:
             drift_str = ", ".join([f"{k}:{v:.2f}" for k, v in weights.items()])
             lines.append(f"• <code>{drift_str}</code>")
-            # 추가: 가장 많이 상승한 팩터 표시
             top_factor = max(weights, key=weights.get)
             lines.append(f"• <b>↑ 우세 팩터:</b> {top_factor} (가중치 {weights[top_factor]:.2f})")
         else:
             lines.append("• <i>초기 가중치 (학습 전)</i>")
         lines.append("")
 
-        # --- SECTION 5: TODAY'S ACTION ITEMS ---
-        lines.append("<b>📋 5. 오늘의 액션 아이템</b>")
+        # --- SECTION 6: TODAY'S ACTION ITEMS ---
+        lines.append("<b>📋 6. 오늘의 액션 아이템</b>")
         actions = self._get_action_items(regime, decisions)
         for a in actions:
             lines.append(f"• {a}")
@@ -143,10 +169,10 @@ class DailyReportGenerator:
             full_msg = full_msg[:3950] + "\n... (메시지 길이 초과, 일부 생략)"
         
         await self.telegram.send_raw(full_msg)
-        logger.info(f"📊 데일리 브리프 전송 완료 (신호 {len(decisions)}건)")
+        logger.info(f"📊 데일리 브리프 전송 완료 (신호 {len(decisions)}건, 청산 {len(exits)}건)")
 
     # ============================================================
-    # 내부 헬퍼 함수
+    # 내부 헬퍼 함수 (기존 완전 유지 + 개선)
     # ============================================================
     
     def _safe_name(self, decision: Dict) -> str:
@@ -165,7 +191,6 @@ class DailyReportGenerator:
         avg_score = statistics.mean([d['score'] for d in decisions]) if decisions else 0.0
         avg_conf = statistics.mean([d['confidence'] for d in decisions]) if decisions else 0.0
         
-        # 복합 점수
         composite = (buy_ratio * 0.6 + avg_score * 0.4) * avg_conf
         
         if composite > 0.6 and buy_ratio > 0.55:

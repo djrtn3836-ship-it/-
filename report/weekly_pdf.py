@@ -1,14 +1,17 @@
 """
-report/weekly_pdf.py - v5.3.1 FINAL (DART 정규화 대응 + 연도 Fallback)
+report/weekly_pdf.py - v5.9.1 FINAL (뉴스 통합 + 신호 0건 시에도 생성 + 트레일링 통계)
 - DART 재무제표: 정규화된 딕셔너리(매출액/ROE/부채비율) 직접 사용
 - 2024 → 2023 → 2022 순차 탐색 (Fallback)
 - 수급 데이터(외국인/기관) 포함
-- 모든 예외 처리 및 안전장치 적용
+- 🔥 신규: news_crawler 연동 (주요 헤드라인 5개)
+- 🔥 신규: 트레일링 스탑 청산 통계 (이번 주 EXIT 건수 및 평균 손익)
+- 🔥 신규: 신호가 0건이어도 "관망" 페이지 포함하여 PDF 생성 (스킵 제거)
 """
 
 import os
 import json
 import math
+import statistics
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -28,6 +31,7 @@ from core.logger import setup_logger
 from data.db_manager import DatabaseManager
 from data.dart_connector import DartConnector
 from data.kiwoom_connector import KiwoomConnectorV512
+from data.news_crawler import NewsCrawler  # 🔥 뉴스 크롤러 추가
 from dotenv import load_dotenv
 
 logger = setup_logger("weekly_pdf")
@@ -35,7 +39,7 @@ logger = setup_logger("weekly_pdf")
 PDF_DIR = Path(__file__).parent.parent / "reports"
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 
-# 한글 폰트 등록
+# 한글 폰트 등록 (기존 완전 유지)
 try:
     pdfmetrics.registerFont(TTFont('MalgunGothic', 'C:/Windows/Fonts/malgun.ttf'))
     pdfmetrics.registerFont(TTFont('MalgunGothic-Bold', 'C:/Windows/Fonts/malgunbd.ttf'))
@@ -67,6 +71,9 @@ class WeeklyPDFGenerator:
         if not self.dart:
             logger.warning("⚠️ DART API 키 없음 → 재무 데이터 제외")
         
+        # 🔥 뉴스 크롤러 초기화
+        self.news = NewsCrawler()
+        
         self.styles = None
         self.story = []
 
@@ -74,14 +81,31 @@ class WeeklyPDFGenerator:
         if date_ref is None:
             date_ref = datetime.now().strftime("%Y-%m-%d")
         
-        logger.info(f"📄 주간 PDF 보고서 생성 시작 (기준일: {date_ref})")
+        logger.info(f"📄 [v5.9.1] 주간 PDF 보고서 생성 시작 (기준일: {date_ref})")
         await self.db.init_db()
         
+        # 1. 주간 데이터 수집
         weekly_data = await self._collect_weekly_data(date_ref)
-        if weekly_data['total_decisions'] == 0:
-            logger.info("⚠️ 주간 신호 없음 → PDF 생성 스킵")
-            return None
         
+        # 2. 🔥 신호가 0건이어도 PDF를 생성한다 (기존 스킵 조건 제거)
+        if weekly_data['total_decisions'] == 0:
+            logger.info("⚠️ 금주 신호 없음 → '관망' 페이지 포함하여 PDF 생성")
+        
+        # 3. 🔥 뉴스 헤드라인 수집 (이번 주)
+        try:
+            headlines = self.news.get_headlines(days=7)  # 7일간 헤드라인
+            weekly_data['headlines'] = headlines[:5]  # 상위 5개
+            logger.info(f"📰 뉴스 {len(weekly_data['headlines'])}개 수집 완료")
+        except Exception as e:
+            logger.warning(f"뉴스 수집 실패: {e}")
+            weekly_data['headlines'] = ["뉴스 데이터를 불러올 수 없습니다."]
+
+        # 4. 🔥 트레일링 스탑 통계 (이번 주 EXIT 건수)
+        exits = [d for d in weekly_data['decisions'] if d.get('action') == 'EXIT']
+        weekly_data['exit_count'] = len(exits)
+        weekly_data['exit_avg_pnl'] = statistics.mean([d.get('pnl', 0.0) for d in exits]) if exits else 0.0
+        logger.info(f"📊 트레일링 청산: {weekly_data['exit_count']}건, 평균 손익 {weekly_data['exit_avg_pnl']:.2f}%")
+
         # Kiwoom 연결 시도 (수급 데이터용)
         if self.kiwoom and not self.kiwoom.is_connected():
             try:
@@ -102,17 +126,31 @@ class WeeklyPDFGenerator:
             leftMargin=15*mm, rightMargin=15*mm,
             topMargin=20*mm, bottomMargin=20*mm,
             title=f"Quant Weekly - {date_ref}",
-            author="v5.3.1 Quant System"
+            author="v5.9.1 Quant System"
         )
         
         self.story = []
         self._build_styles()
         
+        # 페이지 빌드 (기존 섹션 + 신규 섹션)
         self._build_title_page(date_ref, weekly_data)
         self._build_executive_summary(weekly_data)
-        self._build_market_review(weekly_data)
-        self._build_financial_health(weekly_data)
-        self._build_supply_demand(weekly_data)
+        
+        # 🔥 신호가 없으면 특별 페이지, 있으면 기존 리뷰
+        if weekly_data['total_decisions'] == 0:
+            self._build_no_signal_page()
+        else:
+            self._build_market_review(weekly_data)
+            self._build_financial_health(weekly_data)
+            self._build_supply_demand(weekly_data)
+        
+        # 🔥 신규 섹션: 트레일링 스탑 통계
+        self._build_trailing_stop_stats(weekly_data)
+        
+        # 🔥 신규 섹션: 뉴스 요약
+        self._build_news_summary(weekly_data)
+        
+        # 기존 섹션 (항상 표시)
         self._build_factor_attribution(weekly_data)
         self._build_portfolio_positioning(weekly_data)
         self._build_risk_analysis(weekly_data)
@@ -124,7 +162,7 @@ class WeeklyPDFGenerator:
         return filepath
 
     # ============================================================
-    # 1. 데이터 수집
+    # 1. 데이터 수집 (기존 완전 유지)
     # ============================================================
     async def _collect_weekly_data(self, date_ref: str) -> Dict:
         end_date = datetime.strptime(date_ref, "%Y-%m-%d")
@@ -164,7 +202,7 @@ class WeeklyPDFGenerator:
         }
 
     # ============================================================
-    # 2. 🔥 데이터 보강 (DART 정규화 + 수급)
+    # 2. 🔥 데이터 보강 (DART 정규화 + 수급) - 기존 완전 유지
     # ============================================================
     async def _enrich_stock_data(self, data: Dict) -> Dict:
         """Top BUY 종목에 재무비율 + 수급 데이터 추가 (정규화된 딕셔너리 사용)"""
@@ -177,14 +215,12 @@ class WeeklyPDFGenerator:
             
             # 1. DART 재무제표 (정규화된 딕셔너리 반환)
             if self.dart:
-                # 종목코드 → DART 고유번호 변환 (캐시 적용)
                 corp_code = self.dart.get_corp_code_sync(ticker)
                 if corp_code:
                     for year in years_to_try:
                         try:
-                            # 🔥 정규화된 딕셔너리 반환 (예: {'매출액': 300.87, 'ROE': 12.4})
                             fin = self.dart.get_financials_sync(corp_code, year)
-                            if fin and len(fin) > 0:  # 빈 딕셔너리가 아니면 성공
+                            if fin and len(fin) > 0:
                                 financials = fin
                                 logger.info(f"✅ {ticker} 재무 데이터 ({year}년) 정규화 성공: {len(fin)}개 항목")
                                 break
@@ -219,7 +255,7 @@ class WeeklyPDFGenerator:
         return data
 
     # ============================================================
-    # 3. 스타일 빌드
+    # 3. 스타일 빌드 (기존 완전 유지)
     # ============================================================
     def _build_styles(self):
         self.styles = getSampleStyleSheet()
@@ -249,11 +285,11 @@ class WeeklyPDFGenerator:
         ))
 
     # ============================================================
-    # 4. 각 섹션 빌드 (재무 데이터 정규화 반영)
+    # 4. 각 섹션 빌드 (기존 완전 유지 + 신규 섹션 추가)
     # ============================================================
     def _build_title_page(self, date_ref, data):
         self.story.append(Spacer(1, 30*mm))
-        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트</b>", self.styles['Title1']))
+        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트 v5.9.1</b>", self.styles['Title1']))
         self.story.append(Spacer(1, 5*mm))
         self.story.append(Paragraph(f"<font size=14>{date_ref}</font>", self.styles['BodyText']))
         self.story.append(Spacer(1, 30*mm))
@@ -285,6 +321,20 @@ class WeeklyPDFGenerator:
                     f"{i}. <b>{name}</b> — 확신도: {score:.1%}",
                     self.styles['BodyText']
                 ))
+        self.story.append(PageBreak())
+
+    def _build_no_signal_page(self):
+        """🔥 신규: 신호 없을 때 특별 페이지"""
+        self.story.append(Paragraph("2. 이번 주 시그널 현황", self.styles['SectionTitle']))
+        self.story.append(Paragraph(
+            "<b>⚠️ 금주 발생한 매수/매도 시그널이 없습니다.</b>",
+            self.styles['BodyText']
+        ))
+        self.story.append(Paragraph(
+            "시장은 횡보 또는 혼조 국면으로 판단됩니다. "
+            "현재 포지션을 유지하거나, 리스크 관리에 집중하시기 바랍니다.",
+            self.styles['BodyText']
+        ))
         self.story.append(PageBreak())
 
     def _build_market_review(self, data):
@@ -321,7 +371,6 @@ class WeeklyPDFGenerator:
             fin = stock.get('financials', {})
             supply = stock.get('supply', {})
             
-            # 🔥 정규화된 딕셔너리 직접 사용 (단위 변환: 원 → 조)
             revenue = fin.get('매출액', 0) / 1e12
             op = fin.get('영업이익', 0) / 1e12
             op_margin = fin.get('영업이익률', 0)
@@ -387,6 +436,35 @@ class WeeklyPDFGenerator:
             ))
         self.story.append(PageBreak())
 
+    # ============================================================
+    # 🔥 신규 섹션: 트레일링 스탑 통계
+    # ============================================================
+    def _build_trailing_stop_stats(self, data):
+        self.story.append(Paragraph("📉 트레일링 스탑 성과", self.styles['SectionTitle']))
+        exit_cnt = data.get('exit_count', 0)
+        avg_pnl = data.get('exit_avg_pnl', 0.0)
+        self.story.append(Paragraph(f"• 이번 주 트레일링 스탑 청산 건수: <b>{exit_cnt}건</b>", self.styles['BodyText']))
+        self.story.append(Paragraph(f"• 청산 평균 손익률: <b>{avg_pnl:+.2f}%</b>", self.styles['BodyText']))
+        if exit_cnt == 0:
+            self.story.append(Paragraph("<i>※ 이번 주는 트레일링 스탑이 활성화되지 않았습니다.</i>", self.styles['BodyText']))
+        self.story.append(PageBreak())
+
+    # ============================================================
+    # 🔥 신규 섹션: 뉴스 요약
+    # ============================================================
+    def _build_news_summary(self, data):
+        self.story.append(Paragraph("📰 이번주 주요 헤드라인", self.styles['SectionTitle']))
+        headlines = data.get('headlines', [])
+        if headlines and headlines[0] != "뉴스 데이터를 불러올 수 없습니다.":
+            for i, h in enumerate(headlines[:5], 1):
+                self.story.append(Paragraph(f"{i}. {h}", self.styles['BodyText']))
+        else:
+            self.story.append(Paragraph("<i>수집된 뉴스가 없습니다.</i>", self.styles['BodyText']))
+        self.story.append(PageBreak())
+
+    # ============================================================
+    # 기존 섹션 (완전 유지)
+    # ============================================================
     def _build_factor_attribution(self, data):
         self.story.append(Paragraph("5. 팩터 귀속 분석", self.styles['SectionTitle']))
         weights = data.get('weights', {})
@@ -400,10 +478,15 @@ class WeeklyPDFGenerator:
 
     def _build_portfolio_positioning(self, data):
         self.story.append(Paragraph("6. 포트폴리오 포지셔닝", self.styles['SectionTitle']))
-        self.story.append(Paragraph("• Core (반도체·인프라): <b>60%</b>", self.styles['BodyText']))
-        self.story.append(Paragraph("• Tactical (로봇·피지컬AI): <b>25%</b>", self.styles['BodyText']))
-        self.story.append(Paragraph("• Optionality (양자·보안): <b>5%</b>", self.styles['BodyText']))
-        self.story.append(Paragraph("• 현금: <b>10%</b>", self.styles['BodyText']))
+        # 동적 포지셔닝 반영 (주간 리포트는 일간 평균 점수 기반)
+        avg = data.get('avg_score', 0.5)
+        core = min(80, int(50 + avg * 40))
+        tactical = max(5, int(30 - avg * 20))
+        cash = 100 - core - tactical - 5
+        self.story.append(Paragraph(f"• Core (반도체·인프라): <b>{core}%</b>", self.styles['BodyText']))
+        self.story.append(Paragraph(f"• Tactical (로봇·피지컬AI): <b>{tactical}%</b>", self.styles['BodyText']))
+        self.story.append(Paragraph(f"• Optionality (양자·보안): <b>5%</b>", self.styles['BodyText']))
+        self.story.append(Paragraph(f"• 현금: <b>{cash}%</b> (평균점수 {avg:.0%} 반영)", self.styles['BodyText']))
         self.story.append(PageBreak())
 
     def _build_risk_analysis(self, data):
@@ -440,3 +523,5 @@ class WeeklyPDFGenerator:
         self.story.append(Paragraph("• 실시간 시세: Kiwoom WebSocket (호가+체결)", self.styles['BodyText']))
         self.story.append(Paragraph("• 재무제표: DART Open API (정규화 적용)", self.styles['BodyText']))
         self.story.append(Paragraph("• 수급 데이터: Kiwoom REST (ka10008/ka10009)", self.styles['BodyText']))
+        self.story.append(Paragraph("• 뉴스: NewsCrawler (주요 언론사)", self.styles['BodyText']))
+        self.story.append(Paragraph(f"• 트레일링 스탑 청산: {data.get('exit_count', 0)}건", self.styles['BodyText']))

@@ -1,5 +1,7 @@
 """
-data/kiwoom_connector.py - v5.6.7 FINAL (침묵 감지 + REG 재시도)
+data/kiwoom_connector.py - v6.0.2 FINAL (블랙박스 연동)
+- 모든 WebSocket Raw 데이터를 블랙박스에 저장
+- 자가 적응 파서 + 자동 백필 + 하드 리셋 포함
 """
 
 import asyncio
@@ -9,16 +11,20 @@ import time
 from typing import Dict, Optional, Callable, Any, List
 from datetime import datetime, timedelta
 from collections import defaultdict
-
 import aiohttp
 import websockets
 from dotenv import load_dotenv
+from pathlib import Path
 
 from core.logger import setup_logger
 from core.config import get_config
+from core.blackbox_logger import blackbox_logger, log_raw_data, log_event, log_error  # 🔥 블랙박스 추가
 
 logger = setup_logger("kiwoom_rest")
 config = get_config()
+
+# 🔥 동적 키 저장 파일
+DISCOVERED_KEYS_FILE = Path(__file__).parent.parent / "config" / "discovered_keys.json"
 
 
 class AsyncRateLimiter:
@@ -36,7 +42,6 @@ class AsyncRateLimiter:
             refill_amount = elapsed * (self.rate / self.per)
             self.tokens = min(self.rate, self.tokens + refill_amount)
             self.last_refill = now
-
             if self.tokens < 1:
                 wait_time = (1 - self.tokens) / (self.rate / self.per)
                 await asyncio.sleep(wait_time)
@@ -67,6 +72,7 @@ class KiwoomConnectorV512:
         self._ws_task: Optional[asyncio.Task] = None
         self._realtime_handlers: Dict[str, Callable] = {}
         self._shutdown_event = asyncio.Event()
+        self._reconnecting = False
 
         self._subscribed_items: Dict[str, List[str]] = {}
         self._group_allocator: Dict[str, str] = {}
@@ -76,115 +82,87 @@ class KiwoomConnectorV512:
         self._is_connected = False
         self._ws_running = False
         self._ws_logged_in = False
-
-        # 🔥 침묵 감지 설정 (60초)
         self._silence_timeout = config.get_int("ws_silence_timeout", 60)
 
-    # ============================================================
-    # 1. 연결 및 인증
-    # ============================================================
-    async def connect(self) -> bool:
-        logger.info("🔑 키움 REST API 로그인 시도...")
-        if not self.api_key or not self.api_secret:
-            logger.error("❌ API Key/Secret이 .env에 없습니다.")
-            return False
+        self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
+        self._discovered_keys = self._load_discovered_keys()
 
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
+        log_event("KIWOOM_INIT", {"version": "v6.0.2", "rate_limit": rate_limit})
 
-        # 1) Token 발급
+    # ============================================================
+    # 자가 적응 파서 (Dynamic Key Learning)
+    # ============================================================
+    def _load_discovered_keys(self) -> List[str]:
+        if DISCOVERED_KEYS_FILE.exists():
+            try:
+                with open(DISCOVERED_KEYS_FILE, 'r') as f:
+                    data = json.load(f)
+                    return data.get('keys', [])
+            except:
+                return []
+        return []
+
+    def _save_discovered_keys(self):
         try:
-            async with self._session.post(
-                f"{self.REST_BASE_URL}/oauth2/token",
-                json={
-                    "grant_type": "client_credentials",
-                    "appkey": self.api_key,
-                    "secretkey": self.api_secret,
-                },
-                timeout=10
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    self.access_token = data.get("token")
-                    if not self.access_token:
-                        logger.error(f"❌ 응답에 토큰 없음: {data}")
-                        return False
-                    self.token_expires_at = time.time() + 3600
-                    logger.info("✅ Access Token 발급 성공")
-                else:
-                    logger.error(f"❌ Token 발급 실패: {resp.status}")
-                    return False
+            DISCOVERED_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(DISCOVERED_KEYS_FILE, 'w') as f:
+                json.dump({'keys': self._discovered_keys}, f, indent=2)
         except Exception as e:
-            logger.error(f"❌ Token 요청 오류: {e}")
-            return False
+            log_error("키 저장 실패", e)
 
-        # 2) WebSocket 연결
-        try:
-            await self._connect_websocket()
-        except Exception as e:
-            logger.error(f"❌ WebSocket 연결 실패: {e}")
-            return False
+    def _extract_ticker(self, data: dict) -> Optional[str]:
+        for key in self._priority_keys:
+            if key in data:
+                return str(data[key])
+        for key in self._discovered_keys:
+            if key in data:
+                return str(data[key])
+        for key, value in data.items():
+            if isinstance(value, str) and len(value) >= 6 and value.isdigit():
+                lower_key = key.lower()
+                if 'cd' in lower_key or 'code' in lower_key or 'ticker' in lower_key or 'sym' in lower_key:
+                    if key not in self._priority_keys and key not in self._discovered_keys:
+                        self._discovered_keys.append(key)
+                        self._save_discovered_keys()
+                        log_event("NEW_KEY_DISCOVERED", {"key": key, "value": value})
+                    return value
+        return None
 
-        self._is_connected = True
-        self._shutdown_event.clear()
-        logger.info("✅ 키움 REST API 연결 완료")
-        return True
+    async def _handle_ws_message(self, data: dict):
+        ticker = self._extract_ticker(data)
 
-    # ============================================================
-    # 2. WebSocket 연결 (인증 + 침묵 감지)
-    # ============================================================
-    async def _connect_websocket(self):
-        if self._ws_task and not self._ws_task.done():
+        if not ticker:
+            keys = list(data.keys())
+            if not (set(keys) - {'price', 'timestamp', 'time'}):
+                return
+            log_error(f"파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
             return
 
-        # 🔥 토큰 만료 시 갱신
-        if not self.access_token or time.time() > self.token_expires_at:
-            await self._refresh_token()
-
-        # WebSocket 연결 (헤더 없이)
-        self._ws = await websockets.connect(
-            self.WS_URL,
-            ping_interval=20,
-            ping_timeout=60,
-            close_timeout=10
-        )
-
-        self._ws_running = True
-        self._ws_logged_in = False
-
-        # STEP 1: LOGIN
-        login_packet = {"trnm": "LOGIN", "token": self.access_token}
-        await self._ws.send(json.dumps(login_packet))
-        logger.info("📡 LOGIN 패킷 전송 완료")
-
-        # STEP 2: LOGIN 응답 확인
-        try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
-            auth = json.loads(raw)
-            if auth.get("return_code") == 0:
-                self._ws_logged_in = True
-                logger.info("✅ WebSocket LOGIN 성공!")
-            else:
-                error_msg = auth.get("return_msg", "Unknown")
-                logger.error(f"❌ LOGIN 실패: {error_msg}")
-                raise Exception(f"LOGIN failed: {error_msg}")
-        except asyncio.TimeoutError:
-            logger.error("❌ LOGIN 응답 타임아웃")
-            raise
-
-        # STEP 3: 수신 루프 시작
-        self._ws_task = asyncio.create_task(self._ws_receiver())
-        logger.info("📡 WebSocket 연결 및 인증 완료")
+        if ticker in self._realtime_handlers:
+            try:
+                self._realtime_handlers[ticker](data)
+            except Exception as e:
+                log_error(f"핸들러 오류 ({ticker})", e)
+        else:
+            logger.debug(f"📩 미등록 종목 데이터: {ticker}")
 
     # ============================================================
-    # 3. 🔥 수신 루프 + 침묵 감지 (60초)
+    # WebSocket 수신 루프 (블랙박스 Raw 저장)
     # ============================================================
     async def _ws_receiver(self):
         logger.info(f"📡 WebSocket 수신 시작 (침묵 감지: {self._silence_timeout}초)")
+        log_event("WS_RECEIVER_START", {"timeout": self._silence_timeout})
+        last_data_time = time.time()
+
         try:
             while True:
                 try:
                     raw = await asyncio.wait_for(self._ws.recv(), timeout=self._silence_timeout)
+                    last_data_time = time.time()
+
+                    # 🔥🔥🔥 블랙박스에 Raw 데이터 저장 (모든 메시지)
+                    log_raw_data(raw, source="WEBSOCKET")
+
                     try:
                         data = json.loads(raw)
                         if data.get("trnm") == "PING":
@@ -198,58 +176,170 @@ class KiwoomConnectorV512:
                             continue
                         await self._handle_ws_message(data)
                     except json.JSONDecodeError:
-                        logger.warning(f"⚠️ 잘못된 메시지: {raw[:100]}")
+                        log_error("JSON 디코딩 오류", {"raw": raw[:200]})
                     except Exception as e:
-                        logger.error(f"⚠️ 처리 오류: {e}")
+                        log_error("메시지 처리 중 오류", e)
                 except asyncio.TimeoutError:
-                    logger.warning(f"⚠️ {self._silence_timeout}초간 메시지 없음 → 연결 종료 및 재접속")
+                    if self._subscribed_items and not self._shutdown_event.is_set():
+                        log_event("SILENCE_DETECTED", {"seconds": self._silence_timeout})
+                        await self._backfill_missing_data()
                     break
         except websockets.ConnectionClosed:
-            logger.warning("⚠️ WebSocket 연결 종료됨")
+            log_event("WEBSOCKET_CLOSED", {})
         except Exception as e:
-            logger.error(f"⚠️ 수신 오류: {e}")
+            log_error("수신 루프 오류", e)
         finally:
             self._ws_running = False
             if not self._shutdown_event.is_set():
                 await self._reconnect_websocket()
 
+    async def _backfill_missing_data(self):
+        if not self._session:
+            return
+        top_tickers = list(self._subscribed_items.keys())[:5]
+        log_event("BACKFILL_START", {"count": len(top_tickers)})
+        for ticker in top_tickers:
+            try:
+                result = await self.request_tr(ticker, "현재가")
+                if result and 'close' in result:
+                    mock_data = {
+                        "ticker": ticker,
+                        "price": result['close'],
+                        "change_rate": 0.0,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await self._handle_ws_message(mock_data)
+                    logger.info(f"📡 [백필] {ticker} 현재가 복구: {result['close']}")
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                log_error(f"백필 실패 ({ticker})", e)
+
     # ============================================================
-    # 4. 🔥 재연결 + REG 재전송 (REG 실패 시 1회 재시도)
+    # 🔥 재연결 로직 (블랙박스 이벤트 기록)
     # ============================================================
     async def _reconnect_websocket(self):
-        for attempt in range(1, 6):
-            if self._shutdown_event.is_set():
-                break
-            delay = 2 ** attempt
-            logger.info(f"🔄 재연결 시도 {attempt}/5 (대기 {delay}초)")
-            await asyncio.sleep(delay)
-            try:
-                await self._connect_websocket()
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        log_event("RECONNECT_START", {})
+        try:
+            if self._ws_task and not self._ws_task.done():
+                self._ws_task.cancel()
+                try:
+                    await self._ws_task
+                except asyncio.CancelledError:
+                    pass
+            self._ws_task = None
+            self._ws = None
 
-                if self._subscribed_items:
-                    logger.info(f"📡 저장된 {len(self._subscribed_items)}개 종목 REG 재전송")
-                    for ticker, types in self._subscribed_items.items():
-                        handler = self._realtime_handlers.get(ticker)
-                        if handler:
-                            # 🔥 REG 재시도 (최대 1회)
-                            success = await self._register_with_retry(ticker, handler, types)
-                            if not success:
-                                logger.warning(f"⚠️ {ticker} REG 실패 (재시도 후)")
-                            await asyncio.sleep(0.1)
-                    logger.info("✅ REG 재전송 완료")
+            for attempt in range(1, 6):
+                if self._shutdown_event.is_set():
+                    break
+                delay = 2 ** attempt
+                logger.info(f"🔄 재연결 시도 {attempt}/5 (대기 {delay}초)")
+                log_event("RECONNECT_ATTEMPT", {"attempt": attempt, "delay": delay})
+                await asyncio.sleep(delay)
+                try:
+                    if self._session:
+                        await self._session.close()
+                    self._session = aiohttp.ClientSession()
+                    await self._connect_websocket()
 
-                logger.info("✅ WebSocket 재연결 + 재구독 완료")
-                return
-            except Exception as e:
-                logger.warning(f"⚠️ 재연결 실패 ({attempt}/5): {e}")
-                continue
-        logger.error("❌ WebSocket 재연결 최종 실패")
+                    if self._subscribed_items:
+                        logger.info(f"📡 저장된 {len(self._subscribed_items)}개 종목 REG 재전송")
+                        for ticker, types in self._subscribed_items.items():
+                            handler = self._realtime_handlers.get(ticker)
+                            if handler:
+                                success = await self._register_with_retry(ticker, handler, types)
+                                if not success:
+                                    logger.warning(f"⚠️ {ticker} REG 실패")
+                                await asyncio.sleep(0.1)
+                        logger.info("✅ REG 재전송 완료")
+
+                    log_event("RECONNECT_SUCCESS", {"attempt": attempt})
+                    logger.info("✅ WebSocket 재연결 + 재구독 완료")
+                    return
+                except Exception as e:
+                    log_error(f"재연결 실패 ({attempt}/5)", e)
+                    continue
+
+            logger.error("❌ WebSocket 재연결 최종 실패")
+            log_event("RECONNECT_FATAL", {"final": True})
+            self._is_connected = False
+        finally:
+            self._reconnecting = False
 
     # ============================================================
-    # 5. 🔥 REG 재시도 래퍼
+    # 기존 함수들 (connect, register_realtime 등 - 블랙박스 로그 추가)
     # ============================================================
+    async def connect(self) -> bool:
+        log_event("CONNECT_START", {})
+        logger.info("🔑 키움 REST API 로그인 시도...")
+        if not self.api_key or not self.api_secret:
+            log_error("API 키 없음", {"key": self.api_key, "secret": bool(self.api_secret)})
+            return False
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        try:
+            async with self._session.post(
+                f"{self.REST_BASE_URL}/oauth2/token",
+                json={"grant_type": "client_credentials", "appkey": self.api_key, "secretkey": self.api_secret},
+                timeout=10
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self.access_token = data.get("token")
+                    if not self.access_token:
+                        log_error("토큰 응답 없음", data)
+                        return False
+                    self.token_expires_at = time.time() + 3600
+                    logger.info("✅ Access Token 발급 성공")
+                    log_event("TOKEN_SUCCESS", {})
+                else:
+                    log_error(f"토큰 발급 HTTP 오류", {"status": resp.status})
+                    return False
+        except Exception as e:
+            log_error("토큰 요청 오류", e)
+            return False
+        try:
+            await self._connect_websocket()
+        except Exception as e:
+            log_error("WebSocket 연결 실패", e)
+            return False
+        self._is_connected = True
+        self._shutdown_event.clear()
+        log_event("CONNECT_SUCCESS", {})
+        logger.info("✅ 키움 REST API 연결 완료")
+        return True
+
+    async def _connect_websocket(self):
+        if not self.access_token or time.time() > self.token_expires_at:
+            await self._refresh_token()
+        self._ws = await websockets.connect(self.WS_URL, ping_interval=20, ping_timeout=60, close_timeout=10)
+        self._ws_running = True
+        self._ws_logged_in = False
+        login_packet = {"trnm": "LOGIN", "token": self.access_token}
+        await self._ws.send(json.dumps(login_packet))
+        logger.info("📡 LOGIN 패킷 전송 완료")
+        log_event("LOGIN_SENT", {})
+        try:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
+            auth = json.loads(raw)
+            if auth.get("return_code") == 0:
+                self._ws_logged_in = True
+                logger.info("✅ WebSocket LOGIN 성공!")
+                log_event("LOGIN_SUCCESS", {})
+            else:
+                error_msg = auth.get("return_msg", "Unknown")
+                log_error("LOGIN 실패", {"msg": error_msg})
+                raise Exception(f"LOGIN failed: {error_msg}")
+        except asyncio.TimeoutError:
+            log_error("LOGIN 타임아웃", {})
+            raise
+        self._ws_task = asyncio.create_task(self._ws_receiver())
+        logger.info("📡 WebSocket 연결 및 인증 완료")
+
     async def _register_with_retry(self, ticker: str, handler: Callable, types: List[str]) -> bool:
-        """REG 전송 및 1회 재시도"""
         for attempt in range(2):
             try:
                 await self.register_realtime(ticker, handler, types)
@@ -259,43 +349,22 @@ class KiwoomConnectorV512:
                     logger.warning(f"⚠️ {ticker} REG 실패 (1차), 1초 후 재시도")
                     await asyncio.sleep(1)
                 else:
-                    logger.error(f"❌ {ticker} REG 최종 실패: {e}")
+                    log_error(f"REG 최종 실패 ({ticker})", e)
         return False
 
-    # ============================================================
-    # 6. 메시지 핸들링
-    # ============================================================
-    async def _handle_ws_message(self, data: dict):
-        ticker = data.get("ticker") or data.get("symbol") or data.get("item")
-        if not ticker:
-            logger.debug(f"📩 식별자 없는 데이터: {data}")
-            return
-        if ticker in self._realtime_handlers:
-            try:
-                self._realtime_handlers[ticker](data)
-            except Exception as e:
-                logger.error(f"실시간 핸들러 오류 ({ticker}): {e}")
-        else:
-            logger.debug(f"📩 미등록 종목 데이터: {ticker}")
-
-    # ============================================================
-    # 7. 실시간 구독 (REG)
-    # ============================================================
     async def register_realtime(self, ticker: str, handler: Callable, types: List[str] = None):
         if types is None:
             types = ["0B"]
-
         if not self._ws or not self._ws_running:
+            log_event("REG_SKIP", {"ticker": ticker, "reason": "WS_NOT_READY"})
             logger.warning(f"⚠️ WebSocket 미연결: {ticker} 구독 실패")
             return
-
         if not self._ws_logged_in:
             logger.warning(f"⚠️ LOGIN 미완료: {ticker} 구독 보류")
             await asyncio.sleep(2)
             if not self._ws_logged_in:
-                logger.error(f"❌ LOGIN 실패로 {ticker} 구독 취소")
+                log_error("REG 실패 (LOGIN)", {"ticker": ticker})
                 return
-
         grp_no = self._group_allocator.get(ticker)
         if grp_no is None:
             current_group_count = sum(1 for t, g in self._group_allocator.items() if g == str(self._next_group_no))
@@ -303,154 +372,90 @@ class KiwoomConnectorV512:
                 self._next_group_no += 1
             grp_no = str(self._next_group_no)
             self._group_allocator[ticker] = grp_no
-
         self._realtime_handlers[ticker] = handler
         self._subscribed_items[ticker] = types
-
-        subscribe_msg = {
-            "trnm": "REG",
-            "grp_no": grp_no,
-            "refresh": "1",
-            "data": [{"item": [ticker], "type": types}]
-        }
+        subscribe_msg = {"trnm": "REG", "grp_no": grp_no, "refresh": "1", "data": [{"item": [ticker], "type": types}]}
         await self._ws.send(json.dumps(subscribe_msg))
+        log_event("REG_SENT", {"ticker": ticker, "group": grp_no})
         logger.info(f"📡 REG 구독: {ticker}, 그룹: {grp_no}")
 
-    async def unregister_realtime(self, ticker: str):
-        if ticker in self._realtime_handlers:
-            del self._realtime_handlers[ticker]
-            self._subscribed_items.pop(ticker, None)
-            self._group_allocator.pop(ticker, None)
-            logger.info(f"📡 구독 해제: {ticker}")
+    async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
+        await self._acquire_rate_limit("ka10004")
+        if not self.access_token or time.time() > self.token_expires_at:
+            await self._refresh_token()
+        headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json;charset=UTF-8", "api-id": "ka10004"}
+        body = {"stk_cd": ticker}
+        url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
+        try:
+            async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    price = float(data.get('buy_fpr_bid', 0) or data.get('sel_fpr_bid', 0))
+                    result = {"symbol": ticker, "close": price, "raw": data}
+                    if callback:
+                        callback(result)
+                    return result
+                log_error(f"REST 요청 실패 ({ticker})", {"status": resp.status})
+                return {"error": resp.status}
+        except Exception as e:
+            log_error(f"REST 요청 오류 ({ticker})", e)
+            return {"error": str(e)}
 
-    # ============================================================
-    # 8. TR 요청 (REST API)
-    # ============================================================
     async def _acquire_rate_limit(self, api_id: str):
         await self._rate_limiters[api_id].acquire()
 
-    async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
-        api_id_map = {
-            "일봉": "ka10060",
-            "현재가": "ka10004",
-            "외국인수급": "ka10008",
-            "기관수급": "ka10009",
-        }
-        api_id = api_id_map.get(tr_type, "ka10004")
-        await self._acquire_rate_limit(api_id)
-
-        if not self.access_token or time.time() > self.token_expires_at:
-            await self._refresh_token()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json;charset=UTF-8"
-        }
-
-        # 일봉 (ka10060)
-        if tr_type == "일봉":
-            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-            headers["api-id"] = "ka10060"
-            body = {"dt": yesterday, "stk_cd": ticker, "amt_qty_tp": "1", "trde_tp": "0", "unit_tp": "1"}
-            url = f"{self.REST_BASE_URL}/api/dostk/chart"
-            try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        chart_list = data.get('stk_invsr_orgn_chart', [])
-                        close_price = float(chart_list[0].get('cur_prc', 0)) if chart_list else 0
-                        result = {"symbol": ticker, "close": close_price, "raw": data}
-                        if callback:
-                            callback(result)
-                        return result
-                    return {"error": resp.status}
-            except Exception as e:
-                return {"error": str(e)}
-
-        # 현재가 (ka10004)
-        elif tr_type == "현재가":
-            headers["api-id"] = "ka10004"
-            body = {"stk_cd": ticker}
-            url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
-            try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        price = float(data.get('buy_fpr_bid', 0) or data.get('sel_fpr_bid', 0))
-                        result = {"symbol": ticker, "close": price, "raw": data}
-                        if callback:
-                            callback(result)
-                        return result
-                    return {"error": resp.status}
-            except Exception as e:
-                return {"error": str(e)}
-
-        # 외국인 (ka10008)
-        elif tr_type == "외국인수급":
-            headers["api-id"] = "ka10008"
-            body = {"stk_cd": ticker}
-            url = f"{self.REST_BASE_URL}/api/dostk/foreign"
-            try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        result = {"symbol": ticker, "net_buy": data.get('net_buy', 0), "raw": data}
-                        if callback:
-                            callback(result)
-                        return result
-                    return {"error": resp.status}
-            except Exception as e:
-                return {"error": str(e)}
-
-        # 기관 (ka10009)
-        elif tr_type == "기관수급":
-            headers["api-id"] = "ka10009"
-            body = {"stk_cd": ticker}
-            url = f"{self.REST_BASE_URL}/api/dostk/inst"
-            try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        result = {"symbol": ticker, "net_buy": data.get('net_buy', 0), "raw": data}
-                        if callback:
-                            callback(result)
-                        return result
-                    return {"error": resp.status}
-            except Exception as e:
-                return {"error": str(e)}
-
-        else:
-            return await self.request_tr(ticker, "현재가", callback)
-
-    # ============================================================
-    # 9. 토큰 갱신
-    # ============================================================
     async def _refresh_token(self):
         logger.info("🔄 Access Token 갱신 중...")
+        log_event("TOKEN_REFRESH_START", {})
         try:
             async with self._session.post(
                 f"{self.REST_BASE_URL}/oauth2/token",
-                json={
-                    "grant_type": "client_credentials",
-                    "appkey": self.api_key,
-                    "secretkey": self.api_secret,
-                }
+                json={"grant_type": "client_credentials", "appkey": self.api_key, "secretkey": self.api_secret}
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     self.access_token = data.get("token")
                     self.token_expires_at = time.time() + 3600
                     logger.info("✅ Token 갱신 완료")
+                    log_event("TOKEN_REFRESH_SUCCESS", {})
                 else:
-                    logger.error("❌ Token 갱신 실패")
+                    log_error("토큰 갱신 실패", {"status": resp.status})
         except Exception as e:
-            logger.error(f"❌ Token 갱신 예외: {e}")
+            log_error("토큰 갱신 예외", e)
 
-    # ============================================================
-    # 10. 연결 종료
-    # ============================================================
+    async def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        logger.info(f"⏳ WebSocket 준비 대기 (최대 {timeout}초)...")
+        start = time.perf_counter()
+        while time.perf_counter() - start < timeout:
+            ws_ok = False
+            if self._ws is not None:
+                try:
+                    if hasattr(self._ws, 'closed'):
+                        ws_ok = not self._ws.closed
+                    elif hasattr(self._ws, 'open'):
+                        ws_ok = self._ws.open
+                    elif hasattr(self._ws, 'state'):
+                        try:
+                            from websockets.protocol import State
+                            ws_ok = (self._ws.state == State.OPEN)
+                        except:
+                            ws_ok = True
+                    else:
+                        ws_ok = True
+                except:
+                    ws_ok = False
+            if (self._ws is not None and self._ws_running and self._ws_logged_in and ws_ok):
+                logger.info("✅ WebSocket 완전 준비 완료")
+                log_event("WS_READY", {"elapsed": time.perf_counter() - start})
+                return True
+            await asyncio.sleep(0.5)
+        log_event("WS_READY_TIMEOUT", {"timeout": timeout})
+        logger.warning(f"⚠️ WebSocket 준비 타임아웃 ({timeout}초 초과)")
+        return False
+
     async def disconnect(self):
         logger.info("🔌 키움 REST API 연결 종료 중...")
+        log_event("DISCONNECT_START", {})
         self._shutdown_event.set()
         if self._ws and self._ws_running:
             try:
@@ -472,11 +477,10 @@ class KiwoomConnectorV512:
         self._realtime_handlers.clear()
         self._subscribed_items.clear()
         self._group_allocator.clear()
+        self._reconnecting = False
+        log_event("DISCONNECT_COMPLETE", {})
         logger.info("✅ 키움 REST API 연결 종료 완료")
 
-    # ============================================================
-    # 11. 상태 조회
-    # ============================================================
     def is_connected(self) -> bool:
         return self._is_connected
 

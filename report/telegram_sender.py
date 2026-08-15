@@ -1,5 +1,5 @@
 """
-report/telegram_sender.py - v5.6.7 FINAL (전송 재시도 2회)
+report/telegram_sender.py - v5.9.0 (트레일링 스탑 업데이트 템플릿 추가)
 """
 import os
 import html
@@ -28,22 +28,23 @@ class TelegramSender:
         if not self.bot or not self.chat_id:
             return False
         try:
-            message = self._format_report_html(report)
+            action = report.get("action")
+            if action == "TRAILING_STOP_UPDATE":
+                message = self._format_trailing_update(report)
+            elif action == "EXIT":
+                message = self._format_exit_signal(report)
+            else:
+                message = self._format_report_html(report)
             return await self.send_raw(message)
         except Exception as e:
             logger.error(f"❌ Telegram 전송 오류: {e}")
             return False
 
-    # ============================================================
-    # 🔥 전송 재시도 (최대 2회, 지수 백오프)
-    # ============================================================
     async def send_raw(self, message: str, max_retries: int = 2) -> bool:
         if not self.bot or not self.chat_id:
             return False
-
         if len(message) > 4000:
             message = message[:3950] + "\n\n... (메시지 길이 초과)"
-
         for attempt in range(max_retries + 1):
             try:
                 await self.bot.send_message(
@@ -69,6 +70,9 @@ class TelegramSender:
                 return False
         return False
 
+    # ============================================================
+    # 기존 리포트 포맷 (변경 없음)
+    # ============================================================
     def _format_report_html(self, report: dict) -> str:
         ticker = html.escape(str(report.get("ticker", "N/A")))
         name = html.escape(str(report.get("name", ticker)))
@@ -121,7 +125,6 @@ class TelegramSender:
         lines.append(f"📊 <b>점수</b>: {score:.1%} {score_bar}")
         lines.append("")
 
-        # 손절/익절 (ATR 기반)
         if atr > 0 and entry_price > 0:
             sl1 = entry_price - atr
             sl2 = entry_price - atr * 1.5
@@ -141,7 +144,6 @@ class TelegramSender:
             lines.append("━━━━━━━━━━━━━━━━━━━━━")
             lines.append("")
 
-        # 기술적 인사이트
         if support or resistance:
             insight = []
             if support and price > 0:
@@ -154,7 +156,6 @@ class TelegramSender:
                     lines.append(f"  • {txt}")
                 lines.append("")
 
-        # 호가 불균형
         if imbalance is not None and 0 <= imbalance <= 1:
             bar = "█" * int(imbalance * 10) + "░" * (10 - int(imbalance * 10))
             side = "매수" if imbalance > 0.55 else ("매도" if imbalance < 0.45 else "중립")
@@ -163,7 +164,6 @@ class TelegramSender:
                 lines.append(f"  • {html.escape(pressure)}")
             lines.append("")
 
-        # 포지션 비중
         if action in ["BUY", "SELL"] and confidence > 0.5:
             kelly_ratio = min(15.0, max(2.0, (confidence * 20) - (abs(momentum) * 50)))
             if momentum > 0 and action == "BUY":
@@ -175,7 +175,6 @@ class TelegramSender:
             lines.append(f"🎯 <b>권장 포지션</b>: <code>{rec:.1f}%</code> (Kelly 변형)")
             lines.append("")
 
-        # 매수 근거
         if positives:
             lines.append("✅ <b>매수 근거</b>")
             for p in positives[:3]:
@@ -183,7 +182,6 @@ class TelegramSender:
                     lines.append(f"  • {html.escape(p)}")
             lines.append("")
 
-        # 주의사항
         if negatives:
             lines.append("⚠️ <b>주의사항</b>")
             for n in negatives[:2]:
@@ -191,9 +189,89 @@ class TelegramSender:
                     lines.append(f"  • {html.escape(n)}")
             lines.append("")
 
-        # 푸터
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append("<i>Phase 1 Shadow Mode | 참고용</i>")
         lines.append(f"<i>🕒 {__import__('datetime').datetime.now().strftime('%H:%M:%S')} KST</i>")
 
+        return "\n".join(lines)
+
+    # ============================================================
+    # 🔥 트레일링 스탑 업데이트 템플릿 (신규)
+    # ============================================================
+    def _format_trailing_update(self, data: dict) -> str:
+        ticker = html.escape(str(data.get("ticker", "N/A")))
+        price = data.get("price", 0.0)
+        entry_price = data.get("entry_price", price)
+        old_stop = data.get("old_stop", 0.0)
+        new_stop = data.get("new_stop", 0.0)
+        highest = data.get("highest_price")
+        lowest = data.get("lowest_price")
+        atr = data.get("atr", 0.0)
+
+        if highest:
+            direction = "📈 매수(Long)"
+            high_low_text = f"📈 최고가: {highest:,.0f}원"
+            profit_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+        else:
+            direction = "📉 매도(Short)"
+            high_low_text = f"📉 최저가: {lowest:,.0f}원"
+            profit_pct = ((entry_price - price) / entry_price) * 100 if entry_price > 0 else 0
+
+        lines = []
+        lines.append("🔄 <b>[트레일링 스탑 업데이트]</b>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📌 <b>종목</b>: {ticker}")
+        lines.append(f"📊 <b>포지션</b>: {direction}")
+        lines.append(f"💰 <b>현재가</b>: {price:,.0f}원")
+        lines.append(f"📈 <b>진입가</b>: {entry_price:,.0f}원")
+        lines.append(f"📊 <b>평가 손익</b>: {profit_pct:+.1f}%")
+        lines.append("")
+        lines.append("🛡️ <b>손절가 변경</b>")
+        lines.append(f"   • 🔻 <b>이전 손절</b>: {old_stop:,.0f}원")
+        lines.append(f"   • 🟢 <b>신규 손절</b>: {new_stop:,.0f}원")
+        lines.append(f"   • 📊 <b>상승 폭</b>: {new_stop - old_stop:+,.0f}원")
+        lines.append("")
+        lines.append("📈 <b>추가 정보</b>")
+        lines.append(f"   • {high_low_text}")
+        lines.append(f"   • 📊 ATR: {atr:,.0f}원")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("<i>⚠️ 손절가가 상승하여 수익이 보호되었습니다.</i>")
+        lines.append(f"<i>🕒 {__import__('datetime').datetime.now().strftime('%H:%M:%S')} KST</i>")
+        return "\n".join(lines)
+
+    # ============================================================
+    # 🔥 청산 신호 템플릿 (신규)
+    # ============================================================
+    def _format_exit_signal(self, data: dict) -> str:
+        ticker = html.escape(str(data.get("ticker", "N/A")))
+        price = data.get("price", 0.0)
+        entry_price = data.get("entry_price", price)
+        stop_price = data.get("stop_price", price)
+        highest = data.get("highest_price")
+        lowest = data.get("lowest_price")
+
+        if highest:
+            direction = "📈 매수(Long)"
+            profit_pct = ((price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+            high_low_text = f"📈 최고가: {highest:,.0f}원"
+        else:
+            direction = "📉 매도(Short)"
+            profit_pct = ((entry_price - price) / entry_price) * 100 if entry_price > 0 else 0
+            high_low_text = f"📉 최저가: {lowest:,.0f}원"
+
+        lines = []
+        lines.append("🔴 <b>[청산 신호] EXIT (트레일링 스탑 도달)</b>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📌 <b>종목</b>: {ticker}")
+        lines.append(f"📊 <b>포지션</b>: {direction}")
+        lines.append(f"💰 <b>청산가</b>: {price:,.0f}원")
+        lines.append(f"📈 <b>진입가</b>: {entry_price:,.0f}원")
+        lines.append(f"📊 <b>최종 손익</b>: {profit_pct:+.1f}%")
+        lines.append("")
+        lines.append("🛡️ <b>청산 사유</b>")
+        lines.append(f"   • 🔻 트레일링 스탑 도달: {stop_price:,.0f}원")
+        lines.append(f"   • {high_low_text}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("<i>⚠️ 포지션이 청산되었습니다. (Shadow Mode - 알림 전용)</i>")
+        lines.append(f"<i>🕒 {__import__('datetime').datetime.now().strftime('%H:%M:%S')} KST</i>")
         return "\n".join(lines)

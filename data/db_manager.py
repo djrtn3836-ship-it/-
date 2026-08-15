@@ -162,3 +162,15 @@ class DatabaseManager:
                 VALUES (:decision_id, :price_after_1d, :price_after_5d, :return_1d, :return_5d, :is_correct)
             """, outcome)
             await db.commit()
+    # ============================================================
+    # 🔥 진단 스크립트 호환을 위한 close 메서드 추가
+    # ============================================================
+    async def close(self):
+        """데이터베이스 연결 종료 (진단 스크립트 호환용)"""
+        # SQLite는 연결 종료가 따로 필요 없지만, 메서드 존재 여부만으로 오류를 피하기 위해 정의
+        if hasattr(self, '_conn') and self._conn:
+            try:
+                await self._conn.close()
+            except:
+                pass
+        logger.info("🔌 DB 연결 종료 완료")
