@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v6.0.2 FINAL (Phoenix 엔진 + 블랙박스 통합)
-- 메인 루프에 "Data Flow Watchdog" 추가 (데이터 흐름 감시)
-- 블랙박스 연동: 시작, 종료, 주요 이벤트 기록
-- 15:20 이후 재연결 시도 중지 (장 마감 혼선 방지)
+scanner_main.py - v6.2.0 FINAL (이벤트 기반 액션 센터 + Phoenix 엔진)
+- 전략 Worker가 5가지 이벤트(SIGNAL_ENTRY, SL_TRAIL, ATR_SPIKE, TP_HIT, EXIT)를 처리
+- WebSocket 자가 치유, 블랙박스, 15:20 세이프가드 포함
 """
 
 import asyncio
@@ -26,8 +25,9 @@ from core.scheduler import SchedulerManager
 from core.holiday_utils import is_trading_day
 from core.config import get_config
 from core.exceptions import KiwoomError
-from core.blackbox_logger import log_event, log_error, get_status  # 🔥 블랙박스 추가
+from core.blackbox_logger import log_event, log_error, get_status
 
+# 🔥 FatalError를 Exception으로 대체
 FatalError = Exception
 
 from scanner.realtime_monitor import RealtimeMonitor
@@ -44,6 +44,7 @@ from config.secure_config import load_encrypted_env
 logger = setup_logger("scanner")
 config = get_config()
 
+# --- 글로벌 변수 ---
 _kiwoom: Optional[KiwoomConnectorV512] = None
 _monitor: Optional[RealtimeMonitor] = None
 _db: Optional[DatabaseManager] = None
@@ -59,13 +60,19 @@ MESSAGE_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=config.get_int("queue_maxsi
 _last_data_time = 0.0
 _DATA_FLOW_TIMEOUT = 180  # 3분
 
-
+# ============================================================
+# 1. 유틸리티 함수
+# ============================================================
 def check_and_create_pid() -> None:
     if PID_FILE.exists():
         try:
             with open(PID_FILE, 'r') as f:
                 old_pid = int(f.read().strip())
-            result = subprocess.run(['tasklist', '/FI', f'PID eq {old_pid}'], capture_output=True, text=True)
+            result = subprocess.run(
+                ['tasklist', '/FI', f'PID eq {old_pid}'],
+                capture_output=True,
+                text=True
+            )
             if str(old_pid) in result.stdout:
                 print(f"❌ 이미 실행 중인 프로세스가 있습니다 (PID: {old_pid})")
                 sys.exit(1)
@@ -90,6 +97,9 @@ def validate_env() -> None:
     logger.info("✅ 환경변수 검증 완료")
 
 
+# ============================================================
+# 2. APScheduler 래퍼 (거래일 체크)
+# ============================================================
 async def trading_day_task_wrapper(func, job_name: str = "작업", *args, **kwargs) -> None:
     if not is_trading_day():
         logger.info(f"📅 오늘은 비거래일 → {job_name} 스킵")
@@ -130,9 +140,12 @@ async def reconnect_and_resubscribe(kiwoom: KiwoomConnectorV512, monitor: Realti
     logger.info("✅ 재연결 및 전체 구독 재등록 완료.")
 
 
+# ============================================================
+# 3. 🔥 v6.2.0 전략 Worker (이벤트 기반 처리)
+# ============================================================
 async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseManager, sender: TelegramSender) -> None:
     global _last_data_time
-    logger.info(f"🧠 전략 Worker-{worker_id} 시작 (트레일링 스탑 알림 활성화)")
+    logger.info(f"🧠 전략 Worker-{worker_id} 시작 (v6.2.0 이벤트 기반)")
     processed_count = 0
     while True:
         try:
@@ -141,26 +154,36 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
             except asyncio.TimeoutError:
                 continue
 
+            # 🔥 데이터 도착 시간 갱신
             _last_data_time = time.time()
+
+            # 분석 실행 (이벤트 발생 가능)
             analysis = await analyzer.analyze(stock_data)
             await db.save_decision(analysis)
 
             action = analysis.get('action')
-            if action in ['BUY', 'SELL']:
+
+            # 🔥 v6.2.0: 5가지 이벤트 기반 분할 전송
+            if action in ["SIGNAL_ENTRY", "EVENT_SL_TRAIL", "EVENT_ATR_SPIKE", "EVENT_TP_HIT", "EVENT_EXIT"]:
                 await sender.send(analysis)
                 processed_count += 1
-                logger.info(f"📊 Worker-{worker_id} 신호 전송: {action} {analysis.get('ticker')}")
-                log_event("SIGNAL_SENT", {"worker": worker_id, "action": action, "ticker": analysis.get('ticker')})
-            elif action == 'TRAILING_STOP_UPDATE':
-                await sender.send(analysis)
-                logger.info(f"📊 Worker-{worker_id} 트레일링 업데이트: {analysis.get('ticker')}")
-            elif action == 'EXIT':
-                await sender.send(analysis)
-                logger.info(f"📊 Worker-{worker_id} 청산 신호: {analysis.get('ticker')}")
-                await analyzer.clear_trailing_stop(analysis.get('ticker'))
+
+                # 이벤트별 로깅 및 후처리
+                if action == "SIGNAL_ENTRY":
+                    logger.info(f"📊 Worker-{worker_id} [진입] {analysis.get('ticker')} 신호 전송")
+                elif action == "EVENT_SL_TRAIL":
+                    logger.info(f"📊 Worker-{worker_id} [손절상승] {analysis.get('ticker')} {analysis.get('old_stop')} → {analysis.get('new_stop')}")
+                elif action == "EVENT_ATR_SPIKE":
+                    logger.info(f"📊 Worker-{worker_id} [ATR급변동] {analysis.get('ticker')} {analysis.get('atr_change_ratio', 0)*100:.0f}%")
+                elif action == "EVENT_TP_HIT":
+                    logger.info(f"📊 Worker-{worker_id} [부분익절] {analysis.get('ticker')} TP{analysis.get('tp_level')} 도달")
+                elif action == "EVENT_EXIT":
+                    logger.info(f"📊 Worker-{worker_id} [청산] {analysis.get('ticker')} 최종 손익 {analysis.get('pnl', 0):+.2f}%")
+                    # 청산 시 트레일링 스탑 상태 제거
+                    await analyzer.clear_trailing_stop(analysis.get('ticker'))
 
             if processed_count % 50 == 0 and processed_count > 0:
-                logger.info(f"📊 Worker-{worker_id} 처리 완료: {processed_count}개")
+                logger.info(f"📊 Worker-{worker_id} 처리 완료: {processed_count}개 이벤트")
 
             MESSAGE_QUEUE.task_done()
 
@@ -168,10 +191,13 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
             logger.info(f"🛑 전략 Worker-{worker_id} 종료")
             break
         except Exception as e:
-            log_error(f"Worker-{worker_id} 오류", e)
+            logger.error(f"❌ 전략 Worker-{worker_id} 오류: {e}", exc_info=True)
             await asyncio.sleep(1)
 
 
+# ============================================================
+# 4. Telegram 알림 함수 (시작/종료/오류)
+# ============================================================
 async def send_error_alert(error_msg: str, error_detail: str = "") -> None:
     global _error_sender
     if _error_sender is None:
@@ -200,7 +226,6 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     weekday = ["월", "화", "수", "목", "금", "토", "일"][datetime.now().weekday()]
 
-    # 🔥 블랙박스 상태 정보 추가
     bb_status = get_status()
     bb_info = f"블랙박스: {bb_status['file_count']}개 파일, 총 {bb_status['total_size_mb']}MB"
 
@@ -220,10 +245,10 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v6.0.2 Phoenix (블랙박스 포함)
+📊 <b>버전</b>: v6.2.0 Phoenix (이벤트 기반 액션 센터)
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
-<i>실시간 스캔 + 트레일링 스탑 + 자가 치유</i>
+<i>실시간 스캔 + 이벤트 기반 알림 + 자가 치유</i>
 """
     else:
         msg += f"""
@@ -256,6 +281,9 @@ async def send_shutdown_notification(reason: str = "정상 종료") -> None:
         pass
 
 
+# ============================================================
+# 5. 헬스체크 서버
+# ============================================================
 async def health_check(request: web.Request) -> web.Response:
     global _kiwoom, _monitor, _db, _start_time, _last_data_time
     queue_usage = (MESSAGE_QUEUE.qsize() / MESSAGE_QUEUE.maxsize) * 100 if MESSAGE_QUEUE.maxsize > 0 else 0
@@ -270,7 +298,7 @@ async def health_check(request: web.Request) -> web.Response:
             "queue": {"size": MESSAGE_QUEUE.qsize(), "maxsize": MESSAGE_QUEUE.maxsize, "usage_percent": queue_usage},
             "data_flow": {"last_data_sec_ago": time.time() - _last_data_time, "healthy": data_flow_healthy}
         },
-        "blackbox": get_status()  # 🔥 블랙박스 상태도 헬스체크에 포함
+        "blackbox": get_status()
     }
     return web.json_response(status)
 
@@ -292,14 +320,16 @@ async def start_health_server(host: str = '0.0.0.0', port: int = 8080) -> None:
     logger.warning("⚠️ 헬스체크 서버 시작 실패")
 
 
+# ============================================================
+# 6. 메인 함수
+# ============================================================
 async def main() -> None:
     global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time
 
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    # 🔥 블랙박스에 시작 기록
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v6.0.2"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v6.2.0"})
 
     check_and_create_pid()
     load_encrypted_env()
@@ -309,19 +339,21 @@ async def main() -> None:
     _error_sender = TelegramSender()
 
     logger.info("=" * 70)
-    logger.info("🚀 v6.0.2 Phoenix - 블랙박스 포함 자가 복구 엔진")
-    logger.info("📌 기능: 자동 키 학습, 데이터 백필, 하드 리셋, 블랙박스 기록")
+    logger.info("🚀 v6.2.0 Phoenix - 이벤트 기반 액션 센터")
+    logger.info("📌 기능: 5가지 이벤트(SIGNAL, SL_TRAIL, ATR_SPIKE, TP_HIT, EXIT)")
     logger.info("=" * 70)
 
     startup_success = False
     startup_details: Dict[str, Any] = {}
 
     try:
+        # --- DB 초기화 ---
         _db = DatabaseManager()
         await _db.init_db()
         logger.info("✅ DB 초기화 완료")
         log_event("DB_INIT_SUCCESS", {})
 
+        # --- 키움 연결 ---
         _kiwoom = KiwoomConnectorV512(rate_limit=config.get_float("rate_limit_capacity", 5.0))
         logger.info("⏳ 키움 서버 연결 대기 중...")
         retry_count = 0
@@ -335,6 +367,7 @@ async def main() -> None:
         logger.info("✅ 키움 서버 연결 성공!")
         log_event("KIWOOM_CONNECTED", {"retries": retry_count})
 
+        # --- WebSocket 준비 대기 ---
         logger.info("⏳ WebSocket LOGIN 및 수신 루프 준비 대기 중...")
         if not await _kiwoom.wait_until_ready(timeout=10.0):
             logger.warning("⚠️ WebSocket 준비 타임아웃, 재연결 시도")
@@ -346,6 +379,7 @@ async def main() -> None:
         else:
             logger.info("✅ WebSocket 완전 준비 완료")
 
+        # --- RealtimeMonitor 시작 ---
         _monitor = RealtimeMonitor(_kiwoom, MESSAGE_QUEUE)
         await _monitor.start()
         startup_details['ticker_count'] = _monitor.get_subscribed_count()
@@ -353,6 +387,7 @@ async def main() -> None:
         startup_details['tickers'] = _monitor.tickers
         log_event("MONITOR_STARTED", {"count": startup_details['ticker_count']})
 
+        # --- 분석기 및 의존성 ---
         analyzer = DeepAnalyzer(db_manager=_db)
         await analyzer.load_weights()
         sender = TelegramSender()
@@ -361,6 +396,7 @@ async def main() -> None:
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=_db, kiwoom_connector=_kiwoom)
         feedback_learner = FeedbackLearner(kiwoom_connector=_kiwoom, db_manager=_db)
 
+        # --- APScheduler 등록 (이벤트 루프 안전하게 실행) ---
         _scheduler = SchedulerManager()
         _scheduler.scheduler.add_job(
             lambda: asyncio.run_coroutine_threadsafe(run_daily_report(daily_reporter), _main_loop),
@@ -387,25 +423,31 @@ async def main() -> None:
         logger.info(f"⏰ 스케줄러 등록 완료 (총 {startup_details['job_count']}개 작업)")
         log_event("SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
 
+        # --- 전략 Worker 시작 (2개) ---
         _worker_tasks = []
         for i in range(2):
             task = asyncio.create_task(strategy_worker(i+1, analyzer, _db, sender))
             _worker_tasks.append(task)
 
+        # --- 헬스체크 서버 ---
         asyncio.create_task(start_health_server())
 
+        # --- 시작 완료 알림 ---
         startup_success = True
         await send_startup_notification(True, startup_details)
         log_event("SYSTEM_READY", {})
 
+        # --- 🔥 Phoenix 메인 루프 (데이터 흐름 감시 + 15:20 보호) ---
         logger.info("🚀 메인 루프 진입 (Phoenix Watchdog 활성화)")
         while True:
             try:
+                # 1) 연결 상태 체크
                 if not _kiwoom.is_connected():
                     await reconnect_and_resubscribe(_kiwoom, _monitor)
                     await asyncio.sleep(1)
                     continue
 
+                # 2) 데이터 흐름 체크 (장중 9시~15시, 15:20 이후는 제외)
                 now = datetime.now()
                 if (9 <= now.hour <= 15) and not (now.hour == 15 and now.minute >= 20):
                     if time.time() - _last_data_time > _DATA_FLOW_TIMEOUT:
@@ -443,6 +485,7 @@ async def main() -> None:
         raise
 
     finally:
+        # --- 종료 정리 ---
         if startup_success:
             await send_shutdown_notification("정상 종료")
         log_event("SYSTEM_SHUTDOWN", {})
