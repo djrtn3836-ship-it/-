@@ -1,0 +1,7 @@
+{
+  "url": "https://naverapihub.apigw.ntruss.com/search/v1/news",
+  "headers": {
+    "X-NCP-APIGW-API-KEY-ID": "xw4d23gx6c",
+    "X-NCP-APIGW-API-KEY": "MrJlz9jAyFa3wunDHHJKT9cJpYk9BfDhGErySlnL"
+  }
+}
