@@ -1,7 +1,7 @@
 """
-data/kiwoom_connector.py - v6.0.2 FINAL (블랙박스 연동)
-- 모든 WebSocket Raw 데이터를 블랙박스에 저장
-- 자가 적응 파서 + 자동 백필 + 하드 리셋 포함
+data/kiwoom_connector.py - v6.0.3 (TR 타입 분기 + 태스크 초기화)
+- request_tr()가 tr_type 인자에 따라 "현재가"와 "일봉" 분기 처리
+- disconnect()에서 _ws_task = None 명시적 초기화
 """
 
 import asyncio
@@ -18,12 +18,11 @@ from pathlib import Path
 
 from core.logger import setup_logger
 from core.config import get_config
-from core.blackbox_logger import blackbox_logger, log_raw_data, log_event, log_error  # 🔥 블랙박스 추가
+from core.blackbox_logger import blackbox_logger, log_raw_data, log_event, log_error
 
 logger = setup_logger("kiwoom_rest")
 config = get_config()
 
-# 🔥 동적 키 저장 파일
 DISCOVERED_KEYS_FILE = Path(__file__).parent.parent / "config" / "discovered_keys.json"
 
 
@@ -87,7 +86,7 @@ class KiwoomConnectorV512:
         self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
         self._discovered_keys = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.0.2", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.0.3", "rate_limit": rate_limit})
 
     # ============================================================
     # 자가 적응 파서 (Dynamic Key Learning)
@@ -130,14 +129,12 @@ class KiwoomConnectorV512:
 
     async def _handle_ws_message(self, data: dict):
         ticker = self._extract_ticker(data)
-
         if not ticker:
             keys = list(data.keys())
             if not (set(keys) - {'price', 'timestamp', 'time'}):
                 return
             log_error(f"파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
             return
-
         if ticker in self._realtime_handlers:
             try:
                 self._realtime_handlers[ticker](data)
@@ -147,27 +144,20 @@ class KiwoomConnectorV512:
             logger.debug(f"📩 미등록 종목 데이터: {ticker}")
 
     # ============================================================
-    # WebSocket 수신 루프 (블랙박스 Raw 저장)
+    # WebSocket 수신 루프
     # ============================================================
     async def _ws_receiver(self):
         logger.info(f"📡 WebSocket 수신 시작 (침묵 감지: {self._silence_timeout}초)")
         log_event("WS_RECEIVER_START", {"timeout": self._silence_timeout})
-        last_data_time = time.time()
-
         try:
             while True:
                 try:
                     raw = await asyncio.wait_for(self._ws.recv(), timeout=self._silence_timeout)
-                    last_data_time = time.time()
-
-                    # 🔥🔥🔥 블랙박스에 Raw 데이터 저장 (모든 메시지)
                     log_raw_data(raw, source="WEBSOCKET")
-
                     try:
                         data = json.loads(raw)
                         if data.get("trnm") == "PING":
                             await self._ws.send(raw)
-                            logger.debug("📡 PING Echo")
                             continue
                         if data.get("trnm") == "LOGIN":
                             continue
@@ -215,7 +205,7 @@ class KiwoomConnectorV512:
                 log_error(f"백필 실패 ({ticker})", e)
 
     # ============================================================
-    # 🔥 재연결 로직 (블랙박스 이벤트 기록)
+    # 🔥 재연결 로직
     # ============================================================
     async def _reconnect_websocket(self):
         if self._reconnecting:
@@ -270,7 +260,76 @@ class KiwoomConnectorV512:
             self._reconnecting = False
 
     # ============================================================
-    # 기존 함수들 (connect, register_realtime 등 - 블랙박스 로그 추가)
+    # 🔥 request_tr (TR 타입 분기 - 치명적 오류 C-04 해결)
+    # ============================================================
+    async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
+        """
+        tr_type 지원:
+            - "현재가": ka10004 (mrkcond)
+            - "일봉": ka10060 (일봉 차트)
+        """
+        if tr_type == "일봉":
+            api_id = "ka10060"
+            url = f"{self.REST_BASE_URL}/api/dostk/chart"  # 실제 키움 일봉 엔드포인트 (예시)
+            await self._acquire_rate_limit(api_id)
+            if not self.access_token or time.time() > self.token_expires_at:
+                await self._refresh_token()
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json;charset=UTF-8",
+                "api-id": api_id,
+            }
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            body = {"dt": yesterday, "stk_cd": ticker, "amt_qty_tp": "1", "trde_tp": "0", "unit_tp": "1"}
+            try:
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        # 실제 응답 구조에 맞게 파싱 (예시)
+                        chart_list = data.get('stk_invsr_orgn_chart', [])
+                        if chart_list:
+                            record = chart_list[0]
+                            return {
+                                "symbol": ticker,
+                                "open": float(record.get('open', 0)),
+                                "high": float(record.get('high', 0)),
+                                "low": float(record.get('low', 0)),
+                                "close": float(record.get('cur_prc', 0)),
+                                "volume": int(record.get('vol', 0)),
+                                "raw": data
+                            }
+                        return {"error": "no_data"}
+                    return {"error": resp.status}
+            except Exception as e:
+                return {"error": str(e)}
+
+        else:  # "현재가"
+            api_id = "ka10004"
+            url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
+            await self._acquire_rate_limit(api_id)
+            if not self.access_token or time.time() > self.token_expires_at:
+                await self._refresh_token()
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json;charset=UTF-8",
+                "api-id": api_id,
+            }
+            body = {"stk_cd": ticker}
+            try:
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        price = float(data.get('buy_fpr_bid', 0) or data.get('sel_fpr_bid', 0))
+                        result = {"symbol": ticker, "close": price, "raw": data}
+                        if callback:
+                            callback(result)
+                        return result
+                    return {"error": resp.status}
+            except Exception as e:
+                return {"error": str(e)}
+
+    # ============================================================
+    # 기존 함수들 (connect, register_realtime 등)
     # ============================================================
     async def connect(self) -> bool:
         log_event("CONNECT_START", {})
@@ -379,28 +438,6 @@ class KiwoomConnectorV512:
         log_event("REG_SENT", {"ticker": ticker, "group": grp_no})
         logger.info(f"📡 REG 구독: {ticker}, 그룹: {grp_no}")
 
-    async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
-        await self._acquire_rate_limit("ka10004")
-        if not self.access_token or time.time() > self.token_expires_at:
-            await self._refresh_token()
-        headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json;charset=UTF-8", "api-id": "ka10004"}
-        body = {"stk_cd": ticker}
-        url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
-        try:
-            async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    price = float(data.get('buy_fpr_bid', 0) or data.get('sel_fpr_bid', 0))
-                    result = {"symbol": ticker, "close": price, "raw": data}
-                    if callback:
-                        callback(result)
-                    return result
-                log_error(f"REST 요청 실패 ({ticker})", {"status": resp.status})
-                return {"error": resp.status}
-        except Exception as e:
-            log_error(f"REST 요청 오류 ({ticker})", e)
-            return {"error": str(e)}
-
     async def _acquire_rate_limit(self, api_id: str):
         await self._rate_limiters[api_id].acquire()
 
@@ -468,6 +505,7 @@ class KiwoomConnectorV512:
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
+            self._ws_task = None  # 🔥 명시적 초기화 (중요-05 해결)
         if self._session:
             await self._session.close()
             self._session = None

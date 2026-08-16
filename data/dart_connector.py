@@ -1,9 +1,9 @@
 """
-DART Connector v5.3.0 — 완전체 최종 안정화 버전
+DART Connector v5.3.1 — get_corp_code_sync 스텁 추가
 - 기존 Risk Score + 공시 분석 (비동기) 100% 유지
 - 재무제표 조회 안정성 강화 (예외 처리 + 정규화 반환)
 - 모든 HTTP 요청 Timeout/ConnectionError 처리
-- 로깅 통일 (core.logger.setup_logger)
+- get_corp_code_sync() 추가하여 weekly_pdf 크래시 방지
 """
 
 import re
@@ -385,6 +385,19 @@ class DartConnector:
                 return data.get('list', [])
         except Exception as e:
             logger.error(f"❌ 공시 검색 오류 ({corp_code}): {e}")
+        return None
+
+    # ============================================================
+    # 🔥 get_corp_code_sync (치명적 오류 C-03 해결)
+    # ============================================================
+    def get_corp_code_sync(self, ticker: str) -> Optional[str]:
+        """
+        티커 → corp_code 매핑 (동기 스텁)
+        - 현재는 None 반환 (크래시 방지)
+        - 추후 실제 매핑 테이블 연동 필요
+        """
+        # TODO: ticker -> corp_code 매핑 테이블 구현 (예: CSV, DB 등)
+        logger.debug(f"ℹ️ corp_code 조회 (미구현): {ticker}")
         return None
 
     # ============================================================

@@ -1,6 +1,7 @@
 """
-data/db_manager.py - v5.4.2 (OHLCV 저장/조회 완전 구현)
+data/db_manager.py - v5.4.4 (sentiment_score 컬럼 추가)
 """
+
 import json
 import aiosqlite
 from pathlib import Path
@@ -9,6 +10,7 @@ from core.logger import setup_logger
 
 logger = setup_logger("db_manager")
 DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
+
 
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
@@ -28,6 +30,7 @@ class DatabaseManager:
                     positives TEXT,
                     negatives TEXT,
                     counterfactuals TEXT,
+                    sentiment_score REAL DEFAULT 0.0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS decision_outcomes (
@@ -46,7 +49,6 @@ class DatabaseManager:
                     weight REAL DEFAULT 1.0,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
-                -- 🔥 OHLCV 테이블 (시가/고가/저가/종가/거래량)
                 CREATE TABLE IF NOT EXISTS ohlcv (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -60,18 +62,27 @@ class DatabaseManager:
                     UNIQUE(ticker, date)
                 );
             """)
+            # 🔥 기존 DB 마이그레이션 (컬럼 추가)
+            try:
+                await db.execute("ALTER TABLE decisions ADD COLUMN sentiment_score REAL DEFAULT 0.0")
+                await db.commit()
+                logger.info("✅ decisions 테이블에 sentiment_score 컬럼 추가 완료")
+            except Exception as e:
+                # 컬럼이 이미 존재하면 무시
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning(f"⚠️ sentiment_score 컬럼 추가 시도 중 오류: {e}")
+            
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_created_at ON decisions(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_ticker ON decisions(ticker)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_action ON decisions(action)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker_date ON ohlcv(ticker, date)")
             await db.commit()
-            logger.info("✅ DB 초기화 완료 (OHLCV 테이블 포함)")
+            logger.info("✅ DB 초기화 완료 (OHLCV + sentiment_score 포함)")
 
     # ============================================================
-    # 🔥 OHLCV 저장/조회 (ATR 계산용)
+    # OHLCV 저장/조회
     # ============================================================
     async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict):
-        """OHLCV 데이터 저장 (시가/고가/저가/종가/거래량)"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
@@ -87,10 +98,6 @@ class DatabaseManager:
             await db.commit()
 
     async def get_ohlcv(self, ticker: str, period: int = 14) -> List[Dict]:
-        """
-        최근 N일 OHLCV 데이터 조회 (ATR 계산용)
-        Returns: [{'date': '2026-08-01', 'open': 100, 'high': 110, 'low': 95, 'close': 105, 'volume': 1000}, ...]
-        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -98,20 +105,19 @@ class DatabaseManager:
                 (ticker, period)
             ) as cursor:
                 rows = await cursor.fetchall()
-                # 날짜 오름차순으로 반환 (ATR 계산은 시간 순서 필요)
                 result = [dict(row) for row in rows]
                 result.reverse()
                 return result
 
     # ============================================================
-    # 기존 메서드 (save_decision, get_decisions_by_date 등)
+    # 결정 기록 저장/조회
     # ============================================================
     async def save_decision(self, analysis: dict):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT INTO decisions 
-                (ticker, action, score, confidence, price_at_decision, positives, negatives, counterfactuals)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (ticker, action, score, confidence, price_at_decision, positives, negatives, counterfactuals, sentiment_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 analysis.get('ticker', 'N/A'),
                 analysis.get('action', 'HOLD'),
@@ -120,7 +126,8 @@ class DatabaseManager:
                 analysis.get('price', 0.0),
                 json.dumps(analysis.get('positives', []), ensure_ascii=False),
                 json.dumps(analysis.get('negatives', []), ensure_ascii=False),
-                json.dumps(analysis.get('counterfactuals', []), ensure_ascii=False)
+                json.dumps(analysis.get('counterfactuals', []), ensure_ascii=False),
+                analysis.get('sentiment_score', 0.0)  # 🔥 추가
             ))
             await db.commit()
 
@@ -162,15 +169,45 @@ class DatabaseManager:
                 VALUES (:decision_id, :price_after_1d, :price_after_5d, :return_1d, :return_5d, :is_correct)
             """, outcome)
             await db.commit()
-    # ============================================================
-    # 🔥 진단 스크립트 호환을 위한 close 메서드 추가
-    # ============================================================
+
     async def close(self):
-        """데이터베이스 연결 종료 (진단 스크립트 호환용)"""
-        # SQLite는 연결 종료가 따로 필요 없지만, 메서드 존재 여부만으로 오류를 피하기 위해 정의
         if hasattr(self, '_conn') and self._conn:
             try:
                 await self._conn.close()
             except:
                 pass
         logger.info("🔌 DB 연결 종료 완료")
+
+    # ============================================================
+    # 🔥 피드백 통계 조회
+    # ============================================================
+    async def get_feedback_stats(self, days: int = 30) -> Dict:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT d.action, o.return_1d, o.is_correct 
+                   FROM decisions d 
+                   JOIN decision_outcomes o ON d.id = o.decision_id 
+                   WHERE d.created_at >= datetime('now', ?) 
+                   AND o.is_correct IS NOT NULL""",
+                (f'-{days} days',)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                if not rows:
+                    return {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
+                
+                correct = sum(1 for r in rows if r['is_correct'])
+                total = len(rows)
+                win_rate = correct / total if total > 0 else 0.5
+                
+                returns = [r['return_1d'] for r in rows if r['return_1d'] is not None]
+                avg_ret = sum(returns) / len(returns) if returns else 0
+                std_dev = (sum((r - avg_ret)**2 for r in returns) / len(returns)) ** 0.5 if returns else 1.0
+                sharpe = (avg_ret / std_dev) * (252 ** 0.5) if std_dev > 0 else 0
+                
+                return {
+                    "win_rate": round(win_rate, 3),
+                    "sharpe": round(sharpe, 3),
+                    "sample_count": total,
+                    "avg_return": round(avg_ret, 3)
+                }
