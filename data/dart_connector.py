@@ -1,9 +1,10 @@
 """
-DART Connector v5.3.1 — get_corp_code_sync 스텁 추가
+DART Connector v5.3.2 FINAL (corp_code 매핑 구현 + 파일 캐싱)
+- get_corp_code_sync(): 티커(6자리) → DART 고유번호(8자리) 매핑
+- DART Open API corpCode.xml 다운로드 및 캐싱 (7일 TTL)
+- 실패 시 None 반환 (시스템 크래시 방지)
 - 기존 Risk Score + 공시 분석 (비동기) 100% 유지
-- 재무제표 조회 안정성 강화 (예외 처리 + 정규화 반환)
 - 모든 HTTP 요청 Timeout/ConnectionError 처리
-- get_corp_code_sync() 추가하여 weekly_pdf 크래시 방지
 """
 
 import re
@@ -11,14 +12,20 @@ import asyncio
 import aiohttp
 import requests
 import logging
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from core.logger import setup_logger
 
 logger = setup_logger("dart_connector")
+
+# 캐시 파일 및 TTL
+CACHE_FILE = Path(__file__).parent.parent / "config" / "corp_code_cache.json"
+CACHE_TTL_DAYS = 7
 
 
 class RiskLevel(Enum):
@@ -48,7 +55,7 @@ class DisclosureAnalysis:
 
 
 class DartConnector:
-    """DART Open API 연동 모듈 (Risk 분석 + 재무제표 통합)"""
+    """DART Open API 연동 모듈 (Risk 분석 + 재무제표 + corp_code 매핑)"""
 
     RISK_WEIGHTS = {
         'third_party_allotment': 30,
@@ -89,8 +96,111 @@ class DartConnector:
             'merger': {'pattern': r'합병\s*(결정|공고)', 'weight': self.RISK_WEIGHTS['merger']}
         }
 
+        # 🔥 corp_code 매핑 캐시 관련 변수
+        self._corp_code_map = None
+        self._cache_loaded = False
+
     # ============================================================
-    # 1. 비동기 연결 관리
+    # 🔥 신규: corp_code 매핑 (티커 → DART 고유번호)
+    # ============================================================
+    def _load_corp_code_cache(self) -> Optional[Dict[str, str]]:
+        """로컬 캐시에서 corp_code 매핑 로드 (유효기간 확인)"""
+        if self._cache_loaded:
+            return self._corp_code_map
+
+        if CACHE_FILE.exists():
+            try:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                cached_time = datetime.fromisoformat(data.get('cached_at', '2000-01-01'))
+                if datetime.now() - cached_time < timedelta(days=CACHE_TTL_DAYS):
+                    self._corp_code_map = data.get('mapping', {})
+                    self._cache_loaded = True
+                    logger.debug(f"✅ corp_code 캐시 로드 완료 (항목: {len(self._corp_code_map)}개)")
+                    return self._corp_code_map
+                else:
+                    logger.info("⏳ corp_code 캐시 만료, 재다운로드 필요")
+            except Exception as e:
+                logger.warning(f"⚠️ 캐시 로드 실패: {e}")
+
+        return None
+
+    def _save_corp_code_cache(self, mapping: Dict[str, str]):
+        """매핑 데이터를 로컬 캐시에 저장"""
+        try:
+            CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'cached_at': datetime.now().isoformat(),
+                    'mapping': mapping
+                }, f, ensure_ascii=False, indent=2)
+            self._corp_code_map = mapping
+            self._cache_loaded = True
+            logger.info(f"✅ corp_code 캐시 저장 완료 (항목: {len(mapping)}개)")
+        except Exception as e:
+            logger.error(f"❌ 캐시 저장 실패: {e}")
+
+    def _download_corp_code(self) -> Dict[str, str]:
+        """DART API에서 corpCode.xml 다운로드 및 파싱"""
+        if not self.api_key:
+            logger.warning("⚠️ DART API 키 없음, corp_code 매핑 불가")
+            return {}
+
+        url = f"{self.base_url}/corpCode.xml"
+        params = {"crtfc_key": self.api_key}
+
+        try:
+            resp = requests.get(url, params=params, timeout=30)  # 대용량 파일 고려 30초
+            resp.raise_for_status()
+
+            # XML 파싱
+            root = ET.fromstring(resp.content)
+            mapping = {}
+            for corp in root.findall('list'):
+                corp_code = corp.findtext('corp_code')
+                stock_code = corp.findtext('stock_code')
+                if corp_code and stock_code:
+                    # stock_code가 6자리 숫자이고, 0으로 시작하지 않는 경우 (실제 종목)
+                    if stock_code.isdigit() and len(stock_code) >= 6:
+                        mapping[stock_code] = corp_code
+            logger.info(f"✅ DART corp_code 매핑 다운로드 완료 (총 {len(mapping)}개 종목)")
+            return mapping
+        except requests.exceptions.Timeout:
+            logger.error("❌ corpCode.xml 다운로드 타임아웃 (30초)")
+        except Exception as e:
+            logger.error(f"❌ corpCode.xml 다운로드 실패: {e}")
+        return {}
+
+    def get_corp_code_sync(self, ticker: str) -> Optional[str]:
+        """
+        티커(6자리 종목코드) → DART 고유번호(8자리) 반환
+        - 캐시 우선 조회, 없으면 다운로드
+        - 다운로드 실패 시 None 반환 (시스템 크래시 방지)
+        """
+        if not ticker or not ticker.isdigit() or len(ticker) < 6:
+            return None
+
+        # 1. 캐시 로드 시도
+        cache = self._load_corp_code_cache()
+        if cache and ticker in cache:
+            return cache[ticker]
+
+        # 2. 캐시에 없거나 만료됨 → 다운로드
+        logger.info(f"📥 corp_code 매핑 다운로드 시작 (티커: {ticker})")
+        new_mapping = self._download_corp_code()
+        if new_mapping:
+            self._save_corp_code_cache(new_mapping)
+            return new_mapping.get(ticker)
+
+        # 3. 다운로드 실패 → 빈 캐시라도 저장하여 재시도 방지 (빈 캐시 저장)
+        if cache is None:  # 이전에 캐시가 전혀 없었던 경우
+            self._save_corp_code_cache({})
+
+        logger.warning(f"⚠️ {ticker}에 대한 corp_code를 찾을 수 없음")
+        return None
+
+    # ============================================================
+    # 비동기 연결 관리 (기존)
     # ============================================================
     async def connect(self):
         if self._session is None:
@@ -104,7 +214,7 @@ class DartConnector:
         logger.info("DART Connector disconnected")
 
     # ============================================================
-    # 2. 공시 조회 및 Risk 분석 (비동기, 100% 유지)
+    # 공시 조회 및 Risk 분석 (비동기, 100% 유지)
     # ============================================================
     async def get_disclosures(self, corp_code: str, from_date: str, to_date: str, deep_scan: bool = False) -> List[DisclosureAnalysis]:
         if self._session is None:
@@ -282,9 +392,8 @@ class DartConnector:
             self.last_reset = datetime.now()
 
     # ============================================================
-    # 3. 🔥 안정성 강화 동기 메서드 (PDF 보고서용)
+    # 안정성 강화 동기 메서드 (PDF 보고서용)
     # ============================================================
-
     def get_financials_sync(self, corp_code: str, year: str = "2024") -> Dict[str, float]:
         """
         재무제표 조회 + 정규화 반환 (예외 발생 시 빈 딕셔너리)
@@ -388,20 +497,7 @@ class DartConnector:
         return None
 
     # ============================================================
-    # 🔥 get_corp_code_sync (치명적 오류 C-03 해결)
-    # ============================================================
-    def get_corp_code_sync(self, ticker: str) -> Optional[str]:
-        """
-        티커 → corp_code 매핑 (동기 스텁)
-        - 현재는 None 반환 (크래시 방지)
-        - 추후 실제 매핑 테이블 연동 필요
-        """
-        # TODO: ticker -> corp_code 매핑 테이블 구현 (예: CSV, DB 등)
-        logger.debug(f"ℹ️ corp_code 조회 (미구현): {ticker}")
-        return None
-
-    # ============================================================
-    # 4. 상태 조회
+    # 상태 조회 (기존)
     # ============================================================
     def get_stats(self) -> Dict:
         return {

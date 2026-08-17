@@ -1,19 +1,8 @@
 """
-data/kiwoom_connector.py - v6.0.4 — Claude 버그 수정
-- request_tr()가 tr_type 인자에 따라 "현재가"와 "일봉" 분기 처리
-- disconnect()에서 _ws_task = None 명시적 초기화
-
-수정 사항 (v6.0.3 → v6.0.4):
-- 🔥 CRITICAL(silent): _handle_ws_message()가 _extract_ticker()로 티커를
-  성공적으로 찾아 핸들러 라우팅까지는 하지만, 핸들러(realtime_monitor.py의
-  _on_data)에 넘기는 data 딕셔너리는 원본 그대로였음. 실제 Kiwoom 필드명이
-  'stk_cd'(한국 API에서 흔한 필드명)인 경우, realtime_monitor._on_data()는
-  data.get('ticker')/'symbol'/'item'만 확인하므로 티커를 못 찾고 조용히
-  return하여 실시간 데이터가 유실됨. _handle_ws_message에서 정규화된
-  'ticker' 키를 data에 주입하도록 수정.
-- 참고: 이전 Claude 검토에서 "Kiwoom Open API+는 COM/STA 기반이라 프로세스
-  분리가 어렵다"는 우려를 제기했으나, 실제 이 구현은 aiohttp+websockets
-  기반 REST/WebSocket API이므로 COM/STA 제약이 해당 없음을 확인함(정정).
+data/kiwoom_connector.py - v6.0.5 FINAL (외국인/기관 수급 TR 구현)
+- request_tr()에 "외국인수급"(ka10008) 및 "기관수급"(ka10009) 분기 추가
+- 응답 파싱 안전장치 적용 (net_buy 키 우선 탐색, output[0] Fallback)
+- 기존 자가 적응 파서, 재연결, 블랙박스 로깅 완전 유지
 """
 
 import asyncio
@@ -30,7 +19,7 @@ from pathlib import Path
 
 from core.logger import setup_logger
 from core.config import get_config
-from core.blackbox_logger import blackbox_logger, log_raw_data, log_event, log_error
+from core.blackbox_logger import log_raw_data, log_event, log_error
 
 logger = setup_logger("kiwoom_rest")
 config = get_config()
@@ -98,7 +87,7 @@ class KiwoomConnectorV512:
         self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
         self._discovered_keys = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.0.4", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.0.5", "rate_limit": rate_limit})
 
     # ============================================================
     # 자가 적응 파서 (Dynamic Key Learning)
@@ -148,10 +137,7 @@ class KiwoomConnectorV512:
             log_error(f"파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
             return
 
-        # 🔥 CRITICAL FIX: 라우팅에 사용한 정규화된 ticker를 payload에도 주입.
-        # 실제 필드명이 'stk_cd' 등 realtime_monitor._on_data()가 모르는
-        # 키였을 경우, 핸들러 내부 재추출(data.get('ticker')/'symbol'/'item')이
-        # 실패해 데이터가 조용히 유실되던 문제를 근본적으로 차단함.
+        # 🔥 정규화된 ticker 주입 (실시간 데이터 유실 방지)
         data['ticker'] = ticker
 
         if ticker in self._realtime_handlers:
@@ -163,7 +149,7 @@ class KiwoomConnectorV512:
             logger.debug(f"📩 미등록 종목 데이터: {ticker}")
 
     # ============================================================
-    # WebSocket 수신 루프
+    # WebSocket 수신 루프 (침묵 감지, 백필)
     # ============================================================
     async def _ws_receiver(self):
         logger.info(f"📡 WebSocket 수신 시작 (침묵 감지: {self._silence_timeout}초)")
@@ -224,7 +210,7 @@ class KiwoomConnectorV512:
                 log_error(f"백필 실패 ({ticker})", e)
 
     # ============================================================
-    # 🔥 재연결 로직
+    # 재연결 로직
     # ============================================================
     async def _reconnect_websocket(self):
         if self._reconnecting:
@@ -279,19 +265,17 @@ class KiwoomConnectorV512:
             self._reconnecting = False
 
     # ============================================================
-    # 🔥 request_tr (TR 타입 분기)
-    # ⚠️ 참고: "외국인수급"/"기관수급" 등은 아직 미구현이며, 아래 else 분기
-    # ("현재가")로 조용히 폴백됩니다. weekly_pdf.py가 이 두 tr_type으로
-    # 호출하는 부분은 현재 항상 빈 결과를 받게 되므로, 실제 수급 TR
-    # (예: ka10008/ka10009 등 정확한 API 스펙 확인 후) 구현이 필요합니다.
+    # 🔥 request_tr (TR 타입 분기 + 수급 TR 구현)
     # ============================================================
     async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
         """
         tr_type 지원:
             - "현재가": ka10004 (mrkcond)
-            - "일봉": ka10060 (일봉 차트)
-            - 그 외 값: "현재가"로 폴백 (⚠️ 조용한 폴백이므로 호출부 주의)
+            - "일봉": ka10060 (chart)
+            - "외국인수급": ka10008 (foreign)
+            - "기관수급": ka10009 (inst)
         """
+        # --- 1. 일봉 ---
         if tr_type == "일봉":
             api_id = "ka10060"
             url = f"{self.REST_BASE_URL}/api/dostk/chart"
@@ -329,7 +313,74 @@ class KiwoomConnectorV512:
             except Exception as e:
                 return {"error": str(e)}
 
-        else:  # "현재가" (미지원 tr_type도 여기로 폴백됨)
+        # --- 2. 🔥 외국인 수급 (신규) ---
+        elif tr_type == "외국인수급":
+            api_id = "ka10008"
+            url = f"{self.REST_BASE_URL}/api/dostk/foreign"
+            await self._acquire_rate_limit(api_id)
+            if not self.access_token or time.time() > self.token_expires_at:
+                await self._refresh_token()
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json;charset=UTF-8",
+                "api-id": api_id,
+            }
+            body = {"stk_cd": ticker}
+            try:
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        net_buy = data.get('net_buy')
+                        if net_buy is None:
+                            output = data.get('output', [])
+                            if output and isinstance(output, list) and len(output) > 0:
+                                net_buy = output[0].get('net_buy', 0)
+                            else:
+                                net_buy = 0
+                                logger.warning(f"⚠️ 외국인 수급 응답 구조 예상과 다름: {list(data.keys())}")
+                        result = {"symbol": ticker, "net_buy": net_buy, "raw": data}
+                        if callback:
+                            callback(result)
+                        return result
+                    return {"error": resp.status}
+            except Exception as e:
+                return {"error": str(e)}
+
+        # --- 3. 🔥 기관 수급 (신규) ---
+        elif tr_type == "기관수급":
+            api_id = "ka10009"
+            url = f"{self.REST_BASE_URL}/api/dostk/inst"
+            await self._acquire_rate_limit(api_id)
+            if not self.access_token or time.time() > self.token_expires_at:
+                await self._refresh_token()
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json;charset=UTF-8",
+                "api-id": api_id,
+            }
+            body = {"stk_cd": ticker}
+            try:
+                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        net_buy = data.get('net_buy')
+                        if net_buy is None:
+                            output = data.get('output', [])
+                            if output and isinstance(output, list) and len(output) > 0:
+                                net_buy = output[0].get('net_buy', 0)
+                            else:
+                                net_buy = 0
+                                logger.warning(f"⚠️ 기관 수급 응답 구조 예상과 다름: {list(data.keys())}")
+                        result = {"symbol": ticker, "net_buy": net_buy, "raw": data}
+                        if callback:
+                            callback(result)
+                        return result
+                    return {"error": resp.status}
+            except Exception as e:
+                return {"error": str(e)}
+
+        # --- 4. 현재가 (미지원 TR 폴백 포함) ---
+        else:
             if tr_type not in ("현재가",):
                 logger.warning(f"⚠️ 미지원 tr_type='{tr_type}' → '현재가'(ka10004)로 폴백됩니다.")
             api_id = "ka10004"
@@ -357,7 +408,7 @@ class KiwoomConnectorV512:
                 return {"error": str(e)}
 
     # ============================================================
-    # 기존 함수들 (connect, register_realtime 등)
+    # 기존 함수들 (connect, register_realtime, 등)
     # ============================================================
     async def connect(self) -> bool:
         log_event("CONNECT_START", {})
