@@ -1,7 +1,17 @@
 """
-report/telegram_sender.py - v7.2.1 FINAL (합의 엔진 + 동적 TP)
+report/telegram_sender.py - v7.2.2 — Claude 버그 수정
 - 4대 독립 개체 투표 결과, 합의 점수, 판단 근거 표시
 - ATR 급변동 시 동적 TP 조정 정보 포함
+
+수정 사항 (v7.2.1 → v7.2.2):
+- 🔥 _format_tp_hit()에서 tp_level이 1~3 범위를 벗어나면
+  (0, 4 이상, 또는 문자열 등) tp_names[tp_level-1]에서
+  IndexError가 발생하거나(범위 초과) 음수 인덱스로 엉뚱한
+  라벨이 조용히 나오던(tp_level=0 → 마지막 요소) 문제를 수정.
+  범위를 벗어나면 안전한 기본 라벨로 폴백.
+- 🔥 send()에서 알 수 없는 action이 들어오면 아무 로그 없이
+  True를 반환해 "정상 처리된 것처럼" 보이던 부분에 경고 로그 추가
+  (deep_analyzer.py 쪽 오타/신규 이벤트 타입 누락을 조기에 발견하기 위함).
 """
 
 import os
@@ -46,6 +56,8 @@ class TelegramSender:
             elif action == "EVENT_LIFECYCLE_ADVICE":
                 message = self._format_lifecycle_advice(report)
             else:
+                # 🔥 수정: 알 수 없는 action은 조용히 넘기지 않고 경고 로그를 남김
+                logger.warning(f"⚠️ 알 수 없는 action 타입 수신, 전송 스킵: {action!r}")
                 return True
             return await self.send_raw(message)
         except Exception as e:
@@ -139,7 +151,7 @@ class TelegramSender:
         lines.append("")
 
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.1 Pro Alert</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2 Pro Alert</i>")
         lines.append("<i>⚠️ Shadow Mode: 알림 전용</i>")
         return "\n".join(lines)
 
@@ -202,7 +214,7 @@ class TelegramSender:
         tp3 = data.get("tp3_price", 0.0)
 
         level = "🔴 높음" if change_ratio > 60 else "🟠 중간" if change_ratio > 40 else "🟡 낮음"
-        
+
         lines = []
         lines.append(f"⚠️ [ATR 급변동 감지] {ticker} - 변동성 확대")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
@@ -215,7 +227,7 @@ class TelegramSender:
         lines.append("🔄 <b>자동 조정된 손절</b>")
         lines.append(f"   • 기존 손절: <code>{old_stop:,.0f}원</code>")
         lines.append(f"   • 🔴 <b>신규 손절</b>: <code>{new_stop:,.0f}원</code>")
-        
+
         if tp_adjusted and tp2 > 0 and tp3 > 0:
             lines.append("")
             lines.append("🎯 <b>동적 익절가 조정</b>")
@@ -225,7 +237,7 @@ class TelegramSender:
         lines.append("🧠 <b>액션 가이드</b>")
         lines.append("   • 변동성 급증 → 포지션 사이즈 축소 고려")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.1</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2</i>")
         return "\n".join(lines)
 
     # ============================================================
@@ -240,14 +252,24 @@ class TelegramSender:
         remaining_qty = data.get("remaining_qty", 1.0)
         rec_reason = data.get("recommendation_reason", "")
 
-        tp_names = ["1차 (50%)", "2차 (30%)", "3차 (20%)"]
-        tp_emoji = "🎯" if tp_level == 1 else "🎯" if tp_level == 2 else "🏁"
+        tp_names = {1: "1차 (50%)", 2: "2차 (30%)", 3: "3차 (20%)"}
+        tp_emojis = {1: "🎯", 2: "🎯", 3: "🏁"}
+
+        # 🔥 수정: tp_level이 1~3 범위를 벗어나도 안전하게 폴백
+        try:
+            tp_level_int = int(tp_level)
+        except (TypeError, ValueError):
+            tp_level_int = 1
+        tp_name = tp_names.get(tp_level_int, f"{tp_level_int}차 (알 수 없음)")
+        tp_emoji = tp_emojis.get(tp_level_int, "🏁")
+        if tp_level_int not in tp_names:
+            logger.warning(f"⚠️ 예상 범위(1~3) 밖의 tp_level 수신: {tp_level!r} (ticker={ticker})")
 
         lines = []
-        lines.append(f"{tp_emoji} [부분 익절 도달] {ticker} - {tp_names[tp_level-1]}")
+        lines.append(f"{tp_emoji} [부분 익절 도달] {ticker} - {tp_name}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>  |  <b>목표가</b>: <code>{tp_price:,.0f}원</code>")
-        lines.append(f"📊 <b>수익률</b>: <code>{((price - entry_price) / entry_price * 100):+.2f}%</code>")
+        lines.append(f"📊 <b>수익률</b>: <code>{((price - entry_price) / entry_price * 100) if entry_price else 0:+.2f}%</code>")
         lines.append(f"📌 <b>남은 물량</b>: <code>{remaining_qty*100:.0f}%</code>")
         lines.append("")
         lines.append("🧠 <b>액션 가이드</b>")
@@ -290,22 +312,22 @@ class TelegramSender:
         entry_price = data.get("entry_price", price)
         pnl = data.get("pnl", 0.0)
         advice = data.get("advice", {})
-        
+
         action_label = advice.get("action_label", "관망")
         consensus_score = advice.get("consensus_score", 0.0)
         votes = advice.get("votes", {})
         reasons = advice.get("reasons", [])
         summary = advice.get("summary", "")
-        
+
         emoji = "🔴" if "청산" in action_label else "🟡" if "관망" in action_label else "🟢"
-        
+
         vote_str = " | ".join([
             f"기술:{votes.get('technical', 0):+.2f}",
             f"리스크:{votes.get('risk', 0):+.2f}",
             f"시간:{votes.get('time_value', 0):+.2f}",
             f"수급:{votes.get('micro', 0):+.2f}"
         ])
-        
+
         lines = []
         lines.append(f"{emoji} [🧠 합의 엔진] {ticker} - {action_label}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
@@ -324,7 +346,7 @@ class TelegramSender:
         lines.append("")
         lines.append(f"🎯 <b>최종 권고</b>: {action_label}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.1 Consensus (데이터 기반)</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2 Consensus (데이터 기반)</i>")
         return "\n".join(lines)
 
     # ============================================================

@@ -1,7 +1,19 @@
 """
-data/kiwoom_connector.py - v6.0.3 (TR 타입 분기 + 태스크 초기화)
+data/kiwoom_connector.py - v6.0.4 — Claude 버그 수정
 - request_tr()가 tr_type 인자에 따라 "현재가"와 "일봉" 분기 처리
 - disconnect()에서 _ws_task = None 명시적 초기화
+
+수정 사항 (v6.0.3 → v6.0.4):
+- 🔥 CRITICAL(silent): _handle_ws_message()가 _extract_ticker()로 티커를
+  성공적으로 찾아 핸들러 라우팅까지는 하지만, 핸들러(realtime_monitor.py의
+  _on_data)에 넘기는 data 딕셔너리는 원본 그대로였음. 실제 Kiwoom 필드명이
+  'stk_cd'(한국 API에서 흔한 필드명)인 경우, realtime_monitor._on_data()는
+  data.get('ticker')/'symbol'/'item'만 확인하므로 티커를 못 찾고 조용히
+  return하여 실시간 데이터가 유실됨. _handle_ws_message에서 정규화된
+  'ticker' 키를 data에 주입하도록 수정.
+- 참고: 이전 Claude 검토에서 "Kiwoom Open API+는 COM/STA 기반이라 프로세스
+  분리가 어렵다"는 우려를 제기했으나, 실제 이 구현은 aiohttp+websockets
+  기반 REST/WebSocket API이므로 COM/STA 제약이 해당 없음을 확인함(정정).
 """
 
 import asyncio
@@ -86,7 +98,7 @@ class KiwoomConnectorV512:
         self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
         self._discovered_keys = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.0.3", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.0.4", "rate_limit": rate_limit})
 
     # ============================================================
     # 자가 적응 파서 (Dynamic Key Learning)
@@ -135,6 +147,13 @@ class KiwoomConnectorV512:
                 return
             log_error(f"파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
             return
+
+        # 🔥 CRITICAL FIX: 라우팅에 사용한 정규화된 ticker를 payload에도 주입.
+        # 실제 필드명이 'stk_cd' 등 realtime_monitor._on_data()가 모르는
+        # 키였을 경우, 핸들러 내부 재추출(data.get('ticker')/'symbol'/'item')이
+        # 실패해 데이터가 조용히 유실되던 문제를 근본적으로 차단함.
+        data['ticker'] = ticker
+
         if ticker in self._realtime_handlers:
             try:
                 self._realtime_handlers[ticker](data)
@@ -260,17 +279,22 @@ class KiwoomConnectorV512:
             self._reconnecting = False
 
     # ============================================================
-    # 🔥 request_tr (TR 타입 분기 - 치명적 오류 C-04 해결)
+    # 🔥 request_tr (TR 타입 분기)
+    # ⚠️ 참고: "외국인수급"/"기관수급" 등은 아직 미구현이며, 아래 else 분기
+    # ("현재가")로 조용히 폴백됩니다. weekly_pdf.py가 이 두 tr_type으로
+    # 호출하는 부분은 현재 항상 빈 결과를 받게 되므로, 실제 수급 TR
+    # (예: ka10008/ka10009 등 정확한 API 스펙 확인 후) 구현이 필요합니다.
     # ============================================================
     async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
         """
         tr_type 지원:
             - "현재가": ka10004 (mrkcond)
             - "일봉": ka10060 (일봉 차트)
+            - 그 외 값: "현재가"로 폴백 (⚠️ 조용한 폴백이므로 호출부 주의)
         """
         if tr_type == "일봉":
             api_id = "ka10060"
-            url = f"{self.REST_BASE_URL}/api/dostk/chart"  # 실제 키움 일봉 엔드포인트 (예시)
+            url = f"{self.REST_BASE_URL}/api/dostk/chart"
             await self._acquire_rate_limit(api_id)
             if not self.access_token or time.time() > self.token_expires_at:
                 await self._refresh_token()
@@ -285,11 +309,10 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        # 실제 응답 구조에 맞게 파싱 (예시)
                         chart_list = data.get('stk_invsr_orgn_chart', [])
                         if chart_list:
                             record = chart_list[0]
-                            return {
+                            result = {
                                 "symbol": ticker,
                                 "open": float(record.get('open', 0)),
                                 "high": float(record.get('high', 0)),
@@ -298,12 +321,17 @@ class KiwoomConnectorV512:
                                 "volume": int(record.get('vol', 0)),
                                 "raw": data
                             }
+                            if callback:
+                                callback(result)
+                            return result
                         return {"error": "no_data"}
                     return {"error": resp.status}
             except Exception as e:
                 return {"error": str(e)}
 
-        else:  # "현재가"
+        else:  # "현재가" (미지원 tr_type도 여기로 폴백됨)
+            if tr_type not in ("현재가",):
+                logger.warning(f"⚠️ 미지원 tr_type='{tr_type}' → '현재가'(ka10004)로 폴백됩니다.")
             api_id = "ka10004"
             url = f"{self.REST_BASE_URL}/api/dostk/mrkcond"
             await self._acquire_rate_limit(api_id)
@@ -505,7 +533,7 @@ class KiwoomConnectorV512:
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
-            self._ws_task = None  # 🔥 명시적 초기화 (중요-05 해결)
+            self._ws_task = None
         if self._session:
             await self._session.close()
             self._session = None
