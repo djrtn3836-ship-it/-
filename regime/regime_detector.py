@@ -1,16 +1,10 @@
 """
-Regime Detector v5.1.3 — Claude 버그 수정 (Critical)
+Regime Detector v5.1.4 — 거시 데이터 통합 (경로 수정)
 
-수정 사항 (v5.1.2 → v5.1.3):
-- 🔥 CRITICAL: `_calculate_trend`, `_calculate_risk`, `_calculate_flow`가
-  모두 `pass`(암묵적 None 반환) 상태였음. `detect()`에서
-  `None * 0.40` 연산이 발생해 규모 국면 판정 자체가 100% 실패(TypeError)했음.
-  Regime은 dynamic_weighter, explainer 등 여러 모듈이 의존하므로
-  이 버그 하나로 시스템 전체가 마비됨.
-- 아래 구현은 기존 파일(macro_filter.py, dynamic_weighter.py)이 사용하는
-  데이터 필드(kospi_trend, vix/vkospi, foreigner_net, institution_net,
-  program_buy/sell, futures_long/short)와 일관되게 설계함.
-  실제 배포 전 파라미터(가중치, 임계값)는 Walk-Forward 검증으로 재조정 필요.
+수정 사항 (v5.1.3 → v5.1.4):
+- 🔥 거시 데이터 수집기(macro_collector) 연동: Yahoo Finance 실시간 데이터 사용
+- data에 kospi_trend, vix, vkospi 등이 없으면 macro_collector에서 자동으로 채움
+- 기존 한국 특이 요인(선물옵션 만기, 배당락) 로직 유지
 """
 
 import pandas as pd
@@ -18,6 +12,9 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 import logging
+
+# 🔥 거시 데이터 수집기 import (경로 수정)
+from scheduler.macro_collector import get_cached_macro
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +56,13 @@ class KoreanSpecialFactors:
 
 class RegimeDetector:
     """
-    시장 국면 판정 v5.1.3
+    시장 국면 판정 v5.1.4 (거시 데이터 통합)
 
     Layer 구성:
     1. 시장 방향 (Trend) - 40%
     2. 위험 (Risk) - 30%
     3. 수급 (Flow) - 30%
     + 한국 특이 요인 (선물옵션 만기, 배당락, 프로그램매매, 외국인 선물)
-
-    ⚠️ 아래 임계값·가중치는 초기 추정치이며 미검증 상태.
-       Phase 1 Shadow Mode 실측 데이터로 재보정 필요 (Claude 검토 의견 참조).
     """
 
     def __init__(self):
@@ -77,8 +71,32 @@ class RegimeDetector:
         self.current_date = datetime.now()
 
     def detect(self, data: Dict) -> Dict:
-        """국면 판정 (한국 특이 요인 포함)"""
+        """국면 판정 (거시 데이터 + 한국 특이 요인)"""
+        
+        # 🔥 1. 거시 데이터 가져오기 (macro_collector)
+        macro = get_cached_macro()
+        if data is None:
+            data = {}
 
+        # 🔥 2. data에 없는 값은 macro에서 채움 (Fallback)
+        if 'kospi_trend' not in data:
+            data['kospi_trend'] = macro.kospi_trend
+        if 'vix' not in data:
+            data['vix'] = macro.vix
+        if 'vkospi' not in data:
+            data['vkospi'] = macro.vkospi
+        if 'usdkrw_change_pct' not in data:
+            data['usdkrw_change_pct'] = 0.0  # 추후 환율 변동률 수집 시 사용
+        if 'foreigner_net' not in data:
+            data['foreigner_net'] = macro.foreigner_futures
+        if 'institution_net' not in data:
+            data['institution_net'] = 0.0
+        if 'program_buy' not in data:
+            data['program_buy'] = 0.0
+        if 'program_sell' not in data:
+            data['program_sell'] = 0.0
+
+        # 3. 각 점수 계산
         trend_score = self._calculate_trend(data)
         risk_score = self._calculate_risk(data)
         flow_score = self._calculate_flow(data)
@@ -108,7 +126,7 @@ class RegimeDetector:
         }
 
     # ============================================================
-    # 🔥 구현 완료: Trend / Risk / Flow (기존 pass → 실제 로직)
+    # Trend / Risk / Flow 계산 (기존 유지)
     # ============================================================
 
     def _calculate_trend(self, data: Dict) -> float:
@@ -117,12 +135,10 @@ class RegimeDetector:
         - KOSPI 5일 추세 (%)
         - KOSPI 200 대비 20일 이격도
         """
-        kospi_trend = data.get('kospi_trend', 0.0)      # % 단위, macro_filter.py와 동일 필드
-        ma20_gap = data.get('kospi_ma20_gap', 0.0)       # % 단위, 20일선 대비 괴리율
+        kospi_trend = data.get('kospi_trend', 0.0)
+        ma20_gap = data.get('kospi_ma20_gap', 0.0)
 
-        # 5일 추세를 -5%~+5% 범위로 정규화 → 0~1
         trend_component = self._normalize(kospi_trend, -5.0, 5.0)
-        # 20일선 이격도를 -3%~+3% 범위로 정규화 → 0~1
         ma_component = self._normalize(ma20_gap, -3.0, 3.0)
 
         return round(trend_component * 0.6 + ma_component * 0.4, 4)
@@ -134,11 +150,9 @@ class RegimeDetector:
         - USDKRW 급변동 여부
         """
         vkospi = data.get('vkospi', 20.0)
-        usdkrw_change = abs(data.get('usdkrw_change_pct', 0.0))  # 당일 변동률 %
+        usdkrw_change = abs(data.get('usdkrw_change_pct', 0.0))
 
-        # VKOSPI 15(안전)~40(패닉) 범위를 역방향 정규화 (낮을수록 risk_score 높음=안전)
         vkospi_component = 1.0 - self._normalize(vkospi, 15.0, 40.0)
-        # 환율 변동성 0~2% 범위, 클수록 위험 → 역방향
         fx_component = 1.0 - self._normalize(usdkrw_change, 0.0, 2.0)
 
         return round(vkospi_component * 0.7 + fx_component * 0.3, 4)
@@ -148,8 +162,8 @@ class RegimeDetector:
         수급 점수 (0.0 ~ 1.0)
         - 외국인 순매수, 기관 순매수, 프로그램 매매
         """
-        foreigner_net = data.get('foreigner_net', 0.0)     # 억원 단위
-        institution_net = data.get('institution_net', 0.0)  # 억원 단위
+        foreigner_net = data.get('foreigner_net', 0.0)
+        institution_net = data.get('institution_net', 0.0)
         program_imbalance = self.korean.get_program_trading_imbalance(
             data.get('program_buy', 0),
             data.get('program_sell', 0)

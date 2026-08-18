@@ -1,10 +1,10 @@
 """
-scanner/realtime_monitor.py - v5.6.7 (ZeroDivision 방어 + 점수 민감도 상향)
+scanner/realtime_monitor.py - v5.6.9 (RegimeManager 연동)
 - 구독 종목: 최대 500개
 - Queue 크기: 100,000
 - 쿨링(5분) + 방향 전환 시 즉시 전송 유지
-- 🔥 신규: scan()에서 변동률 2%만 되어도 BUY 기준(0.6)을 넘도록 점수 계산식 개선
-- 🔥 _on_data()에서 price None 처리 강화
+- 🔥 신규: scan()에서 RegimeManager.get_regime()을 호출하여 현재 시장 국면을 신호에 포함
+- 🔥 RegimeManager가 백그라운드에서 주기적으로 갱신하므로, 여기서는 캐싱/계산 로직 완전 제거 (단순화)
 - 🔥 디버그 관제탑 적용
 """
 
@@ -17,6 +17,7 @@ from core.logger import setup_logger
 from core.config import get_config
 from data.stock_universe import get_universe
 from core.debug_tower import debug_tower
+from core.regime_manager import regime_manager  # 🔥 RegimeManager import
 
 logger = setup_logger("monitor")
 config = get_config()
@@ -48,6 +49,12 @@ class RealtimeMonitor:
         self.cooldown_seconds = config.get_int("cooldown_seconds", 300)
         self.emergency_threshold = config.get_float("emergency_threshold", 0.05)
         self.max_subscriptions = 500
+
+        # 🔥 RegimeManager는 외부에서 관리하므로, 여기서는 캐시/인스턴스 불필요
+
+    def _get_current_regime(self) -> str:
+        """RegimeManager에서 현재 국면 조회 (즉시 반환)"""
+        return regime_manager.get_regime()
 
     async def start(self):
         if self._is_running:
@@ -183,7 +190,7 @@ class RealtimeMonitor:
         return imbalance, pressure
 
     # ============================================================
-    # 🔥 신호 스캔 (점수 민감도 상향 조정)
+    # 🔥 신호 스캔 (RegimeManager 연동)
     # ============================================================
     async def scan(self) -> List[Dict]:
         if not self._is_running:
@@ -198,6 +205,9 @@ class RealtimeMonitor:
 
         if not changed_tickers:
             return []
+
+        # 🔥 RegimeManager에서 현재 국면 조회 (즉시 반환)
+        regime = self._get_current_regime()
 
         for ticker in changed_tickers:
             data = self._latest_data.get(ticker, {})
@@ -252,7 +262,6 @@ class RealtimeMonitor:
 
                 stock_name = self._name_cache.get(ticker, ticker)
 
-                # 🔥🔥🔥 점수 계산식 개선 (변동률 2%만 돼도 0.65점)
                 score = min(0.95, 0.4 + abs(change_ratio) * 12.5)
                 confidence = min(0.9, 0.5 + abs(change_ratio) * 5)
 
@@ -269,14 +278,14 @@ class RealtimeMonitor:
                     "timestamp": current_time,
                     "momentum": change_ratio,
                     "volume": data.get('volume', 0),
-                    "regime": "Sideways",
+                    "regime": regime,  # 🔥 RegimeManager에서 받은 국면 포함
                     "flow": {},
                     "support_level": support_level,
                     "resistance_level": resistance_level,
                     "imbalance": imbalance,
                     "pressure": pressure,
                 })
-                debug_tower.log(ticker, "SIGNAL_DETECTED", {"action": action, "change": change_ratio, "score": score})
+                debug_tower.log(ticker, "SIGNAL_DETECTED", {"action": action, "change": change_ratio, "score": score, "regime": regime})
 
         self._last_scan_time = current_time
         return detected
