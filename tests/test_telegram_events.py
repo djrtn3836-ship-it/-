@@ -6,6 +6,14 @@ v6.2.0 이벤트 기반 Telegram 알림 템플릿 테스트
 각각 더미 데이터로 전송하여 템플릿과 전송 기능을 검증합니다.
 사용법: python test_telegram_events.py
 """
+import sys
+from pathlib import Path
+
+# 프로젝트 루트를 PYTHONPATH에 추가
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import asyncio
 import sys
 import os

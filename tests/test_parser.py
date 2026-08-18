@@ -5,6 +5,14 @@ WebSocket 수신 데이터 파싱 로직 진단 (휴장일 테스트용)
 실제 키움 서버 연결 없이, 가상의 데이터 구조로 파싱 성공 여부를 확인합니다.
 """
 import sys
+from pathlib import Path
+
+# 프로젝트 루트를 PYTHONPATH에 추가
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import sys
 import os
 from pathlib import Path
 

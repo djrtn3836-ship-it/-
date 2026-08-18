@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v7.2.11 FINAL (자연어 이해 엔진 + 종합 분석 리포트)
+scanner_main.py - v7.4.0 FINAL (ML 신호 융합 + VaR 포지션 사이징 통합)
 - SchedulerManager, RegimeManager, MacroCollector 등 기존 기능 유지
-- 🔥 TelegramCommandHandler에 DB/Analyzer/Monitor/Dart/News/Kiwoom 의존성 주입
-- 🔥 자연어 이해 엔진(NLU) 초기화 (core/natural_language)
-- 🔥 종합 종목 분석 리포트 (재무, 뉴스, 수급, 기술적 지표 통합)
+- 🔥 FeedbackLearner 인스턴스 생성 후 DeepAnalyzer에 주입
+- 🔥 PortfolioAllocator에 VaR 계산 결과 전달 (risk/var_calculator.py 연동)
 """
 
 import asyncio
@@ -38,8 +37,8 @@ FatalError = Exception
 from scanner.realtime_monitor import RealtimeMonitor
 from scanner.deep_analyzer import DeepAnalyzer
 from data.kiwoom_connector import KiwoomConnectorV512
-from data.dart_connector import DartConnector          # 🔥 추가
-from data.news_crawler import NewsCrawler              # 🔥 추가
+from data.dart_connector import DartConnector
+from data.news_crawler import NewsCrawler
 from data.db_manager import DatabaseManager
 from report.telegram_sender import TelegramSender
 from report.telegram_commands import TelegramCommandHandler
@@ -199,7 +198,7 @@ async def run_macro_update() -> None:
 # 3. 재연결
 # ============================================================
 async def reconnect_and_resubscribe(kiwoom: KiwoomConnectorV512, monitor: RealtimeMonitor) -> None:
-    MAX_OUTER_RETRIES = 10
+    MAX_OUTER_RETRIES = 30
     retry_count = 0
     while not kiwoom.is_connected():
         retry_count += 1
@@ -348,7 +347,7 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v7.2.11 FINAL (종합 분석 리포트)
+📊 <b>버전</b>: v7.4.0 FINAL (ML 신호 융합 + VaR 포지션 사이징)
 📈 <b>거시 지표</b>: KOSPI 5일 {macro.kospi_trend:.2f}% | USD/KRW {macro.usdkrw:.0f} | VIX {macro.vix:.1f}
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -449,8 +448,8 @@ async def main() -> None:
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.2.11"})
-    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.2.11"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.4.0"})
+    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.4.0"})
 
     check_and_create_pid()
     load_dotenv(override=True)
@@ -460,7 +459,7 @@ async def main() -> None:
     _error_sender = TelegramSender()
 
     logger.info("=" * 70)
-    logger.info("🚀 v7.2.11 FINAL - 자연어 이해 엔진 + 종합 분석 리포트")
+    logger.info("🚀 v7.4.0 FINAL - ML 신호 융합 + VaR 포지션 사이징")
     logger.info("📌 기능: 실시간 스캔, 이벤트 알림, Telegram 자연어 명령어")
     logger.info("📱 Telegram: '현황', '신호', '삼전' → 종합 분석 리포트")
     logger.info("=" * 70)
@@ -523,8 +522,15 @@ async def main() -> None:
         logger.info("✅ RegimeManager 시작됨 (60초 간격 국면 갱신)")
         debug_tower.log("SYSTEM", "REGIME_MANAGER_STARTED", {})
 
-        analyzer = DeepAnalyzer(db_manager=_db)
+        # ============================================================
+        # 🔥 v7.4.0: FeedbackLearner 생성 및 DeepAnalyzer 주입
+        # ============================================================
+        feedback_learner = FeedbackLearner(kiwoom_connector=_kiwoom, db_manager=_db)
+        # (선택) 기존 학습된 모델이 있다면 __init__에서 자동 로드됨
+
+        analyzer = DeepAnalyzer(db_manager=_db, feedback_learner=feedback_learner)
         await analyzer.load_weights()
+
         sender = TelegramSender()
 
         # DART 및 뉴스 크롤러 초기화 (종합 분석 리포트용)
@@ -543,10 +549,9 @@ async def main() -> None:
 
         daily_reporter = DailyReportGenerator(db_manager=_db, telegram_sender=sender)
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=_db, kiwoom_connector=_kiwoom)
-        feedback_learner = FeedbackLearner(kiwoom_connector=_kiwoom, db_manager=_db)
 
         # ============================================================
-        # TelegramCommandHandler 생성 및 의존성 주입 (들여쓰기 수정)
+        # TelegramCommandHandler 생성 및 의존성 주입
         # ============================================================
         _telegram_cmd = TelegramCommandHandler(
             token=os.getenv("TELEGRAM_BOT_TOKEN"),
@@ -614,7 +619,7 @@ async def main() -> None:
             retry_delay=5
         )
         _scheduler.start()
-        startup_details['job_count'] = 5
+        startup_details['job_count'] = 6  # ML 추가로 1개 증가
         logger.info(f"⏰ 스케줄러 등록 완료 (총 {startup_details['job_count']}개 작업)")
         log_event("SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
         debug_tower.log("SYSTEM", "SCHEDULER_STARTED", {"jobs": startup_details['job_count']})

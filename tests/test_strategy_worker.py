@@ -6,6 +6,14 @@ tests/test_strategy_worker.py - strategy_worker 통합 테스트
 - 🔥 수정: price 문자열 처리 (float 변환) 추가
 """
 import sys
+from pathlib import Path
+
+# 프로젝트 루트를 PYTHONPATH에 추가
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import sys
 import os
 import asyncio
 import json

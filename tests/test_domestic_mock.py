@@ -6,6 +6,14 @@ test_domestic_mock.py - v1.0 (국내장 파이프라인 Mock 검증기)
       "키움 연결이 없어도 Telegram이 오는가?"를 확인하는 최종 테스트입니다.
 사용법: python test_domestic_mock.py
 """
+import sys
+from pathlib import Path
+
+# 프로젝트 루트를 PYTHONPATH에 추가
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import asyncio
 import sys
 import os

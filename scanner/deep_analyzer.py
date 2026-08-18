@@ -1,13 +1,17 @@
 """
-scanner/deep_analyzer.py - v7.2.18 (Calibration 로깅 강화)
-- 체결률(fill_ratio)과 슬리피지(slippage_bps)를 ANALYZE_COMPLETE 로그에 포함
-- Calibration 분석기가 정상적으로 데이터를 수집할 수 있도록 함
+scanner/deep_analyzer.py - v7.5.0 FINAL (멀티 전략 라우터 + ML/VaR 저장)
+- StrategyRouter를 통해 3개 전략(추세/역추세/돌파) 병렬 실행 및 점수 집계 (30% 가중치)
+- 기존 ML 점수(18%), Base(42%), 모멘텀(8%), 감성(2%) 융합
+- 최종 결과에 ml_score, risk_adjustment_factor(VaR) 포함
+- ATR=0 방어, Almgren-Chriss 시장 충격, 3분할 체결, 4대 평가, 트레일링 스탑 100% 포함
 """
 
 import math
 import time
+import json
 import asyncio
 import traceback
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
@@ -22,13 +26,19 @@ from filters.dynamic_weighter import DynamicWeighter
 from decision.hybrid_decider import HybridDecider
 from core.debug_tower import debug_tower
 from validation.execution_simulator import RealisticExecutionSimulator
+from orchestrator.strategy_router import StrategyRouter
+from risk.var_calculator import VaRCalculator
 
 logger = setup_logger("analyzer")
 
+CALIBRATION_FILE = Path(__file__).parent.parent / "config" / "calibration_config.json"
+
 
 class DeepAnalyzer:
-    def __init__(self, db_manager: DatabaseManager = None):
+    def __init__(self, db_manager: DatabaseManager = None, feedback_learner: Optional[Any] = None):
         self.db = db_manager
+        self.feedback_learner = feedback_learner
+
         self.macro = MacroFilter()
         self.sector = SectorFilter()
         self.stock = StockFilter()
@@ -47,29 +57,55 @@ class DeepAnalyzer:
 
         self._feedback_stats = {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
         self._feedback_stats_loaded = False
-
         self._news_crawler = None
 
+        self.exec_sim = RealisticExecutionSimulator(max_slippage_bps=100.0, num_slices=3)
+
         self.max_hold_hours = 2.0
-        self.time_warning_minutes = 30
-        self.sideways_threshold_minutes = 30
-        self.sideways_price_ratio = 0.3
         self.trail_aggressive_threshold = 5.0
         self.atr_multiplier_stop = 2.0
         self.atr_multiplier_trail = 1.5
         self.atr_spike_threshold = 0.3
 
-        self.momentum_weight = 0.12
-        self.exec_sim = RealisticExecutionSimulator(max_slippage_bps=100.0)
+        # v7.5.0: ML 가중치 재조정 (전략 추가로 인해 22% -> 18%)
+        self.momentum_weight = 0.08
+        self.ml_weight = 0.18
+        self.sentiment_weight = 0.02
+        self.base_weight = 0.42
+        self.strategy_weight = 0.30  # 멀티 전략 점수 가중치
 
-        # 🔥 체결률 임계값 (Calibration 대상)
-        self.FILL_RATIO_REJECT = 0.30
-        self.FILL_RATIO_REDUCE = 0.70
+        self._load_calibration_config()
 
-        # 🔥 주문량 계산용
-        self.ORDER_VOLUME_RATIO = 0.008
-        self.ORDER_VOLUME_MIN = 10
-        self.ORDER_VOLUME_MAX = 500
+        # 🔥 v7.5.0: 전략 라우터 및 VaR 계산기 초기화
+        self.strategy_router = StrategyRouter()
+        self.var_calc = VaRCalculator(confidence=0.95, window=252)
+
+    def _load_calibration_config(self):
+        default = {
+            "FILL_RATIO_REJECT": 0.30,
+            "FILL_RATIO_REDUCE": 0.70,
+            "ORDER_VOLUME_RATIO": 0.008,
+            "ORDER_VOLUME_MIN": 10,
+            "ORDER_VOLUME_MAX": 500,
+        }
+        if CALIBRATION_FILE.exists():
+            try:
+                with open(CALIBRATION_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.FILL_RATIO_REJECT = config.get("FILL_RATIO_REJECT", default["FILL_RATIO_REJECT"])
+                    self.FILL_RATIO_REDUCE = config.get("FILL_RATIO_REDUCE", default["FILL_RATIO_REDUCE"])
+                    self.ORDER_VOLUME_RATIO = config.get("ORDER_VOLUME_RATIO", default["ORDER_VOLUME_RATIO"])
+                    self.ORDER_VOLUME_MIN = config.get("ORDER_VOLUME_MIN", default["ORDER_VOLUME_MIN"])
+                    self.ORDER_VOLUME_MAX = config.get("ORDER_VOLUME_MAX", default["ORDER_VOLUME_MAX"])
+                    logger.info(f"✅ Calibration 설정 로드: REJECT={self.FILL_RATIO_REJECT:.1%}, REDUCE={self.FILL_RATIO_REDUCE:.1%}")
+                    return
+            except Exception as e:
+                logger.warning(f"⚠️ Calibration 설정 로드 실패: {e}")
+        self.FILL_RATIO_REJECT = default["FILL_RATIO_REJECT"]
+        self.FILL_RATIO_REDUCE = default["FILL_RATIO_REDUCE"]
+        self.ORDER_VOLUME_RATIO = default["ORDER_VOLUME_RATIO"]
+        self.ORDER_VOLUME_MIN = default["ORDER_VOLUME_MIN"]
+        self.ORDER_VOLUME_MAX = default["ORDER_VOLUME_MAX"]
 
     async def load_weights(self):
         if self.db:
@@ -77,7 +113,6 @@ class DeepAnalyzer:
             self._feedback_stats = await self.db.get_feedback_stats(days=30)
             self._feedback_stats_loaded = True
             logger.info(f"📊 최신 가중치 로드: {self.weights}")
-            logger.info(f"📊 피드백 통계: 승률 {self._feedback_stats['win_rate']:.1%}, 샤프 {self._feedback_stats['sharpe']:.2f}")
             debug_tower.log("SYSTEM", "WEIGHTS_LOADED", {"weights": self.weights})
 
     async def calculate_atr(self, ticker: str, period: int = 14) -> float:
@@ -126,9 +161,7 @@ class DeepAnalyzer:
         try:
             if self._news_crawler is None:
                 self._news_crawler = NewsCrawler()
-            _, sentiment = await self._news_crawler.get_news_with_sentiment(
-                ticker, limit=5, cache_seconds=3600
-            )
+            _, sentiment = await self._news_crawler.get_news_with_sentiment(ticker, limit=5, cache_seconds=3600)
             return float(sentiment) if sentiment is not None else 0.0
         except Exception as e:
             logger.debug(f"감성 점수 조회 실패 ({ticker}): {e}")
@@ -139,19 +172,13 @@ class DeepAnalyzer:
         cache_key = f"{ticker}_{period}"
         if cache_key in self._ohlcv_cache and (now - self._cache_time.get(cache_key, 0)) < 60:
             return self._ohlcv_cache[cache_key]
-
         if not self.db:
             return {}
-
         data = await self.db.get_ohlcv(ticker, period)
         if len(data) < 5:
             return {}
-
         closes = [d['close'] for d in data]
-        highs = [d['high'] for d in data]
-        lows = [d['low'] for d in data]
         volumes = [d.get('volume', 0) for d in data if d.get('volume', 0) > 0]
-
         def ema(values, n):
             if len(values) < n:
                 return values[-1] if values else 0
@@ -160,7 +187,6 @@ class DeepAnalyzer:
             for v in values[1:]:
                 ema_val = v * k + ema_val * (1 - k)
             return ema_val
-
         def rsi(values, n=14):
             if len(values) < n + 1:
                 return 50
@@ -177,11 +203,9 @@ class DeepAnalyzer:
                 return 100
             rs = avg_gain / avg_loss
             return 100 - (100 / (1 + rs))
-
         avg_volume = sum(volumes) / len(volumes) if volumes else 1
         current_volume = volumes[-1] if volumes else 1
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
-
         result = {
             "current_price": float(data[-1]['close']),
             "high": float(data[-1]['high']),
@@ -193,27 +217,21 @@ class DeepAnalyzer:
             "ema60": float(ema(closes, 60)) if len(closes) >= 60 else float(ema(closes, len(closes))),
             "rsi": float(rsi(closes, 14)),
         }
-
         self._ohlcv_cache[cache_key] = result
         self._cache_time[cache_key] = now
         return result
 
-    # ============================================================
-    # 4대 개체 평가 (기존 유지)
-    # ============================================================
     def _evaluate_technical(self, ticker: str, entry_price: float, tech_data: Dict, atr: float) -> Dict:
         score = 0.0
         reasons = []
         if not tech_data:
             return {"score": 0.0, "reasons": ["📊 기술 데이터 부족"]}
-
         price = tech_data.get("current_price", entry_price)
         ema5 = tech_data.get("ema5", price)
         ema20 = tech_data.get("ema20", price)
         ema60 = tech_data.get("ema60", price)
         rsi = tech_data.get("rsi", 50)
         volume_ratio = tech_data.get("volume_ratio", 1.0)
-
         if ema5 > ema20 and ema20 > ema60:
             score += 0.4
             reasons.append("📈 EMA 정배열 (+0.4)")
@@ -226,7 +244,6 @@ class DeepAnalyzer:
         elif ema5 < ema20:
             score -= 0.2
             reasons.append("📉 단기 하락 추세 (-0.2)")
-
         if rsi > 80:
             score -= 0.7
             reasons.append(f"🔥 과매수 (RSI {rsi:.0f}) (-0.7)")
@@ -239,31 +256,25 @@ class DeepAnalyzer:
         elif rsi < 30:
             score += 0.4
             reasons.append(f"📉 과매도 임박 (RSI {rsi:.0f}) (+0.4)")
-
         if volume_ratio > 2.0:
             score += 0.3
             reasons.append(f"📊 거래량 급증 (×{volume_ratio:.1f}) (+0.3)")
         elif volume_ratio < 0.5:
             score -= 0.2
             reasons.append(f"📊 거래량 부진 (×{volume_ratio:.1f}) (-0.2)")
-
         if atr > 0:
             move_ratio = abs(price - entry_price) / atr
             if move_ratio > 2.0:
                 score += 0.3
                 reasons.append(f"💪 강한 모멘텀 (ATR×{move_ratio:.1f}) (+0.3)")
-
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
-    def _evaluate_risk(self, ticker: str, current_price: float, stop_price: float, atr: float, highest_price: float,
-                       feedback_stats: Dict) -> Dict:
+    def _evaluate_risk(self, ticker: str, current_price: float, stop_price: float, atr: float, highest_price: float, feedback_stats: Dict) -> Dict:
         score = 0.0
         reasons = []
         win_rate = feedback_stats.get("win_rate", 0.5)
         sharpe = feedback_stats.get("sharpe", 1.0)
-
         risk_penalty = 1.2 if win_rate < 0.4 else (0.8 if win_rate > 0.6 else 1.0)
-
         if current_price > 0 and stop_price > 0:
             distance_to_stop = (current_price - stop_price) / current_price * 100
             if distance_to_stop < 0.5:
@@ -275,7 +286,6 @@ class DeepAnalyzer:
             elif distance_to_stop < 2.0:
                 score -= 0.2 * risk_penalty
                 reasons.append(f"🔻 손절가 접근 ({distance_to_stop:.1f}%)")
-
         if highest_price > 0 and highest_price > current_price:
             drawdown = (highest_price - current_price) / highest_price * 100
             if drawdown > 5.0:
@@ -284,14 +294,12 @@ class DeepAnalyzer:
             elif drawdown > 3.0:
                 score -= 0.2 * risk_penalty
                 reasons.append(f"📉 조정 발생 ({drawdown:.1f}%)")
-
         if sharpe > 1.5 and win_rate > 0.55:
             score += 0.2
             reasons.append(f"✅ 과거 성과 우수 (샤프 {sharpe:.2f}) (+0.2)")
         elif sharpe < 0.5 and win_rate < 0.45:
             score -= 0.3
             reasons.append(f"⚠️ 과거 성과 부진 (샤프 {sharpe:.2f}) (-0.3)")
-
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _evaluate_time_value(self, entry_time: str, current_price: float, entry_price: float) -> Dict:
@@ -303,13 +311,10 @@ class DeepAnalyzer:
             elapsed_hours = (now - entry_dt).total_seconds() / 3600
         except:
             elapsed_hours = 0
-
         if elapsed_hours < 0.01:
             return {"score": 0.0, "reasons": ["⏳ 진입 직전"]}
-
         pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
         annualized_return = (pnl_pct / elapsed_hours) * 24 * 365 if elapsed_hours > 0 else 0
-
         if annualized_return > 30:
             score += 0.7
             reasons.append(f"💰 연환산 수익률 {annualized_return:.0f}% (+0.7)")
@@ -319,18 +324,15 @@ class DeepAnalyzer:
         elif annualized_return < -30:
             score -= 0.7
             reasons.append(f"📉 연환산 손실률 {annualized_return:.0f}% (-0.7)")
-
         if elapsed_hours > 1 and pnl_pct < 1.0:
             score -= 0.3
             reasons.append(f"⏳ 시간 대비 수익률 부진 ({elapsed_hours:.1f}시간) (-0.3)")
-
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _evaluate_microstructure(self, ticker: str, tech_data: Dict, imbalance: float) -> Dict:
         score = 0.0
         reasons = []
         volume_ratio = tech_data.get("volume_ratio", 1.0) if tech_data else 1.0
-
         if imbalance > 0.6:
             score += 0.3
             reasons.append(f"⚖️ 매수 우세 ({imbalance:.0%}) (+0.3)")
@@ -339,14 +341,12 @@ class DeepAnalyzer:
             reasons.append(f"⚖️ 매도 우세 ({imbalance:.0%}) (-0.3)")
         else:
             reasons.append(f"⚖️ 중립 ({imbalance:.0%}) (0.0)")
-
         if volume_ratio > 1.5:
             score += 0.3
             reasons.append(f"📊 거래량 활발 (×{volume_ratio:.1f}) (+0.3)")
         elif volume_ratio < 0.6:
             score -= 0.2
             reasons.append(f"📊 거래량 부진 (×{volume_ratio:.1f}) (-0.2)")
-
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _run_consensus(self, state: dict, current_price: float, atr: float, tech_data: Dict, imbalance: float) -> Dict:
@@ -355,46 +355,30 @@ class DeepAnalyzer:
         stop_price = state.get("current_stop")
         entry_time = state.get("entry_time")
         highest_price = state.get("highest_price", entry_price)
-
         tech = self._evaluate_technical(ticker, entry_price, tech_data, atr)
         risk = self._evaluate_risk(ticker, current_price, stop_price, atr, highest_price, self._feedback_stats)
         time_val = self._evaluate_time_value(entry_time, current_price, entry_price)
         micro = self._evaluate_microstructure(ticker, tech_data, imbalance)
-
         base_risk_weight = 2.0 if self._feedback_stats.get("win_rate", 0.5) < 0.4 else 1.8
         weights = {"technical": 1.0, "risk": base_risk_weight, "time_value": 0.8, "micro": 0.6}
-
-        weighted_sum = (
-                tech["score"] * weights["technical"] +
-                risk["score"] * weights["risk"] +
-                time_val["score"] * weights["time_value"] +
-                micro["score"] * weights["micro"]
-        )
+        weighted_sum = (tech["score"] * weights["technical"] +
+                        risk["score"] * weights["risk"] +
+                        time_val["score"] * weights["time_value"] +
+                        micro["score"] * weights["micro"])
         total_weight = sum(weights.values())
         consensus_score = max(-1.0, min(1.0, weighted_sum / total_weight))
-
         votes = {"technical": tech["score"], "risk": risk["score"], "time_value": time_val["score"], "micro": micro["score"]}
         hold_votes = sum(1 for v in votes.values() if v > 0.2)
         exit_votes = sum(1 for v in votes.values() if v < -0.2)
-
         if consensus_score > 0.4 and hold_votes >= 3:
             recommendation, action_label = "HOLD", "보유 유지"
         elif consensus_score < -0.4 and exit_votes >= 2:
             recommendation, action_label = "EXIT", "청산 권고"
         else:
             recommendation, action_label = "HOLD", "관망 (추가 데이터 필요)"
-
         all_reasons = (tech["reasons"] + risk["reasons"] + time_val["reasons"] + micro["reasons"])[:5]
         summary = f"합의: {consensus_score:.2f} | 기술:{tech['score']:.2f} 리스크:{risk['score']:.2f} 시간:{time_val['score']:.2f} 수급:{micro['score']:.2f}"
-
-        return {
-            "recommendation": recommendation,
-            "action_label": action_label,
-            "consensus_score": consensus_score,
-            "votes": votes,
-            "reasons": all_reasons,
-            "summary": summary
-        }
+        return {"recommendation": recommendation, "action_label": action_label, "consensus_score": consensus_score, "votes": votes, "reasons": all_reasons, "summary": summary}
 
     def _check_tp_hit(self, state: dict, current_price: float) -> Optional[Dict]:
         action = state.get("action")
@@ -403,73 +387,32 @@ class DeepAnalyzer:
         tp1 = state.get("tp1_price", entry_price + 0)
         tp2 = state.get("tp2_price", entry_price + 0)
         tp3 = state.get("tp3_price", entry_price + 0)
-
         if tp_hit_level < 1:
             if (action == "BUY" and current_price >= tp1) or (action == "SELL" and current_price <= tp1):
                 state["tp_hit_level"] = 1
                 state["remaining_qty"] = 0.5
-                return {
-                    "ticker": state.get("ticker"),
-                    "action": "EVENT_TP_HIT",
-                    "side": action,
-                    "tp_level": 1,
-                    "tp_price": tp1,
-                    "remaining_qty": 0.5,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "entry_time": state.get("entry_time"),
-                    "recommendation": "PARTIAL_EXIT",
-                    "recommendation_reason": f"TP1 도달 → 50% 청산"
-                }
+                return {"ticker": state.get("ticker"), "action": "EVENT_TP_HIT", "side": action, "tp_level": 1, "tp_price": tp1, "remaining_qty": 0.5, "price": current_price, "entry_price": entry_price, "entry_time": state.get("entry_time"), "recommendation": "PARTIAL_EXIT", "recommendation_reason": "TP1 도달 → 50% 청산"}
         if tp_hit_level == 1:
             if (action == "BUY" and current_price >= tp2) or (action == "SELL" and current_price <= tp2):
                 state["tp_hit_level"] = 2
                 state["remaining_qty"] = 0.2
-                return {
-                    "ticker": state.get("ticker"),
-                    "action": "EVENT_TP_HIT",
-                    "side": action,
-                    "tp_level": 2,
-                    "tp_price": tp2,
-                    "remaining_qty": 0.2,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "entry_time": state.get("entry_time"),
-                    "recommendation": "PARTIAL_EXIT",
-                    "recommendation_reason": f"TP2 도달 → 추가 30% 청산"
-                }
+                return {"ticker": state.get("ticker"), "action": "EVENT_TP_HIT", "side": action, "tp_level": 2, "tp_price": tp2, "remaining_qty": 0.2, "price": current_price, "entry_price": entry_price, "entry_time": state.get("entry_time"), "recommendation": "PARTIAL_EXIT", "recommendation_reason": "TP2 도달 → 추가 30% 청산"}
         if tp_hit_level == 2:
             if (action == "BUY" and current_price >= tp3) or (action == "SELL" and current_price <= tp3):
                 state["tp_hit_level"] = 3
                 state["remaining_qty"] = 0.0
-                return {
-                    "ticker": state.get("ticker"),
-                    "action": "EVENT_TP_HIT",
-                    "side": action,
-                    "tp_level": 3,
-                    "tp_price": tp3,
-                    "remaining_qty": 0.0,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "entry_time": state.get("entry_time"),
-                    "recommendation": "EXIT",
-                    "recommendation_reason": f"TP3 도달 → 전량 청산"
-                }
+                return {"ticker": state.get("ticker"), "action": "EVENT_TP_HIT", "side": action, "tp_level": 3, "tp_price": tp3, "remaining_qty": 0.0, "price": current_price, "entry_price": entry_price, "entry_time": state.get("entry_time"), "recommendation": "EXIT", "recommendation_reason": "TP3 도달 → 전량 청산"}
         return None
 
-    async def _update_trailing_stop(self, ticker: str, current_price: float, atr: float, tech_data: Dict,
-                                    imbalance: float) -> Optional[Dict]:
+    async def _update_trailing_stop(self, ticker: str, current_price: float, atr: float, tech_data: Dict, imbalance: float) -> Optional[Dict]:
         current_price = self._to_float(current_price, 0.0)
         atr = self._to_float(atr, 0.0)
-
         if not tech_data and self.db:
             tech_data = await self._get_cached_ohlcv(ticker, 30)
-
         async with self._lock:
             state = self.trailing_stops.get(ticker)
             if not state:
                 return None
-
             action = state.get("action")
             entry_price = self._to_float(state.get("entry_price"), 0.0)
             current_stop = self._to_float(state.get("current_stop"), 0.0)
@@ -477,12 +420,9 @@ class DeepAnalyzer:
             lowest_price = self._to_float(state.get("lowest_price"), entry_price)
             prev_atr = self._to_float(state.get("atr"), atr)
             tp_hit_level = state.get("tp_hit_level", 0)
-
             state["last_update_time"] = datetime.now().isoformat()
-
             updated = False
             new_stop = current_stop
-
             if action == "BUY":
                 if current_price > highest_price:
                     highest_price = current_price
@@ -505,7 +445,6 @@ class DeepAnalyzer:
                         new_stop = min(new_stop, current_stop)
                         state["current_stop"] = new_stop
                         updated = True
-
             now = time.time()
             atr_spike = False
             tp_adjusted = False
@@ -515,10 +454,7 @@ class DeepAnalyzer:
                     atr_spike = True
                     self._last_atr_alert[ticker] = now
                     state["atr"] = atr
-
                     if tp_hit_level < 2 and entry_price > 0:
-                        old_tp2 = state.get("tp2_price", entry_price + (atr * 5.0))
-                        old_tp3 = state.get("tp3_price", entry_price + (atr * 7.0))
                         if action == "BUY":
                             state["tp2_price"] = entry_price + (atr * 5.0)
                             state["tp3_price"] = entry_price + (atr * 7.0)
@@ -526,77 +462,22 @@ class DeepAnalyzer:
                             state["tp2_price"] = entry_price - (atr * 5.0)
                             state["tp3_price"] = entry_price - (atr * 7.0)
                         tp_adjusted = True
-                        logger.info(
-                            f"🔄 {ticker} 동적 TP 조정: TP2 {old_tp2:.0f}→{state['tp2_price']:.0f}, TP3 {old_tp3:.0f}→{state['tp3_price']:.0f}")
+                        logger.info(f"🔄 {ticker} 동적 TP 조정: TP2 {state['tp2_price']:.0f}, TP3 {state['tp3_price']:.0f}")
                         debug_tower.log(ticker, "TP_ADJUSTED", {"tp2": state['tp2_price'], "tp3": state['tp3_price']})
-
             tp_event = self._check_tp_hit(state, current_price)
             if tp_event:
                 return tp_event
-
             if action == "BUY" and current_price <= current_stop:
                 return self._create_exit_signal(ticker, state, "트레일링 스탑 도달")
             elif action == "SELL" and current_price >= current_stop:
                 return self._create_exit_signal(ticker, state, "트레일링 스탑 도달")
-
             consensus = self._run_consensus(state, current_price, atr, tech_data, imbalance)
-
             if updated:
-                return {
-                    "ticker": ticker,
-                    "action": "EVENT_SL_TRAIL",
-                    "side": action,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "old_stop": current_stop,
-                    "new_stop": new_stop,
-                    "highest_price": state.get("highest_price"),
-                    "lowest_price": state.get("lowest_price"),
-                    "atr": atr,
-                    "entry_time": state.get("entry_time"),
-                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else (
-                            (entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0,
-                    "timestamp": datetime.now().isoformat(),
-                    "consensus": consensus,
-                    "tp_adjusted": tp_adjusted,
-                    "tp2_price": state.get("tp2_price") or 0.0,
-                    "tp3_price": state.get("tp3_price") or 0.0,
-                }
-
+                return {"ticker": ticker, "action": "EVENT_SL_TRAIL", "side": action, "price": current_price, "entry_price": entry_price, "old_stop": current_stop, "new_stop": new_stop, "highest_price": state.get("highest_price"), "lowest_price": state.get("lowest_price"), "atr": atr, "entry_time": state.get("entry_time"), "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0, "timestamp": datetime.now().isoformat(), "consensus": consensus, "tp_adjusted": tp_adjusted, "tp2_price": state.get("tp2_price") or 0.0, "tp3_price": state.get("tp3_price") or 0.0}
             if atr_spike:
-                return {
-                    "ticker": ticker,
-                    "action": "EVENT_ATR_SPIKE",
-                    "side": action,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "old_atr": prev_atr,
-                    "new_atr": atr,
-                    "old_stop": current_stop,
-                    "new_stop": new_stop,
-                    "atr_change_ratio": abs(atr - prev_atr) / prev_atr if prev_atr != 0 else 0,
-                    "entry_time": state.get("entry_time"),
-                    "timestamp": datetime.now().isoformat(),
-                    "consensus": consensus,
-                    "tp_adjusted": tp_adjusted,
-                    "tp2_price": state.get("tp2_price") or 0.0,
-                    "tp3_price": state.get("tp3_price") or 0.0,
-                }
-
+                return {"ticker": ticker, "action": "EVENT_ATR_SPIKE", "side": action, "price": current_price, "entry_price": entry_price, "old_atr": prev_atr, "new_atr": atr, "old_stop": current_stop, "new_stop": new_stop, "atr_change_ratio": abs(atr - prev_atr) / prev_atr if prev_atr != 0 else 0, "entry_time": state.get("entry_time"), "timestamp": datetime.now().isoformat(), "consensus": consensus, "tp_adjusted": tp_adjusted, "tp2_price": state.get("tp2_price") or 0.0, "tp3_price": state.get("tp3_price") or 0.0}
             if consensus.get("recommendation") == "EXIT" and consensus.get("consensus_score", 0) < -0.4:
-                return {
-                    "ticker": ticker,
-                    "action": "EVENT_LIFECYCLE_ADVICE",
-                    "side": action,
-                    "price": current_price,
-                    "entry_price": entry_price,
-                    "entry_time": state.get("entry_time"),
-                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else (
-                            (entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0,
-                    "advice": consensus,
-                    "timestamp": datetime.now().isoformat(),
-                }
-
+                return {"ticker": ticker, "action": "EVENT_LIFECYCLE_ADVICE", "side": action, "price": current_price, "entry_price": entry_price, "entry_time": state.get("entry_time"), "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0, "advice": consensus, "timestamp": datetime.now().isoformat()}
             return None
 
     def _create_exit_signal(self, ticker: str, state: dict, reason: str) -> Dict:
@@ -604,25 +485,10 @@ class DeepAnalyzer:
         entry_price = state.get("entry_price")
         current_stop = state.get("current_stop")
         current_price = state.get("last_price", entry_price)
-        pnl = ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else (
-                (entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0
+        pnl = ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0
         del self.trailing_stops[ticker]
         debug_tower.log(ticker, "EXIT_SIGNAL", {"reason": reason, "pnl": pnl})
-        return {
-            "ticker": ticker,
-            "action": "EVENT_EXIT",
-            "side": action,
-            "reason": reason,
-            "price": current_price,
-            "entry_price": entry_price,
-            "stop_price": current_stop,
-            "pnl": pnl,
-            "highest_price": state.get("highest_price"),
-            "lowest_price": state.get("lowest_price"),
-            "entry_time": state.get("entry_time"),
-            "tp_hit_level": state.get("tp_hit_level", 0),
-            "timestamp": datetime.now().isoformat(),
-        }
+        return {"ticker": ticker, "action": "EVENT_EXIT", "side": action, "reason": reason, "price": current_price, "entry_price": entry_price, "stop_price": current_stop, "pnl": pnl, "highest_price": state.get("highest_price"), "lowest_price": state.get("lowest_price"), "entry_time": state.get("entry_time"), "tp_hit_level": state.get("tp_hit_level", 0), "timestamp": datetime.now().isoformat()}
 
     def _to_float(self, value: Any, default: float = 0.0) -> float:
         if value is None:
@@ -633,7 +499,7 @@ class DeepAnalyzer:
             return default
 
     # ============================================================
-    # 메인 분석
+    # 🔥 v7.5.0 메인 분석 (멀티 전략 + VaR 포함)
     # ============================================================
     async def analyze(self, stock: Dict) -> Dict:
         try:
@@ -643,99 +509,144 @@ class DeepAnalyzer:
 
             current_price = self._to_float(stock.get('price'), 0.0)
             entry_price = self._to_float(stock.get('entry_price', current_price), current_price)
-
             imbalance = self._to_float(stock.get('imbalance'), 0.5)
             if imbalance < 0 or imbalance > 1:
                 imbalance = 0.5
-
             regime = stock.get('regime', 'Sideways')
 
             tech_data = await self._get_cached_ohlcv(ticker, 30) if self.db else {}
             atr_raw = await self.calculate_atr(ticker, 14) if self.db else 0.0
             atr = self._to_float(atr_raw, 0.0)
 
+            # 1. 기존 필터 점수 계산
             macro_score = self.macro.check(stock)
             sector_score = self.sector.check(stock)
             stock_score = self.stock.check(stock, regime=regime, atr=atr)
             korean_score = self.korean.check(stock)
 
-            action = stock.get('action', 'HOLD')
-            imbalance_factor = imbalance if action == 'BUY' else (1 - imbalance if action == 'SELL' else 0.5)
+            weights = self.weighter.calculate({"regime": regime, "flow": stock.get("flow", {})})
 
-            weights = self.weighter.calculate({
-                "regime": stock.get("regime", "Sideways"),
-                "flow": stock.get("flow", {})
-            })
+            base_score = (macro_score["score"] * weights.get("trend_weight", 0.3) +
+                          sector_score["score"] * weights.get("risk_weight", 0.2) +
+                          stock_score["score"] * weights.get("flow_weight", 0.4) +
+                          korean_score["score"] * 0.1)
 
-            base_score = (
-                    macro_score["score"] * weights.get("trend_weight", 0.3) +
-                    sector_score["score"] * weights.get("risk_weight", 0.2) +
-                    stock_score["score"] * weights.get("flow_weight", 0.4) +
-                    korean_score["score"] * 0.1
-            )
-
+            # 2. ML 점수 (XGBoost)
             sentiment_score = await self._get_sentiment_score(ticker)
             sentiment_factor = max(0.0, min(1.0, (sentiment_score + 1) / 2))
-
             momentum = stock.get('momentum', 0.0)
             momentum_score = max(0.0, min(1.0, 0.5 + abs(momentum) * 10))
 
+            ml_score = 0.5
+            if self.feedback_learner and self.feedback_learner._model_ready:
+                try:
+                    features = {
+                        'momentum': momentum,
+                        'rsi': tech_data.get('rsi', 50) if tech_data else 50,
+                        'volume_ratio': tech_data.get('volume_ratio', 1.0) if tech_data else 1.0,
+                        'macro_score': macro_score.get('score', 0.5),
+                        'sector_score': sector_score.get('score', 0.5),
+                        'imbalance': imbalance,
+                    }
+                    ml_score = self.feedback_learner.predict_prob(features)
+                    ml_score = max(0.1, min(0.9, ml_score))
+                except Exception as e:
+                    logger.debug(f"⚠️ ML 예측 실패 ({ticker}): {e}")
+                    ml_score = 0.5
+
+            # 3. 🔥 v7.5.0: 멀티 전략 점수 (StrategyRouter)
+            strategy_data = {
+                'ticker': ticker,
+                'price': current_price,
+                'tech_data': tech_data,
+                'regime': regime,
+                'atr': atr,
+                'high_52w': stock.get('high_52w', current_price * 1.2),
+                'low_52w': stock.get('low_52w', current_price * 0.8),
+                'bb_upper': stock.get('bb_upper', current_price * 1.05),
+                'bb_lower': stock.get('bb_lower', current_price * 0.95),
+                'adx': stock.get('adx', 20),
+            }
+            strategy_result = await self.strategy_router.route(strategy_data)
+            strategy_score = strategy_result['final_score']
+            strategy_action = strategy_result['final_action']
+            strategy_confidence = strategy_result['final_confidence']
+
+            # 4. 최종 점수 융합 (Base + ML + 전략 + 모멘텀 + 감성)
             final_score = (
-                    base_score * 0.73 +
-                    momentum_score * self.momentum_weight +
-                    sentiment_factor * 0.03
+                base_score * self.base_weight +
+                momentum_score * self.momentum_weight +
+                sentiment_factor * self.sentiment_weight +
+                ml_score * self.ml_weight +
+                strategy_score * self.strategy_weight
             )
             final_score = max(0.0, min(1.0, final_score))
 
-            logger.info(
-                f"📊 [점수 디버그] {ticker}: "
-                f"Macro={macro_score['score']:.2f}, "
-                f"Sector={sector_score['score']:.2f}, "
-                f"Stock={stock_score['score']:.2f} [Regime:{regime}], "
-                f"Momentum={momentum:.2%}(점수:{momentum_score:.2f}), "
-                f"Final={final_score:.3f}"
-            )
-            debug_tower.log(ticker, "SCORE_CALC", {
-                "base": base_score,
-                "stock": stock_score['score'],
-                "regime": regime,
-                "momentum": momentum,
-                "momentum_score": momentum_score,
-                "final": final_score
-            }, trace_id)
+            # 5. VaR 계산 (리스크 조정 계수)
+            risk_adj = 1.0
+            if self.db:
+                try:
+                    ohlcv_data = await self.db.get_ohlcv(ticker, period=252)
+                    if len(ohlcv_data) >= 30:
+                        returns = []
+                        for i in range(1, len(ohlcv_data)):
+                            prev = ohlcv_data[i-1].get('close', 0)
+                            curr = ohlcv_data[i].get('close', 0)
+                            if prev > 0 and curr > 0:
+                                returns.append((curr - prev) / prev)
+                        if len(returns) >= 30:
+                            var_result = self.var_calc.calculate(returns)
+                            risk_adj = var_result.get('risk_adjustment_factor', 1.0)
+                except Exception as e:
+                    logger.debug(f"⚠️ VaR 계산 실패 ({ticker}): {e}")
 
-            decision = self.decider.decide({
-                "score": final_score,
-                "macro": macro_score,
-                "sector": sector_score,
-                "stock": stock_score,
-                "korean": korean_score
-            })
+            # 6. 액션 결정 (전략 결과 우선, 점수로 보정)
+            if strategy_action in ['BUY', 'SELL'] and strategy_confidence > 0.6:
+                final_action = strategy_action
+                final_confidence = strategy_confidence
+                action_reason = f"전략 합의: {strategy_result['consensus']}"
+            else:
+                decision = self.decider.decide({
+                    "score": final_score,
+                    "macro": macro_score,
+                    "sector": sector_score,
+                    "stock": stock_score,
+                    "korean": korean_score
+                })
+                final_action = decision.get("action", "HOLD")
+                final_confidence = decision.get("confidence", 0.5)
+                action_reason = "점수 기반 결정"
 
-            original_action = decision.get("action", "HOLD")
+            original_action_label = {
+                'BUY': '매수', 'SELL': '매도', 'HOLD': '관망'
+            }.get(final_action, '관망')
 
-            positives = decision.get("reasons", ["다중 팩터 우위"])
-            positives.append(f"📊 ATR: {atr:,.0f}원" if atr > 0 else "📊 ATR: 수집 중")
+            # 7. 결과 구성
+            positives = [f"전략: {strategy_result['consensus']}"]
+            if final_score > 0.6:
+                positives.append(f"종합 점수 {final_score:.1%}")
+            if ml_score != 0.5:
+                positives.append(f"ML 예측 {ml_score:.1%}")
             if tech_data:
-                positives.append(f"📊 거래량 비율: {tech_data.get('volume_ratio', 1.0):.1f}x")
-                positives.append(f"📈 RSI: {tech_data.get('rsi', 50):.0f}")
-            if sentiment_score != 0:
-                positives.append(f"📰 뉴스 감성: {sentiment_score:+.2f}")
-            if abs(momentum) > 0.01:
-                positives.append(f"⚡ 모멘텀 강도: {momentum:+.2%} (점수 {momentum_score:.2f})")
+                positives.append(f"RSI {tech_data.get('rsi', 50):.0f}")
             if regime:
-                positives.append(f"📌 시장 국면: {regime}")
+                positives.append(f"국면: {regime}")
+
+            strategy_details = []
+            for r in strategy_result.get('strategy_results', []):
+                strategy_details.append(f"{r.name}: {r.action} ({r.score:.0%})")
 
             result = {
                 "ticker": ticker,
                 "name": stock.get("name", stock.get("ticker", "")),
                 "price": current_price,
-                "action": original_action,
-                "action_label": decision.get("action_label", ""),
+                "action": final_action,
+                "action_label": original_action_label,
+                "original_action": final_action,
                 "score": final_score,
-                "confidence": decision.get("confidence", 0.5),
+                "confidence": final_confidence,
                 "positives": positives,
-                "negatives": decision.get("risks", ["시장 변동성 주의"]),
+                "negatives": decision.get("risks", ["시장 변동성 주의"]) if final_action != 'HOLD' else ["관망 유지"],
                 "counterfactuals": decision.get("counterfactuals", []),
                 "imbalance": imbalance,
                 "atr": atr,
@@ -743,6 +654,15 @@ class DeepAnalyzer:
                 "sentiment_score": sentiment_score,
                 "momentum": momentum,
                 "momentum_score": momentum_score,
+                "ml_score": ml_score,
+                "risk_adjustment_factor": risk_adj,
+                "strategy_result": {
+                    "final_score": strategy_score,
+                    "final_action": strategy_action,
+                    "confidence": strategy_confidence,
+                    "consensus": strategy_result.get('consensus', ''),
+                    "details": strategy_details,
+                },
                 "regime": regime,
                 "details": {
                     "macro": macro_score["score"],
@@ -754,13 +674,16 @@ class DeepAnalyzer:
                     "sentiment": sentiment_factor,
                     "momentum": momentum,
                     "momentum_score": momentum_score,
+                    "ml_score": ml_score,
+                    "strategy_score": strategy_score,
+                    "risk_adj": risk_adj,
                     "regime": regime,
                 },
                 "timestamp": stock.get("timestamp", "")
             }
 
             # ============================================================
-            # 호가잔량 기반 진입가 보정 + 체결률 기반 신호 강도 조정
+            # 8. 체결 시뮬레이터 (기존 유지)
             # ============================================================
             orderbook = stock.get('orderbook', {})
             if orderbook and result["action"] in ["BUY", "SELL"]:
@@ -770,101 +693,62 @@ class DeepAnalyzer:
                     order_volume = max(self.ORDER_VOLUME_MIN, min(self.ORDER_VOLUME_MAX, order_volume))
                 else:
                     order_volume = 100
-                    logger.debug(f"⚠️ {ticker} 평균 거래량 없음, 기본 100주 사용")
-
-                debug_tower.log(ticker, "ORDER_VOLUME_CALC", {
-                    "avg_volume": avg_volume,
-                    "ratio": self.ORDER_VOLUME_RATIO,
-                    "order_volume": order_volume
-                }, trace_id)
-
-                sim_action = result["action"]
+                market_cap = stock.get('market_cap', 1e12)
                 sim_result = self.exec_sim.execute(
-                    ticker=ticker,
-                    action=sim_action,
-                    price=current_price,
-                    volume=order_volume,
-                    order_size=order_volume,
-                    market_cap=stock.get('market_cap', 1e12),
-                    current_time=datetime.now(),
-                    orderbook=orderbook
+                    ticker=ticker, action=result["action"], price=current_price,
+                    volume=order_volume, order_size=order_volume, market_cap=market_cap,
+                    avg_daily_volume=avg_volume, current_time=datetime.now(), orderbook=orderbook
                 )
-
                 if sim_result.filled:
                     fill_ratio = sim_result.fill_ratio
                     adjusted_entry = sim_result.execution_price
-
                     if fill_ratio < self.FILL_RATIO_REJECT:
-                        logger.warning(f"⚠️ {ticker} 체결률 {fill_ratio:.1%} (임계값 30% 미만) → 신호 보류(HOLD)")
+                        logger.warning(f"⚠️ {ticker} 체결률 {fill_ratio:.1%} → HOLD")
                         result["action"] = "HOLD"
                         result["action_label"] = "체결률 부족으로 보류"
-                        if "negatives" not in result or not isinstance(result["negatives"], list):
-                            result["negatives"] = []
-                        result["negatives"].append(f"⚠️ 호가 체결률 {fill_ratio:.1%} (30% 미만)")
-
+                        result["negatives"].append(f"⚠️ 체결률 {fill_ratio:.1%}")
                     elif fill_ratio < self.FILL_RATIO_REDUCE:
-                        logger.info(f"💡 {ticker} 부분 체결({fill_ratio:.1%}) → 확신도 하향 조정")
                         original_conf = result.get('confidence', 0.6)
-                        confidence_multiplier = 0.65 + (fill_ratio - 0.3) / 0.4 * 0.35
-                        adjusted_conf = original_conf * confidence_multiplier
-                        result['confidence'] = max(0.3, adjusted_conf)
-                        result['negatives'].append(f"⚠️ 부분 체결({fill_ratio:.1%})로 확신도 {original_conf:.2f}→{result['confidence']:.2f}")
+                        multiplier = 0.65 + (fill_ratio - self.FILL_RATIO_REJECT) / (self.FILL_RATIO_REDUCE - self.FILL_RATIO_REJECT) * 0.35
+                        result['confidence'] = max(0.3, original_conf * multiplier)
                         result['entry_price'] = adjusted_entry
                         result['slippage_bps'] = sim_result.slippage_bps
                         result['fill_ratio'] = fill_ratio
-                        result['execution_detail'] = sim_result.reason
-
                     else:
-                        logger.info(f"✅ {ticker} 충분한 체결률({fill_ratio:.1%}) 정상 진입")
                         result['entry_price'] = adjusted_entry
                         result['slippage_bps'] = sim_result.slippage_bps
                         result['fill_ratio'] = fill_ratio
-                        result['execution_detail'] = sim_result.reason
                 else:
-                    logger.warning(f"⚠️ {ticker} 체결 불가 ({sim_result.reason}) → 신호 보류")
+                    logger.warning(f"⚠️ {ticker} 체결 불가 → HOLD")
                     result["action"] = "HOLD"
                     result["action_label"] = "체결 불가로 보류"
-                    if "negatives" not in result or not isinstance(result["negatives"], list):
-                        result["negatives"] = []
-                    result["negatives"].append(f"⚠️ 호가 체결 불가: {sim_result.reason}")
+                    result["negatives"].append(f"⚠️ 체결 불가: {sim_result.reason}")
 
             # ============================================================
-            # 포지션 진입 처리
+            # 9. 포지션 진입 처리
             # ============================================================
             if result["action"] in ["BUY", "SELL"]:
                 async with self._lock:
                     if ticker not in self.trailing_stops:
                         entry_price_f = self._to_float(result.get('entry_price', entry_price), 0.0)
                         atr_f = self._to_float(atr, 0.0)
-
+                        if atr_f <= 0:
+                            atr_f = entry_price_f * 0.01
                         tp1 = entry_price_f + (atr_f * 3.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 3.0)
                         tp2 = entry_price_f + (atr_f * 5.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 5.0)
                         tp3 = entry_price_f + (atr_f * 7.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 7.0)
-                        stop_price = entry_price_f - (atr_f * self.atr_multiplier_stop) if result["action"] == "BUY" else entry_price_f + (
-                                    atr_f * self.atr_multiplier_stop)
-
+                        stop_price = entry_price_f - (atr_f * self.atr_multiplier_stop) if result["action"] == "BUY" else entry_price_f + (atr_f * self.atr_multiplier_stop)
                         self.trailing_stops[ticker] = {
-                            "action": result["action"],
-                            "ticker": ticker,
-                            "entry_price": entry_price_f,
-                            "current_stop": stop_price,
-                            "tp1_price": tp1,
-                            "tp2_price": tp2,
-                            "tp3_price": tp3,
+                            "action": result["action"], "ticker": ticker, "entry_price": entry_price_f,
+                            "current_stop": stop_price, "tp1_price": tp1, "tp2_price": tp2, "tp3_price": tp3,
                             "highest_price": entry_price_f if result["action"] == "BUY" else None,
                             "lowest_price": entry_price_f if result["action"] == "SELL" else None,
-                            "atr": atr_f,
-                            "entry_time": datetime.now().isoformat(),
-                            "last_update_time": datetime.now().isoformat(),
-                            "last_advice_time": 0,
-                            "tp_hit_level": 0,
-                            "remaining_qty": 1.0,
-                            "last_price": current_price,
+                            "atr": atr_f, "entry_time": datetime.now().isoformat(),
+                            "last_update_time": datetime.now().isoformat(), "last_advice_time": 0,
+                            "tp_hit_level": 0, "remaining_qty": 1.0, "last_price": current_price,
                         }
-                        logger.info(
-                            f"✅ {ticker} 포지션 추적 시작 (액션: {result['action']}, TP1:{tp1:.0f}, TP2:{tp2:.0f}, TP3:{tp3:.0f})")
-                        debug_tower.log(ticker, "POSITION_START",
-                                        {"action": result['action'], "tp1": tp1, "tp2": tp2, "tp3": tp3}, trace_id)
+                        logger.info(f"✅ {ticker} 포지션 추적 시작 (액션: {result['action']}, TP1:{tp1:.0f})")
+                        debug_tower.log(ticker, "POSITION_START", {"action": result['action']}, trace_id)
                         result["current_stop"] = stop_price
                         result["trailing_active"] = True
                         result["entry_time"] = datetime.now().isoformat()
@@ -880,44 +764,34 @@ class DeepAnalyzer:
                     state = self.trailing_stops.get(ticker)
                     if state:
                         state["last_price"] = current_price
-                event = await self._update_trailing_stop(
-                    ticker, current_price, atr, tech_data, imbalance
-                )
+                event = await self._update_trailing_stop(ticker, current_price, atr, tech_data, imbalance)
                 if event:
                     debug_tower.log(ticker, "EVENT_GENERATED", {"event": event['action']}, trace_id)
                     return event
 
-            # ============================================================
-            # 🔥 [핵심 수정] Calibration 분석을 위해 fill_ratio와 slippage를 로그에 포함
-            # ============================================================
             debug_tower.log(ticker, "ANALYZE_COMPLETE", {
                 "action": result.get('action'),
-                "fill_ratio": result.get('fill_ratio'),
-                "slippage_bps": result.get('slippage_bps'),
-                "confidence": result.get('confidence'),
-                "score": result.get('score')
+                "score": result.get('score'),
+                "ml_score": ml_score,
+                "risk_adj": risk_adj,
+                "strategy_consensus": strategy_result.get('consensus'),
             }, trace_id)
-
             return result
 
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
-            logger.error(traceback.format_exc())
             debug_tower.capture_snapshot(stock.get('ticker', 'SYSTEM'), e, "ANALYZE")
             return {
                 "ticker": stock.get("ticker", ""),
-                "name": stock.get("name", ""),
-                "price": stock.get("price", 0.0),
                 "action": "ERROR",
                 "score": 0.0,
                 "confidence": 0.0,
                 "positives": [],
                 "negatives": [],
-                "counterfactuals": [],
                 "atr": 0.0,
-                "details": {},
+                "ml_score": 0.5,
+                "risk_adjustment_factor": 1.0,
                 "error": str(e),
-                "timestamp": stock.get("timestamp", "")
             }
 
     async def clear_trailing_stop(self, ticker: str):
@@ -925,4 +799,3 @@ class DeepAnalyzer:
             if ticker in self.trailing_stops:
                 del self.trailing_stops[ticker]
                 logger.info(f"🗑️ {ticker} 트레일링 스탑 상태 제거")
-                debug_tower.log(ticker, "CLEAR_STOP", {})

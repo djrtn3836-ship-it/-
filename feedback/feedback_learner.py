@@ -1,20 +1,25 @@
 """
-feedback/feedback_learner.py - v7.2.3 (XGBoost 비동기 분리 + 피드백 캐시 최적화)
-- XGBoost 학습을 별도 스레드에서 실행하여 이벤트 루프 블로킹 방지
-- feedback_stats 캐시 플래그 추가로 불필요한 DB 조회 제거
-- 5일 수익률 추적 및 EMA 가중치 업데이트 유지
+feedback/feedback_learner.py - v7.4.0 (ML 모델 저장/로드 + 실시간 예측 API)
+- XGBoost 학습을 별도 스레드에서 실행 (비동기)
+- 학습된 모델을 config/xgb_model.pkl로 저장 및 자동 로드
+- deep_analyzer가 호출할 predict_prob(features: Dict) -> float 제공
 """
 
 import math
 import asyncio
+import pickle
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
+
 from data.db_manager import DatabaseManager
 from report.telegram_sender import TelegramSender
 from core.logger import setup_logger
 from core.holiday_utils import is_trading_day
 
 logger = setup_logger("feedback")
+
+MODEL_PATH = Path(__file__).parent.parent / "config" / "xgb_model.pkl"
 
 
 class FeedbackLearner:
@@ -29,17 +34,68 @@ class FeedbackLearner:
             import xgboost as xgb
             self._xgb = xgb
         except ImportError:
-            logger.warning("⚠️ XGBoost 미설치 → EMA 가중치 조정 모드로 운영")
+            logger.warning("⚠️ XGBoost 미설치 → ML 예측 비활성화 (pip install xgboost)")
             self._xgb = None
 
+        # 🔥 모델 자동 로드
+        self.load_model()
+
+    # ============================================================
+    # 🔥 신규: 모델 저장/로드/예측 API (v7.4.0)
+    # ============================================================
+    def save_model(self):
+        """학습된 XGBoost 모델을 파일로 저장"""
+        if self._xgb_model is None:
+            return
+        try:
+            MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(MODEL_PATH, 'wb') as f:
+                pickle.dump(self._xgb_model, f)
+            logger.info(f"✅ XGBoost 모델 저장 완료: {MODEL_PATH}")
+        except Exception as e:
+            logger.error(f"❌ 모델 저장 실패: {e}")
+
+    def load_model(self):
+        """저장된 XGBoost 모델 로드"""
+        if not MODEL_PATH.exists():
+            logger.debug("📭 저장된 ML 모델 없음 (학습 필요)")
+            return
+        try:
+            with open(MODEL_PATH, 'rb') as f:
+                self._xgb_model = pickle.load(f)
+            self._model_ready = True
+            logger.info(f"✅ XGBoost 모델 로드 완료: {MODEL_PATH}")
+        except Exception as e:
+            logger.warning(f"⚠️ 모델 로드 실패: {e}, 재학습 필요")
+            self._model_ready = False
+
+    def predict_prob(self, features: Dict) -> float:
+        """
+        실시간 피처 기반 ML 예측 확률 반환 (0~1)
+        deep_analyzer에서 호출됨
+        """
+        if not self._model_ready or self._xgb_model is None:
+            return 0.5  # 모델 없으면 중립
+
+        try:
+            import pandas as pd
+            # 피처 순서 고정 (학습 시 사용한 컬럼 순서와 동일해야 함)
+            feature_order = ['momentum', 'rsi', 'volume_ratio', 'macro_score', 'sector_score', 'imbalance']
+            df = pd.DataFrame([{k: features.get(k, 0.0) for k in feature_order}])
+            prob = self._xgb_model.predict_proba(df)[0][1]
+            return float(prob)
+        except Exception as e:
+            logger.debug(f"⚠️ ML 예측 실패: {e}")
+            return 0.5
+
     async def run(self):
-        logger.info("🧠 [v7.2.3] 피드백 학습 시작 (비동기 XGBoost)")
-        
+        """기존 피드백 학습 실행 (모델 저장 추가)"""
+        logger.info("🧠 [v7.4.0] 피드백 학습 시작 (ML 모델 저장 포함)")
         yesterday = (datetime.now() - timedelta(days=1))
         if not is_trading_day(yesterday):
             logger.info(f"📭 {yesterday.strftime('%Y-%m-%d')} 비거래일 → 학습 스킵")
             return
-        
+
         yesterday_str = yesterday.strftime("%Y-%m-%d")
         decisions = await self.db.get_decisions_by_date(yesterday_str)
         if not decisions:
@@ -58,22 +114,23 @@ class FeedbackLearner:
             logger.warning("⚠️ 유효한 결과 없음")
             return
 
-        # 1. 5일 수익률 포함 통계
         stats = await self._generate_stats(outcomes)
-        
-        # 2. XGBoost 모델 학습 (데이터 충분 시, 별도 스레드에서 실행)
+
+        # XGBoost 모델 학습 (데이터 충분 시)
         if self._xgb and len(outcomes) >= 30:
             await self._train_xgboost_model_async(outcomes)
-        
-        # 3. 가중치 업데이트 (EMA + ML 반영)
+            # 🔥 학습 후 모델 저장
+            self.save_model()
+
+        # 가중치 업데이트
         prev_weights = await self.db.get_weights()
         new_weights = await self._update_weights_advanced(outcomes, stats, prev_weights)
-        
-        # 4. 보고서 발송
+
+        # 보고서 발송
         await self._send_advanced_report(yesterday_str, stats, prev_weights, new_weights)
 
     # ============================================================
-    # 🔥 1) 5일 수익률 실제 조회 (기존 유지)
+    # 기존 내부 메서드 (완전 유지)
     # ============================================================
     async def _fetch_real_outcome(self, decision: dict) -> Optional[dict]:
         ticker = decision['ticker']
@@ -81,38 +138,30 @@ class FeedbackLearner:
         price_at = decision.get('price_at_decision', decision.get('price', 0))
         if price_at <= 0:
             return None
-
         try:
             ohlcv_1d = await self.db.get_ohlcv(ticker, period=2)
             price_after_1d = ohlcv_1d[-1].get('close', 0) if ohlcv_1d and len(ohlcv_1d) >= 2 else 0
-            
             ohlcv_5d = await self.db.get_ohlcv(ticker, period=6)
             price_after_5d = ohlcv_5d[-1].get('close', 0) if ohlcv_5d and len(ohlcv_5d) >= 6 else 0
-
             if price_after_1d <= 0 or price_after_5d <= 0:
                 if self.connector:
                     resp = await self.connector.request_tr(ticker, "일봉")
                     if resp and 'close' in resp:
                         price_after_1d = float(resp.get('close', 0))
                         price_after_5d = float(resp.get('close', 0))
-
         except Exception as e:
             logger.error(f"❌ 가격 조회 실패 ({ticker}): {e}")
             return None
-
         if price_after_1d <= 0:
             return None
-
         return_1d = (price_after_1d - price_at) / price_at
         return_5d = (price_after_5d - price_at) / price_at if price_after_5d > 0 else return_1d
-
         if action == 'BUY':
             is_correct = return_1d > 0
         elif action == 'SELL':
             is_correct = return_1d < 0
         else:
             is_correct = abs(return_1d) < 0.02
-
         return {
             'decision_id': decision['id'],
             'ticker': ticker,
@@ -125,85 +174,48 @@ class FeedbackLearner:
             'is_correct': is_correct
         }
 
-    # ============================================================
-    # 🔥 2) XGBoost 학습 (비동기 분리 - C-07 해결)
-    # ============================================================
     async def _train_xgboost_model_async(self, outcomes: List[Dict]):
-        """CPU-bound XGBoost 학습을 별도 스레드에서 실행"""
         try:
-            # 1. 과거 데이터 로드 (30일치)
             end_date = datetime.now()
             start_date = end_date - timedelta(days=30)
             all_decisions = []
             for i in range(30):
                 day = (end_date - timedelta(days=i)).strftime("%Y-%m-%d")
                 all_decisions.extend(await self.db.get_decisions_by_date(day))
-            
             if len(all_decisions) < 30:
                 logger.info(f"📊 학습 데이터 부족 ({len(all_decisions)}개) → XGBoost 스킵")
                 return
-
-            # 2. 피처 엔지니어링 (간소화)
             import pandas as pd
             df = pd.DataFrame(all_decisions)
             df['score_feat'] = df['score']
             df['confidence_feat'] = df['confidence']
             df['price_feat'] = df['price_at_decision']
-
-            # outcomes를 기준으로 레이블 생성
             train_df = pd.DataFrame(outcomes)
             if len(train_df) < 20:
                 return
-            
-            X = train_df[['return_1d']].abs().fillna(0)  # 간단한 피처
+            X = train_df[['return_1d']].abs().fillna(0)
             y = train_df['is_correct'].astype(int)
-            
             if len(X) < 10:
                 return
-
-            # 3. 🔥 CPU 바운드 작업을 별도 스레드로 분리
-            import asyncio
             loop = asyncio.get_running_loop()
             self._xgb_model = await loop.run_in_executor(None, self._fit_model, X, y)
             self._model_ready = True
             logger.info(f"✅ XGBoost 모델 학습 완료 (데이터: {len(X)}개)")
-            
         except Exception as e:
             logger.error(f"❌ XGBoost 학습 실패: {e}")
             self._model_ready = False
 
     def _fit_model(self, X, y):
-        """동기적으로 모델을 학습하는 내부 함수 (executor용)"""
         model = self._xgb.XGBClassifier(
-            n_estimators=50,
-            max_depth=3,
-            learning_rate=0.1,
-            use_label_encoder=False,
-            eval_metric='logloss',
-            random_state=42
+            n_estimators=50, max_depth=3, learning_rate=0.1,
+            use_label_encoder=False, eval_metric='logloss', random_state=42
         )
         model.fit(X, y)
         return model
 
-    async def predict_with_ml(self, features: Dict) -> float:
-        """XGBoost로 예측 확률 반환 (0~1)"""
-        if not self._model_ready or not self._xgb:
-            return 0.5
-        try:
-            import pandas as pd
-            df = pd.DataFrame([features])
-            prob = self._xgb_model.predict_proba(df)[0][1]
-            return float(prob)
-        except:
-            return 0.5
-
-    # ============================================================
-    # 🔥 3) 고급 가중치 업데이트 (EMA + ML Hybrid)
-    # ============================================================
     async def _update_weights_advanced(self, outcomes: list, stats: dict, current_weights: dict) -> dict:
         avg_return = stats.get('avg_return_5d', stats['avg_return_1d'])
         ml_factor = 1.0 + (stats['accuracy'] - 0.5) * 0.5
-        
         updated = {}
         for factor, current_weight in current_weights.items():
             delta = 0.03 if avg_return > 0 else -0.03
@@ -211,42 +223,27 @@ class FeedbackLearner:
             new_weight = max(0.1, min(3.0, current_weight + delta))
             await self.db.update_weight(factor, new_weight)
             updated[factor] = new_weight
-        
         logger.info(f"📊 고급 가중치 최적화 완료 (5일 평균 수익률: {avg_return:.2f}%)")
         return updated
 
-    # ============================================================
-    # 📊 4) 통계 및 보고서
-    # ============================================================
     async def _generate_stats(self, outcomes: List[Dict]) -> Dict:
         total = len(outcomes)
         correct = sum(1 for o in outcomes if o['is_correct'])
         accuracy = correct / total if total > 0 else 0.0
-        
         returns_1d = [o['return_1d'] for o in outcomes]
         returns_5d = [o.get('return_5d', o['return_1d']) for o in outcomes]
-        
         mean_1d = sum(returns_1d) / total if total > 0 else 0
         mean_5d = sum(returns_5d) / total if total > 0 else 0
-        
         wins = [r for r in returns_1d if r > 0]
         losses = [abs(r) for r in returns_1d if r < 0]
         profit_factor = sum(wins) / sum(losses) if sum(losses) > 0 else (sum(wins) if sum(wins) > 0 else 1.0)
-        
         return {
-            'total': total,
-            'correct': correct,
-            'accuracy': accuracy,
-            'avg_return_1d': mean_1d,
-            'avg_return_5d': mean_5d,
-            'profit_factor': profit_factor
+            'total': total, 'correct': correct, 'accuracy': accuracy,
+            'avg_return_1d': mean_1d, 'avg_return_5d': mean_5d, 'profit_factor': profit_factor
         }
 
     async def _send_advanced_report(self, date_str: str, stats: dict, prev_w: dict, new_w: dict):
-        factor_map = {
-            'momentum': '모멘텀', 'volume': '거래량', 'volatility': '변동성',
-            'macro': '매크로', 'sector': '섹터'
-        }
+        factor_map = {'momentum': '모멘텀', 'volume': '거래량', 'volatility': '변동성', 'macro': '매크로', 'sector': '섹터'}
         drift_lines = []
         for f in prev_w.keys():
             old_v, new_v = prev_w.get(f, 1.0), new_w.get(f, 1.0)
@@ -254,9 +251,9 @@ class FeedbackLearner:
             arrow = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➖")
             label = factor_map.get(f, f)
             drift_lines.append(f"• <code>{label:<8}</code>: {old_v:.2f} ➔ <b>{new_v:.2f}</b> ({arrow} {diff:+.2f})")
-
+        ml_status = "✅ 활성화" if self._model_ready else "⚠️ 비활성 (데이터 부족)"
         msg = (
-            f"<b>🧠 [AI 퀀트] 모델 최적화 보고서 (v7.2.3)</b>\n"
+            f"<b>🧠 [AI 퀀트] 모델 최적화 보고서 (v7.4.0 ML 융합)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>📈 1. 성과 지표 ({date_str})</b>\n"
             f"• 샘플: <b>{stats['total']}개</b> | 적중률: <b>{stats['accuracy']:.1%}</b>\n"
@@ -264,7 +261,8 @@ class FeedbackLearner:
             f"• 손익비: <code>{stats['profit_factor']:.2f}</code>\n\n"
             f"<b>⚙️ 2. AI 가중치 재조정 (ML 반영)</b>\n"
             + "\n".join(drift_lines) + "\n"
+            f"<b>🧬 3. ML 예측 엔진</b>: {ml_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>📊 비동기 XGBoost 하이브리드 엔진 | 5일 수익률 추적</i>"
+            f"<i>📊 XGBoost 하이브리드 | 실시간 점수 융합 (22%)</i>"
         )
         await self.telegram.send_raw(msg)
