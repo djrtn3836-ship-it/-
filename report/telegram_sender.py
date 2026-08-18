@@ -1,17 +1,10 @@
 """
-report/telegram_sender.py - v7.2.2 — Claude 버그 수정
-- 4대 독립 개체 투표 결과, 합의 점수, 판단 근거 표시
-- ATR 급변동 시 동적 TP 조정 정보 포함
-
-수정 사항 (v7.2.1 → v7.2.2):
-- 🔥 _format_tp_hit()에서 tp_level이 1~3 범위를 벗어나면
-  (0, 4 이상, 또는 문자열 등) tp_names[tp_level-1]에서
-  IndexError가 발생하거나(범위 초과) 음수 인덱스로 엉뚱한
-  라벨이 조용히 나오던(tp_level=0 → 마지막 요소) 문제를 수정.
-  범위를 벗어나면 안전한 기본 라벨로 폴백.
-- 🔥 send()에서 알 수 없는 action이 들어오면 아무 로그 없이
-  True를 반환해 "정상 처리된 것처럼" 보이던 부분에 경고 로그 추가
-  (deep_analyzer.py 쪽 오타/신규 이벤트 타입 누락을 조기에 발견하기 위함).
+report/telegram_sender.py - v7.2.8 (매수/매도 논증 라벨 구분 + 디버그 관제탑)
+- BUY/SELL 액션도 SIGNAL_ENTRY로 처리
+- 매수 시 "매수 논증", 매도 시 "매도 논증" 표시
+- send_raw() 타임아웃 30초, 재시도 간격 2/4/6초
+- TimedOut/NetworkError/TimeoutError 세부 처리
+- 🔥 디버그 관제탑 적용
 """
 
 import os
@@ -20,12 +13,12 @@ import asyncio
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import TelegramError, TimedOut, NetworkError
 from dotenv import load_dotenv
 from core.logger import setup_logger
+from core.debug_tower import debug_tower   # 🔥 디버그 관제탑
 
 logger = setup_logger("telegram")
-
 
 class TelegramSender:
     def __init__(self):
@@ -35,15 +28,24 @@ class TelegramSender:
         self.bot = Bot(token=self.token) if self.token else None
         if self.bot and self.chat_id:
             logger.info(f"✅ Telegram 봇 초기화 완료 (Chat ID: {self.chat_id})")
+            debug_tower.log("SYSTEM", "TELEGRAM_INIT", {"chat_id": self.chat_id})
         else:
             logger.warning("❌ Telegram bot not configured")
 
     async def send(self, report: dict) -> bool:
         if not self.bot or not self.chat_id:
             return False
+
+        action = report.get("action")
+        ticker = report.get('ticker', 'UNKNOWN')
+        debug_tower.log(ticker, "TELEGRAM_SEND_START", {"action": action})
+
+        if action in ("ERROR", "IGNORE"):
+            debug_tower.log(ticker, "TELEGRAM_SKIP", {"action": action})
+            return True
+
         try:
-            action = report.get("action")
-            if action == "SIGNAL_ENTRY":
+            if action == "SIGNAL_ENTRY" or action in ("BUY", "SELL"):
                 message = self._format_signal_entry(report)
             elif action == "EVENT_SL_TRAIL":
                 message = self._format_sl_trail(report)
@@ -56,46 +58,120 @@ class TelegramSender:
             elif action == "EVENT_LIFECYCLE_ADVICE":
                 message = self._format_lifecycle_advice(report)
             else:
-                # 🔥 수정: 알 수 없는 action은 조용히 넘기지 않고 경고 로그를 남김
                 logger.warning(f"⚠️ 알 수 없는 action 타입 수신, 전송 스킵: {action!r}")
+                debug_tower.log(ticker, "TELEGRAM_UNKNOWN_ACTION", {"action": action})
                 return True
-            return await self.send_raw(message)
+
+            result = await self.send_raw(message)
+            if result:
+                debug_tower.log(ticker, "TELEGRAM_SEND_SUCCESS", {"action": action})
+            else:
+                debug_tower.log(ticker, "TELEGRAM_SEND_FAIL", {"action": action})
+            return result
         except Exception as e:
             logger.error(f"❌ Telegram 전송 오류: {e}")
+            debug_tower.capture_snapshot(ticker, e, f"TELEGRAM_{action}")
             return False
 
-    async def send_raw(self, message: str, max_retries: int = 2) -> bool:
+    async def send_raw(self, message: str, max_retries: int = 3) -> bool:
         if not self.bot or not self.chat_id:
             return False
+
         if len(message) > 4000:
             message = message[:3950] + "\n\n... (메시지 길이 초과)"
+
+        timeout_seconds = 30.0
+
         for attempt in range(max_retries + 1):
             try:
-                await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message,
-                    parse_mode="HTML"
+                await asyncio.wait_for(
+                    self.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=message,
+                        parse_mode="HTML"
+                    ),
+                    timeout=timeout_seconds
                 )
                 if attempt > 0:
                     logger.info(f"✅ Telegram 재전송 성공 ({attempt}회차)")
                 else:
                     logger.info("✅ Telegram 메시지 전송 성공")
                 return True
-            except TelegramError as e:
+            except asyncio.TimeoutError:
                 if attempt < max_retries:
-                    delay = 2 ** attempt
-                    logger.warning(f"⚠️ Telegram 전송 실패 ({attempt+1}/{max_retries+1}): {e} → {delay}초 후 재시도")
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"⚠️ Telegram 전송 타임아웃 ({attempt+1}/{max_retries+1}) "
+                        f"→ {delay}초 후 재시도"
+                    )
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"❌ Telegram 전송 최종 실패: {e}")
+                    logger.error("❌ Telegram 전송 최종 타임아웃")
+                    debug_tower.log("SYSTEM", "TELEGRAM_TIMEOUT", {"attempts": max_retries})
                     return False
+            except (TimedOut, NetworkError) as e:
+                if attempt < max_retries:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"⚠️ Telegram 네트워크 오류 ({attempt+1}/{max_retries+1}): {e} "
+                        f"→ {delay}초 후 재시도"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"❌ Telegram 네트워크 최종 오류: {e}")
+                    debug_tower.capture_snapshot("SYSTEM", e, "TELEGRAM_NETWORK")
+                    return False
+            except TelegramError as e:
+                logger.error(f"❌ Telegram API 오류: {e}")
+                debug_tower.capture_snapshot("SYSTEM", e, "TELEGRAM_API")
+                return False
             except Exception as e:
                 logger.error(f"❌ Telegram 전송 예외: {e}")
+                debug_tower.capture_snapshot("SYSTEM", e, "TELEGRAM_EXCEPTION")
                 return False
         return False
 
     # ============================================================
-    # 1. SIGNAL_ENTRY (신규 진입)
+    # 액션 배너 (기존 유지)
+    # ============================================================
+    _ACTION_STYLE = {
+        'EXIT':          ('🔴', '지금 즉시 전량 매도'),
+        'PARTIAL_EXIT':  ('🟡', '지금 즉시 부분 매도'),
+        'REDUCE':        ('🟠', '포지션 축소 검토 (매도 아님)'),
+        'HOLD':          ('🟢', '보유 유지 (행동 불필요)'),
+        'WATCH':         ('⚪', '관찰만 (행동 불필요)'),
+        'EXECUTED':      ('✅', '자동 실행 완료'),
+    }
+
+    def _action_banner(self, action: str, price: float = 0.0, note: str = "") -> list:
+        emoji, label = self._ACTION_STYLE.get(action, self._ACTION_STYLE['WATCH'])
+        lines = [f"{emoji} <b>지금 할 일: {label}</b>"]
+        if price > 0:
+            lines.append(f"   → 기준가: <code>{price:,.0f}원</code>")
+        if note:
+            lines.append(f"   → {note}")
+        lines.append("")
+        return lines
+
+    def _infer_advice_action(self, advice: Optional[dict]) -> str:
+        if not advice:
+            return 'HOLD'
+        rec = (advice.get('recommendation') or advice.get('action') or '').upper()
+        if rec in ('EXIT', 'SELL', 'CLOSE'):
+            return 'EXIT'
+        if rec in ('PARTIAL_EXIT', 'PARTIAL_SELL'):
+            return 'PARTIAL_EXIT'
+        if rec in ('REDUCE',):
+            return 'REDUCE'
+        label = str(advice.get('action_label', ''))
+        if '청산' in label or '매도' in label:
+            return 'EXIT' if '전량' in label or '전체' in label else 'PARTIAL_EXIT'
+        if '축소' in label:
+            return 'REDUCE'
+        return 'HOLD'
+
+    # ============================================================
+    # 1. SIGNAL_ENTRY
     # ============================================================
     def _format_signal_entry(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
@@ -107,7 +183,6 @@ class TelegramSender:
         confidence = data.get("confidence", 0.5)
         score = data.get("score", 0.5)
         positives = data.get("positives", [])
-        negatives = data.get("negatives", [])
         max_hold_hours = data.get("max_hold_hours", 2)
 
         if atr > 0 and entry_price > 0:
@@ -131,7 +206,10 @@ class TelegramSender:
         lines.append("")
 
         thesis = "• " + " / ".join(positives[:3]) if positives else "• 다중 팩터 우위"
-        lines.append("🧠 <b>[매수 논증]</b>")
+        if side == "BUY":
+            lines.append("🧠 <b>[매수 논증]</b>")
+        else:
+            lines.append("🧠 <b>[매도 논증]</b>")
         lines.append(f"   {thesis}")
         if atr > 0:
             lines.append(f"   • 변동성(ATR): {atr:,.0f}원")
@@ -151,8 +229,8 @@ class TelegramSender:
         lines.append("")
 
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2 Pro Alert</i>")
-        lines.append("<i>⚠️ Shadow Mode: 알림 전용</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.8 Pro Alert</i>")
+        lines.append("<i>⚠️ Shadow Mode: 알림 전용 | 이후 알림은 시간이 아닌 '가격 도달' 기준으로 발송됩니다</i>")
         return "\n".join(lines)
 
     # ============================================================
@@ -166,14 +244,21 @@ class TelegramSender:
         new_stop = data.get("new_stop", 0.0)
         atr = data.get("atr", 0.0)
         pnl = data.get("pnl", 0.0)
-        advice = data.get("consensus")
+        advice = data.get("consensus") or data.get("advice")
+
+        action = self._infer_advice_action(advice)
+        if not advice:
+            note = f"새 손절가({new_stop:,.0f}원) 밑으로 가격이 떨어지면 자동으로 매도 신호가 옵니다"
+        else:
+            note = advice.get("summary", "")
 
         lines = []
         lines.append(f"🔄 [손절가 상승] {ticker} - 트레일링 스탑 업데이트")
+        lines += self._action_banner(action, price=price, note=note)
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>  |  <b>평가 손익</b>: <code>{pnl:+.1f}%</code>")
         lines.append("")
-        lines.append("🛡️ <b>손절가 변경 내역</b>")
+        lines.append("🛡️ <b>손절가 변경 내역 (가격 도달 시 자동 실행)</b>")
         lines.append(f"   • 이전 손절: <code>{old_stop:,.0f}원</code>")
         lines.append(f"   • 🟢 <b>신규 손절</b>: <code>{new_stop:,.0f}원</code> (+{new_stop - old_stop:+,.0f}원)")
         lines.append("")
@@ -194,11 +279,11 @@ class TelegramSender:
                 lines.append(f"   • {reason}")
             lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | 가격 기준 자동 트리거 (시간 무관)</i>")
         return "\n".join(lines)
 
     # ============================================================
-    # 3. EVENT_ATR_SPIKE (동적 TP 포함)
+    # 3. EVENT_ATR_SPIKE
     # ============================================================
     def _format_atr_spike(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
@@ -217,14 +302,18 @@ class TelegramSender:
 
         lines = []
         lines.append(f"⚠️ [ATR 급변동 감지] {ticker} - 변동성 확대")
+        lines += self._action_banner(
+            'WATCH', price=price,
+            note="이 알림은 매도 신호가 아닙니다. 손절가/목표가만 자동 재조정되었습니다. 신규 진입은 변동성이 잦아들 때까지 보류를 권장합니다."
+        )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>")
         lines.append("")
         lines.append("📊 <b>ATR 변동</b>")
         lines.append(f"   • 이전 ATR: <code>{old_atr:,.0f}원</code>")
-        lines.append(f"   • 🔴 <b>현재 ATR</b>: <code>{new_atr:,.0f}원</code> (+{change_ratio:.0f}%)")
+        lines.append(f"   • 🔴 <b>현재 ATR</b>: <code>{new_atr:,.0f}원</code> (+{change_ratio:.0f}%, 변동성 수준: {level})")
         lines.append("")
-        lines.append("🔄 <b>자동 조정된 손절</b>")
+        lines.append("🔄 <b>자동 조정된 손절 (가격 도달 시 자동 실행)</b>")
         lines.append(f"   • 기존 손절: <code>{old_stop:,.0f}원</code>")
         lines.append(f"   • 🔴 <b>신규 손절</b>: <code>{new_stop:,.0f}원</code>")
 
@@ -235,9 +324,10 @@ class TelegramSender:
             lines.append(f"   • 🔹 TP3: <code>{tp3:,.0f}원</code> (ATR×7.0 적용)")
         lines.append("")
         lines.append("🧠 <b>액션 가이드</b>")
-        lines.append("   • 변동성 급증 → 포지션 사이즈 축소 고려")
+        lines.append("   • 기존 보유자: 포지션 유지, 위 신규 손절가만 참고")
+        lines.append("   • 변동성이 부담되면 물량 20~30% 자율 축소도 가능(선택)")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.8</i>")
         return "\n".join(lines)
 
     # ============================================================
@@ -255,7 +345,6 @@ class TelegramSender:
         tp_names = {1: "1차 (50%)", 2: "2차 (30%)", 3: "3차 (20%)"}
         tp_emojis = {1: "🎯", 2: "🎯", 3: "🏁"}
 
-        # 🔥 수정: tp_level이 1~3 범위를 벗어나도 안전하게 폴백
         try:
             tp_level_int = int(tp_level)
         except (TypeError, ValueError):
@@ -267,6 +356,10 @@ class TelegramSender:
 
         lines = []
         lines.append(f"{tp_emoji} [부분 익절 도달] {ticker} - {tp_name}")
+        lines += self._action_banner(
+            'EXECUTED', price=price,
+            note=f"{tp_name} 목표가 도달 → 시스템이 자동으로 물량 일부를 이미 매도했습니다"
+        )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>  |  <b>목표가</b>: <code>{tp_price:,.0f}원</code>")
         lines.append(f"📊 <b>수익률</b>: <code>{((price - entry_price) / entry_price * 100) if entry_price else 0:+.2f}%</code>")
@@ -293,6 +386,10 @@ class TelegramSender:
 
         lines = []
         lines.append(f"🔴 [포지션 청산 완료] {ticker}")
+        lines += self._action_banner(
+            'EXECUTED', price=price,
+            note="포지션이 이미 자동 종료되었습니다. 추가로 하실 행동은 없습니다."
+        )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>청산가</b>: <code>{price:,.0f}원</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>")
         lines.append(f"📊 <b>최종 손익</b>: <code>{pnl:+.2f}%</code>  |  <b>보유 시간</b>: <code>{hold_time}</code>")
@@ -304,7 +401,7 @@ class TelegramSender:
         return "\n".join(lines)
 
     # ============================================================
-    # 6. EVENT_LIFECYCLE_ADVICE (합의 엔진 결과)
+    # 6. EVENT_LIFECYCLE_ADVICE
     # ============================================================
     def _format_lifecycle_advice(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
@@ -321,6 +418,8 @@ class TelegramSender:
 
         emoji = "🔴" if "청산" in action_label else "🟡" if "관망" in action_label else "🟢"
 
+        inferred_action = self._infer_advice_action(advice)
+
         vote_str = " | ".join([
             f"기술:{votes.get('technical', 0):+.2f}",
             f"리스크:{votes.get('risk', 0):+.2f}",
@@ -330,13 +429,15 @@ class TelegramSender:
 
         lines = []
         lines.append(f"{emoji} [🧠 합의 엔진] {ticker} - {action_label}")
+        lines += self._action_banner(inferred_action, price=price, note=summary)
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>")
         lines.append(f"📊 <b>평가 손익</b>: <code>{pnl:+.1f}%</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>")
         lines.append("")
-        lines.append("📋 <b>4대 개체 투표 결과</b>")
+        lines.append("📋 <b>4대 개체 투표 결과</b> <i>(+는 매수/보유 우호, -는 매도 우호)</i>")
         lines.append(f"   {vote_str}")
-        lines.append(f"   • 합의 점수: <code>{consensus_score:.2f}</code>")
+        lines.append(f"   • 합의 점수: <code>{consensus_score:.2f}</code> "
+                      f"({'매도 우세' if consensus_score < -0.1 else '매수/보유 우세' if consensus_score > 0.1 else '팽팽함'})")
         lines.append("")
         lines.append("🧠 <b>판단 근거</b>")
         for r in reasons[:4]:
@@ -346,7 +447,7 @@ class TelegramSender:
         lines.append("")
         lines.append(f"🎯 <b>최종 권고</b>: {action_label}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.2 Consensus (데이터 기반)</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.2.8 Consensus (데이터 기반)</i>")
         return "\n".join(lines)
 
     # ============================================================

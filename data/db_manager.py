@@ -1,12 +1,16 @@
 """
-data/db_manager.py - v5.4.4 (sentiment_score 컬럼 추가)
+data/db_manager.py - v5.4.6 (디버그 관제탑 적용)
+- 🔥 수정: __init__에서 db_path를 Path로 변환하여 parent 속성 오류 방지
+- 🔥 디버그 관제탑 적용 (debug_tower.log / capture_snapshot)
 """
 
 import json
 import aiosqlite
 from pathlib import Path
 from typing import List, Dict, Optional
+
 from core.logger import setup_logger
+from core.debug_tower import debug_tower   # 🔥 디버그 관제탑
 
 logger = setup_logger("db_manager")
 DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
@@ -14,6 +18,8 @@ DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
 
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
+        if isinstance(db_path, str):
+            db_path = Path(db_path)
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -62,27 +68,27 @@ class DatabaseManager:
                     UNIQUE(ticker, date)
                 );
             """)
-            # 🔥 기존 DB 마이그레이션 (컬럼 추가)
             try:
                 await db.execute("ALTER TABLE decisions ADD COLUMN sentiment_score REAL DEFAULT 0.0")
                 await db.commit()
                 logger.info("✅ decisions 테이블에 sentiment_score 컬럼 추가 완료")
             except Exception as e:
-                # 컬럼이 이미 존재하면 무시
                 if "duplicate column name" not in str(e).lower():
                     logger.warning(f"⚠️ sentiment_score 컬럼 추가 시도 중 오류: {e}")
-            
+
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_created_at ON decisions(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_ticker ON decisions(ticker)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_action ON decisions(action)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker_date ON ohlcv(ticker, date)")
             await db.commit()
             logger.info("✅ DB 초기화 완료 (OHLCV + sentiment_score 포함)")
+            debug_tower.log("SYSTEM", "DB_INIT_DONE", {})
 
     # ============================================================
     # OHLCV 저장/조회
     # ============================================================
     async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict):
+        debug_tower.log(ticker, "DB_SAVE_OHLCV", {"date": date})
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
@@ -98,6 +104,7 @@ class DatabaseManager:
             await db.commit()
 
     async def get_ohlcv(self, ticker: str, period: int = 14) -> List[Dict]:
+        debug_tower.log(ticker, "DB_GET_OHLCV", {"period": period})
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -113,6 +120,8 @@ class DatabaseManager:
     # 결정 기록 저장/조회
     # ============================================================
     async def save_decision(self, analysis: dict):
+        ticker = analysis.get('ticker', 'UNKNOWN')
+        debug_tower.log(ticker, "DB_SAVE_DECISION", {"action": analysis.get('action')})
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT INTO decisions 
@@ -127,7 +136,7 @@ class DatabaseManager:
                 json.dumps(analysis.get('positives', []), ensure_ascii=False),
                 json.dumps(analysis.get('negatives', []), ensure_ascii=False),
                 json.dumps(analysis.get('counterfactuals', []), ensure_ascii=False),
-                analysis.get('sentiment_score', 0.0)  # 🔥 추가
+                analysis.get('sentiment_score', 0.0)
             ))
             await db.commit()
 
@@ -179,7 +188,7 @@ class DatabaseManager:
         logger.info("🔌 DB 연결 종료 완료")
 
     # ============================================================
-    # 🔥 피드백 통계 조회
+    # 피드백 통계 조회
     # ============================================================
     async def get_feedback_stats(self, days: int = 30) -> Dict:
         async with aiosqlite.connect(self.db_path) as db:
@@ -195,16 +204,16 @@ class DatabaseManager:
                 rows = await cursor.fetchall()
                 if not rows:
                     return {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
-                
+
                 correct = sum(1 for r in rows if r['is_correct'])
                 total = len(rows)
                 win_rate = correct / total if total > 0 else 0.5
-                
+
                 returns = [r['return_1d'] for r in rows if r['return_1d'] is not None]
                 avg_ret = sum(returns) / len(returns) if returns else 0
                 std_dev = (sum((r - avg_ret)**2 for r in returns) / len(returns)) ** 0.5 if returns else 1.0
                 sharpe = (avg_ret / std_dev) * (252 ** 0.5) if std_dev > 0 else 0
-                
+
                 return {
                     "win_rate": round(win_rate, 3),
                     "sharpe": round(sharpe, 3),

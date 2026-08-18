@@ -118,18 +118,22 @@ class NewsCrawler:
             logger.error(f"❌ 뉴스 수집 실패 ({ticker}): {e}")
             return [], 0.0
 
+    # 🔥 이 메서드의 들여쓰기가 빠져 있었음 → 4칸 공백으로 수정
     async def get_news_with_sentiment(self, ticker: str, limit: int = 5, cache_seconds: int = 3600) -> Tuple[List[Dict], float]:
         cache_key = f"{ticker}_{limit}"
         now = datetime.now().timestamp()
         if cache_key in self._cache and (now - self._cache_time.get(cache_key, 0)) < cache_seconds:
+            logger.debug(f"📰 [뉴스 캐시] {ticker} 캐시 사용 (남은 시간: {cache_seconds - (now - self._cache_time[cache_key]):.0f}s)")
             return self._cache[cache_key]
 
         result = await self.fetch_news(ticker, limit)
         if result is None:
+            logger.warning(f"⚠️ [뉴스 API] {ticker} 뉴스 수집 실패 → 감성 점수 0.0")
             return [], 0.0
         news, sentiment = result
         self._cache[cache_key] = (news, sentiment)
         self._cache_time[cache_key] = now
+        logger.info(f"📰 [뉴스 API] {ticker} 뉴스 {len(news)}개 수집, 감성 점수: {sentiment:+.2f}")
         return news, sentiment
 
     def get_headlines(self, query: str = "코스피", limit: int = 5) -> List[str]:

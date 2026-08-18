@@ -1,14 +1,5 @@
 """
-Korean Special Filter v5.1.2 — Claude 피드백 반영 (5대 특수 규칙)
-
-변경사항:
-1. 동시호가 구간(08:30~09:00, 15:20~15:30) 신호 차단
-2. VI 발동 중 및 해제 후 2분 쿨다운 차단
-3. 상하한가 ±25% 근접 시 신호 50% 감쇄
-4. DART 공시 발생 후 30분간 블랙아웃
-5. 장 마감 30분 전 신규 진입 금지
-
-모든 필터 통과 여부와 사유를 로그에 기록
+filters/korean_special_filter.py - v5.1.3 (문자열 price 방어 추가)
 """
 
 from datetime import datetime, time, timedelta
@@ -53,6 +44,13 @@ class KoreanSpecialFilter:
         ticker = data.get("ticker", "unknown")
         current_time = data.get("current_time", datetime.now())
         
+        # 🔥 문자열 price를 float으로 안전하게 변환
+        raw_price = data.get("price", 0)
+        try:
+            price = float(raw_price) if raw_price is not None else 0.0
+        except (ValueError, TypeError):
+            price = 0.0
+        
         reasons = []
         passed = True
         decay = 1.0
@@ -76,9 +74,18 @@ class KoreanSpecialFilter:
             passed = False
         
         # ===== 규칙 3: 상하한가 근접 =====
-        price = data.get("price", 0)
-        upper_limit = data.get("upper_limit", price * 1.30)
-        lower_limit = data.get("lower_limit", price * 0.70)
+        # 🔥 upper_limit/lower_limit도 안전하게 float으로 변환
+        raw_upper = data.get("upper_limit")
+        try:
+            upper_limit = float(raw_upper) if raw_upper is not None else price * 1.30
+        except (ValueError, TypeError):
+            upper_limit = price * 1.30
+        
+        raw_lower = data.get("lower_limit")
+        try:
+            lower_limit = float(raw_lower) if raw_lower is not None else price * 0.70
+        except (ValueError, TypeError):
+            lower_limit = price * 0.70
         
         if price > 0 and upper_limit > 0:
             upper_ratio = price / upper_limit

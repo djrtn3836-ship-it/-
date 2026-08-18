@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v7.2.5 FINAL (문법 오류 수정)
-- WebSocket 자가 치유, 블랙박스, 이벤트 기반 액션 센터
-- 주말/공휴일 조기 종료
-- SchedulerManager.add_job_with_retry 사용 (안전한 재시도 + 예외 로깅)
-- reconnect_and_resubscribe 무제한 루프 제한 (최대 10회)
-- Telegram 전송 실패 블랙박스 기록
-- 🔥 수정: add_job_with_retry 호출 시 키워드 인자 뒤 위치 인자 제거
+scanner_main.py - v7.2.6 FINAL (실시간 모멘텀 스캔 루프 추가)
+- SchedulerManager 시작/종료 시점 명확화
+- wait_until_ready() 실패 시 is_connected를 False로 설정하여 재연결 유도
+- finally에서 모든 태스크 완전 종료 후 스케줄러 종료
+- 예외 발생 시 상세 로그 출력
+- 🔥 strategy_worker: price<=0 틱 조기 차단, ERROR 액션 DB 저장 방지
+- 🔥 메인 루프에서 1초마다 _monitor.scan() 호출하여 실시간 모멘텀 신호 생성
+- 🔥 디버그 관제탑 적용
 """
 
 import asyncio
@@ -30,6 +31,8 @@ from core.holiday_utils import is_trading_day
 from core.config import get_config
 from core.exceptions import KiwoomError
 from core.blackbox_logger import log_event, log_error, get_status
+from core.debug_tower import debug_tower
+from dotenv import load_dotenv
 
 FatalError = Exception
 
@@ -42,7 +45,6 @@ from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
 from feedback.feedback_learner import FeedbackLearner
 from scheduler.daily_collector import collect_daily_ohlcv
-from config.secure_config import load_encrypted_env
 
 logger = setup_logger("scanner")
 config = get_config()
@@ -97,6 +99,7 @@ def validate_env() -> None:
         print(f"❌ 필수 환경변수가 없습니다: {', '.join(missing)}")
         sys.exit(1)
     logger.info("✅ 환경변수 검증 완료")
+    debug_tower.log("SYSTEM", "ENV_VALIDATED", {})
 
 # ============================================================
 # 2. APScheduler 작업들
@@ -104,6 +107,7 @@ def validate_env() -> None:
 async def trading_day_task_wrapper(func, job_name: str = "작업", *args, **kwargs) -> None:
     if not is_trading_day():
         logger.info(f"📅 오늘은 비거래일 → {job_name} 스킵")
+        debug_tower.log("SYSTEM", f"SKIP_{job_name}", {"reason": "non_trading_day"})
         return
     await func(*args, **kwargs)
 
@@ -121,7 +125,7 @@ async def run_daily_ohlcv_collect(kiwoom: KiwoomConnectorV512, db: DatabaseManag
     await trading_day_task_wrapper(collect_daily_ohlcv, "OHLCV 수집", kiwoom, db, tickers)
 
 # ============================================================
-# 3. 🔥 재연결 (무제한 루프 제한)
+# 3. 재연결 (무제한 루프 제한)
 # ============================================================
 async def reconnect_and_resubscribe(kiwoom: KiwoomConnectorV512, monitor: RealtimeMonitor) -> None:
     MAX_OUTER_RETRIES = 10
@@ -130,24 +134,29 @@ async def reconnect_and_resubscribe(kiwoom: KiwoomConnectorV512, monitor: Realti
         retry_count += 1
         if retry_count > MAX_OUTER_RETRIES:
             log_error("외부 재연결 최대 시도 초과", None)
+            debug_tower.log("SYSTEM", "RECONNECT_MAX_RETRY", {})
             await send_error_alert("키움 재연결 반복 실패 — 수동 개입 필요")
             await asyncio.sleep(300)
             retry_count = 0
             continue
         logger.info(f"📡 외부 재연결 시도 {retry_count}/{MAX_OUTER_RETRIES}")
+        debug_tower.log("SYSTEM", "RECONNECT_ATTEMPT_OUTER", {"attempt": retry_count})
         await kiwoom.connect()
         if not kiwoom.is_connected():
             await asyncio.sleep(config.get_int("reconnect_interval", 30))
     logger.info("✅ WebSocket 재연결 성공! 재구독 진행 중...")
+    debug_tower.log("SYSTEM", "RECONNECT_SUCCESS_OUTER", {})
     await monitor.resubscribe_all()
     logger.info("✅ 재연결 및 전체 구독 재등록 완료.")
 
 # ============================================================
-# 4. 🔥 전략 Worker (텔레그램 실패 로깅)
+# 4. 전략 Worker
 # ============================================================
 async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseManager, sender: TelegramSender) -> None:
     global _last_data_time
-    logger.info(f"🧠 전략 Worker-{worker_id} 시작 (v7.2.5)")
+    logger.info(f"🧠 전략 Worker-{worker_id} 시작 (v7.2.6)")
+    debug_tower.log("SYSTEM", f"WORKER_START_{worker_id}", {})
+
     processed_count = 0
     while True:
         try:
@@ -157,32 +166,65 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
                 continue
 
             _last_data_time = time.time()
+
+            price = stock_data.get('price')
+            if price is None or float(price) <= 0:
+                MESSAGE_QUEUE.task_done()
+                continue
+
+            ticker = stock_data.get('ticker', 'UNKNOWN')
+            debug_tower.log(ticker, "WORKER_PROCESS", {"worker": worker_id})
+
             analysis = await analyzer.analyze(stock_data)
-            await db.save_decision(analysis)
+
+            if analysis.get('action') != 'ERROR':
+                await db.save_decision(analysis)
 
             action = analysis.get('action')
-            if action in ["SIGNAL_ENTRY", "EVENT_SL_TRAIL", "EVENT_ATR_SPIKE", "EVENT_TP_HIT", "EVENT_EXIT", "EVENT_LIFECYCLE_ADVICE"]:
+            if action in [
+                "SIGNAL_ENTRY", "EVENT_SL_TRAIL", "EVENT_ATR_SPIKE",
+                "EVENT_TP_HIT", "EVENT_EXIT", "EVENT_LIFECYCLE_ADVICE"
+            ]:
                 success = await sender.send(analysis)
                 if not success:
-                    log_event("TELEGRAM_SEND_FAILED", {"worker_id": worker_id, "ticker": analysis.get('ticker'), "action": action})
+                    log_event("TELEGRAM_SEND_FAILED", {
+                        "worker_id": worker_id,
+                        "ticker": analysis.get('ticker'),
+                        "action": action
+                    })
+                    debug_tower.log(ticker, "TELEGRAM_SEND_FAILED", {"action": action})
                 else:
                     processed_count += 1
-                    logger.info(f"📊 Worker-{worker_id} 이벤트 전송: {action} {analysis.get('ticker')}")
+                    if action == "SIGNAL_ENTRY":
+                        logger.info(f"📊 Worker-{worker_id} [진입] {analysis.get('ticker')} 신호 전송")
+                    elif action == "EVENT_SL_TRAIL":
+                        logger.info(f"📊 Worker-{worker_id} [손절상승] {analysis.get('ticker')}")
+                    elif action == "EVENT_ATR_SPIKE":
+                        logger.info(f"📊 Worker-{worker_id} [ATR급변동] {analysis.get('ticker')}")
+                    elif action == "EVENT_TP_HIT":
+                        logger.info(f"📊 Worker-{worker_id} [부분익절] {analysis.get('ticker')} TP{analysis.get('tp_level')}")
+                    elif action == "EVENT_EXIT":
+                        logger.info(f"📊 Worker-{worker_id} [청산] {analysis.get('ticker')}")
+                        await analyzer.clear_trailing_stop(analysis.get('ticker'))
+                    elif action == "EVENT_LIFECYCLE_ADVICE":
+                        logger.info(f"📊 Worker-{worker_id} [합의권고] {analysis.get('ticker')}")
 
             if processed_count % 50 == 0 and processed_count > 0:
-                logger.info(f"📊 Worker-{worker_id} 처리 완료: {processed_count}개")
+                logger.info(f"📊 Worker-{worker_id} 처리 완료: {processed_count}개 이벤트")
 
             MESSAGE_QUEUE.task_done()
 
         except asyncio.CancelledError:
             logger.info(f"🛑 전략 Worker-{worker_id} 종료")
+            debug_tower.log("SYSTEM", f"WORKER_STOP_{worker_id}", {})
             break
         except Exception as e:
             logger.error(f"❌ 전략 Worker-{worker_id} 오류: {e}", exc_info=True)
+            debug_tower.capture_snapshot("SYSTEM", e, f"WORKER_{worker_id}")
             await asyncio.sleep(1)
 
 # ============================================================
-# 5. Telegram 알림 함수 (시작/종료/오류)
+# 5. Telegram 알림 함수
 # ============================================================
 async def send_error_alert(error_msg: str, error_detail: str = "") -> None:
     global _error_sender
@@ -230,7 +272,7 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v7.2.5 FINAL (문법 오류 수정)
+📊 <b>버전</b>: v7.2.6 FINAL (실시간 모멘텀 스캔)
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
 <i>실시간 스캔 + 이벤트 기반 알림 + 자가 치유</i>
@@ -245,6 +287,7 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
         await _error_sender.send_raw(msg)
     except Exception as e:
         log_error("시작 알림 전송 실패", e)
+        debug_tower.capture_snapshot("SYSTEM", e, "STARTUP_NOTIFY")
 
 async def send_shutdown_notification(reason: str = "정상 종료") -> None:
     global _error_sender
@@ -281,7 +324,8 @@ async def health_check(request: web.Request) -> web.Response:
             "queue": {"size": MESSAGE_QUEUE.qsize(), "maxsize": MESSAGE_QUEUE.maxsize, "usage_percent": queue_usage},
             "data_flow": {"last_data_sec_ago": time.time() - _last_data_time, "healthy": data_flow_healthy}
         },
-        "blackbox": get_status()
+        "blackbox": get_status(),
+        "debug_tower": debug_tower.get_stats()
     }
     return web.json_response(status)
 
@@ -296,37 +340,40 @@ async def start_health_server(host: str = '0.0.0.0', port: int = 8080) -> None:
             site = web.TCPSite(runner, host, try_port)
             await site.start()
             logger.info(f"🩺 헬스체크 서버 실행 중: http://{host}:{try_port}/health")
+            debug_tower.log("SYSTEM", "HEALTH_SERVER_STARTED", {"port": try_port})
             return
         except OSError:
             continue
     logger.warning("⚠️ 헬스체크 서버 시작 실패")
+    debug_tower.log("SYSTEM", "HEALTH_SERVER_FAIL", {})
 
 # ============================================================
-# 7. 🔥 메인 함수 (v7.2.5 - 문법 오류 수정)
+# 7. 메인 함수
 # ============================================================
 async def main() -> None:
     global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time, _health_task
 
-    # 비거래일 조기 종료
     if not is_trading_day():
         log_event("NON_TRADING_DAY", {"date": datetime.now().strftime("%Y-%m-%d")})
         logger.info("📅 오늘은 비거래일입니다. 프로그램을 종료합니다.")
+        debug_tower.log("SYSTEM", "NON_TRADING_DAY", {})
         return
 
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.2.5"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.2.6"})
+    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.2.6"})
 
     check_and_create_pid()
-    load_encrypted_env()
+    load_dotenv(override=True)
     validate_env()
 
     _start_time = asyncio.get_event_loop().time()
     _error_sender = TelegramSender()
 
     logger.info("=" * 70)
-    logger.info("🚀 v7.2.5 FINAL - 문법 오류 수정 + 안전한 스케줄링")
+    logger.info("🚀 v7.2.6 FINAL - 실시간 모멘텀 스캔 루프 추가")
     logger.info("📌 기능: 6가지 이벤트(SIGNAL, SL_TRAIL, ATR_SPIKE, TP_HIT, EXIT, LIFECYCLE_ADVICE)")
     logger.info("=" * 70)
 
@@ -334,13 +381,12 @@ async def main() -> None:
     startup_details: Dict[str, Any] = {}
 
     try:
-        # DB 초기화
         _db = DatabaseManager()
         await _db.init_db()
         logger.info("✅ DB 초기화 완료")
         log_event("DB_INIT_SUCCESS", {})
+        debug_tower.log("SYSTEM", "DB_INIT_SUCCESS", {})
 
-        # 키움 연결
         _kiwoom = KiwoomConnectorV512(rate_limit=config.get_float("rate_limit_capacity", 5.0))
         logger.info("⏳ 키움 서버 연결 대기 중...")
         retry_count = 0
@@ -353,28 +399,31 @@ async def main() -> None:
                 await asyncio.sleep(config.get_int("connect_retry_interval", 60))
         logger.info("✅ 키움 서버 연결 성공!")
         log_event("KIWOOM_CONNECTED", {"retries": retry_count})
+        debug_tower.log("SYSTEM", "KIWOOM_CONNECTED", {"retries": retry_count})
 
-        # WebSocket 준비 대기
         logger.info("⏳ WebSocket LOGIN 및 수신 루프 준비 대기 중...")
         if not await _kiwoom.wait_until_ready(timeout=10.0):
-            logger.warning("⚠️ WebSocket 준비 타임아웃, 재연결 시도")
+            logger.warning("⚠️ WebSocket 준비 타임아웃, 강제 재연결 시도")
+            debug_tower.log("SYSTEM", "WS_READY_TIMEOUT_RETRY", {})
             await _kiwoom.disconnect()
             await _kiwoom.connect()
             if not await _kiwoom.wait_until_ready(timeout=10.0):
                 logger.error("❌ WebSocket 준비 실패")
+                _kiwoom._is_connected = False
                 log_event("WS_READY_FAILED", {})
+                debug_tower.log("SYSTEM", "WS_READY_FAILED", {})
         else:
             logger.info("✅ WebSocket 완전 준비 완료")
+            debug_tower.log("SYSTEM", "WS_READY_OK", {})
 
-        # RealtimeMonitor 시작
         _monitor = RealtimeMonitor(_kiwoom, MESSAGE_QUEUE)
         await _monitor.start()
         startup_details['ticker_count'] = _monitor.get_subscribed_count()
         startup_details['kiwoom_connected'] = _kiwoom.is_connected()
         startup_details['tickers'] = _monitor.tickers
         log_event("MONITOR_STARTED", {"count": startup_details['ticker_count']})
+        debug_tower.log("SYSTEM", "MONITOR_STARTED", {"count": startup_details['ticker_count']})
 
-        # 분석기 및 의존성
         analyzer = DeepAnalyzer(db_manager=_db)
         await analyzer.load_weights()
         sender = TelegramSender()
@@ -383,75 +432,60 @@ async def main() -> None:
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=_db, kiwoom_connector=_kiwoom)
         feedback_learner = FeedbackLearner(kiwoom_connector=_kiwoom, db_manager=_db)
 
-        # ------------------------------------------------------------
-        # 🔥🔥🔥 APScheduler 등록 (SchedulerManager 통합 - 문법 오류 수정됨) 🔥🔥🔥
-        # ------------------------------------------------------------
         _scheduler = SchedulerManager()
-        
-        # 1. 일일 리포트 (매일 07:00) - daily_reporter를 위치 인자로 전달
         _scheduler.add_job_with_retry(
             run_daily_report,
             CronTrigger(hour=config.get_int("daily_report_hour", 7), minute=config.get_int("daily_report_minute", 0), timezone="Asia/Seoul"),
             "daily_report",
-            daily_reporter,  # 🔥 위치 인자로 전달
+            daily_reporter,
             max_retries=3,
             retry_delay=5
         )
-        
-        # 2. 피드백 학습 + 가중치 갱신 (매일 17:00)
         _scheduler.add_job_with_retry(
             run_feedback_and_reload,
             CronTrigger(hour=config.get_int("feedback_hour", 17), minute=config.get_int("feedback_minute", 0), timezone="Asia/Seoul"),
             "feedback_learning",
-            feedback_learner,  # 🔥 위치 인자로 전달
-            analyzer,          # 🔥 위치 인자로 전달
+            feedback_learner,
+            analyzer,
             max_retries=3,
             retry_delay=5
         )
-        
-        # 3. 주간 PDF (매주 월요일 06:00)
         _scheduler.add_job_with_retry(
             run_weekly_pdf,
             CronTrigger(day_of_week=config.get("weekly_pdf_day", "mon"), hour=config.get_int("weekly_pdf_hour", 6), minute=config.get_int("weekly_pdf_minute", 0), timezone="Asia/Seoul"),
             "weekly_pdf",
-            weekly_pdf_gen,  # 🔥 위치 인자로 전달
+            weekly_pdf_gen,
             max_retries=3,
             retry_delay=5
         )
-        
-        # 4. OHLCV 수집 (매일 16:30)
         _scheduler.add_job_with_retry(
             run_daily_ohlcv_collect,
             CronTrigger(hour=config.get_int("ohlcv_hour", 16), minute=config.get_int("ohlcv_minute", 30), timezone="Asia/Seoul"),
             "daily_ohlcv",
-            _kiwoom,  # 🔥 위치 인자로 전달
-            _db,      # 🔥 위치 인자로 전달
-            _monitor.tickers,  # 🔥 위치 인자로 전달
+            _kiwoom,
+            _db,
+            _monitor.tickers,
             max_retries=3,
             retry_delay=5
         )
-        # ------------------------------------------------------------
-        
         _scheduler.start()
         startup_details['job_count'] = 4
         logger.info(f"⏰ 스케줄러 등록 완료 (총 {startup_details['job_count']}개 작업)")
         log_event("SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
+        debug_tower.log("SYSTEM", "SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
 
-        # 전략 Worker 시작 (2개)
         _worker_tasks = []
         for i in range(2):
             task = asyncio.create_task(strategy_worker(i+1, analyzer, _db, sender))
             _worker_tasks.append(task)
 
-        # 헬스체크 서버
         _health_task = asyncio.create_task(start_health_server())
 
-        # 시작 완료 알림
         startup_success = True
         await send_startup_notification(True, startup_details)
         log_event("SYSTEM_READY", {})
+        debug_tower.log("SYSTEM", "SYSTEM_READY", {})
 
-        # Phoenix 메인 루프
         logger.info("🚀 메인 루프 진입 (Phoenix Watchdog 활성화)")
         while True:
             try:
@@ -465,25 +499,43 @@ async def main() -> None:
                     if time.time() - _last_data_time > _DATA_FLOW_TIMEOUT:
                         log_event("DATA_FLOW_TIMEOUT", {"seconds": _DATA_FLOW_TIMEOUT})
                         logger.error(f"🔥 데이터 흐름 감시: {_DATA_FLOW_TIMEOUT}초 동안 데이터 없음! 강제 재연결 시도")
+                        debug_tower.log("SYSTEM", "DATA_FLOW_TIMEOUT", {})
                         await _kiwoom.disconnect()
                         await _kiwoom.connect()
                         await _monitor.resubscribe_all()
                         _last_data_time = time.time()
 
+                # ============================================================
+                # 🔥🔥🔥 수정 핵심: 1초마다 모멘텀 신호 스캔 (추가된 부분)
+                # ============================================================
+                signals = await _monitor.scan()
+                for signal in signals:
+                    try:
+                        MESSAGE_QUEUE.put_nowait(signal)
+                        debug_tower.log(signal.get('ticker'), "SIGNAL_ENQUEUED", {"action": signal.get('action')})
+                    except asyncio.QueueFull:
+                        logger.warning(f"⚠️ 큐 가득 참, 신호 드롭: {signal.get('ticker')}")
+                        debug_tower.log(signal.get('ticker'), "SIGNAL_DROPPED", {"reason": "queue_full"})
+
                 await asyncio.sleep(1)
+
             except asyncio.CancelledError:
                 log_event("MAIN_LOOP_CANCELLED", {})
+                debug_tower.log("SYSTEM", "MAIN_LOOP_CANCELLED", {})
                 break
             except Exception as e:
                 log_error("메인 루프 오류", e)
+                debug_tower.capture_snapshot("SYSTEM", e, "MAIN_LOOP")
                 await asyncio.sleep(5)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
         log_event("SYSTEM_INTERRUPTED", {})
         logger.info("⏹ 종료 신호 수신")
+        debug_tower.log("SYSTEM", "SYSTEM_INTERRUPTED", {})
     except FatalError as e:
         error_msg = f"치명적 오류: {str(e)}"
         log_error(error_msg, e)
+        debug_tower.capture_snapshot("SYSTEM", e, "FATAL")
         startup_details['error'] = error_msg
         await send_startup_notification(False, startup_details)
         await send_error_alert(error_msg, traceback.format_exc()[:300])
@@ -491,6 +543,7 @@ async def main() -> None:
     except Exception as e:
         error_msg = f"시작 실패: {str(e)}"
         log_error(error_msg, e)
+        debug_tower.capture_snapshot("SYSTEM", e, "START_FAIL")
         startup_details['error'] = error_msg
         await send_startup_notification(False, startup_details)
         await send_error_alert(error_msg, traceback.format_exc()[:300])
@@ -500,19 +553,14 @@ async def main() -> None:
         if startup_success:
             await send_shutdown_notification("정상 종료")
         log_event("SYSTEM_SHUTDOWN", {})
+        debug_tower.log("SYSTEM", "SYSTEM_SHUTDOWN", {})
 
-        # PID 파일 삭제
         if PID_FILE.exists():
             try:
                 PID_FILE.unlink()
             except:
                 pass
 
-        # 스케줄러 종료
-        if _scheduler:
-            _scheduler.shutdown()
-
-        # 헬스체크 태스크 종료
         if _health_task and not _health_task.done():
             _health_task.cancel()
             try:
@@ -520,12 +568,6 @@ async def main() -> None:
             except asyncio.CancelledError:
                 pass
 
-        # 키움 연결 종료
-        if _kiwoom:
-            await _kiwoom.disconnect()
-            await asyncio.sleep(0.5)
-
-        # 전략 Worker 태스크 종료
         if _worker_tasks:
             for t in _worker_tasks:
                 if not t.done():
@@ -535,6 +577,15 @@ async def main() -> None:
                     except asyncio.CancelledError:
                         pass
 
+        if _kiwoom:
+            await _kiwoom.disconnect()
+            await asyncio.sleep(0.5)
+
+        if _scheduler:
+            _scheduler.shutdown()
+
+        debug_tower.flush()
+
         await asyncio.sleep(0.2)
         logger.info("✅ 시스템 안전하게 종료 완료")
 
@@ -543,6 +594,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 사용자 중단")
+        debug_tower.flush()
         if PID_FILE.exists():
             try:
                 PID_FILE.unlink()
@@ -550,3 +602,6 @@ if __name__ == "__main__":
                 pass
     except Exception as e:
         print(f"❌ 시스템 종료: {e}")
+        import traceback
+        traceback.print_exc()
+        debug_tower.flush()

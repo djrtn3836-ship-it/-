@@ -1,29 +1,29 @@
 """
-scanner/deep_analyzer.py - v7.2.2 FINAL (신규 진입 수정 + 락 보완 + 감성 통합)
-- HybridDecider의 영문 액션(BUY/SELL) 수용
-- trailing_stops 락 누락 구간 보완
-- 뉴스 감성 분석 통합 (CONTEXT.md 명세 반영)
-- 분석 성능 최적화 (매 틱 DB 저장 완화)
+scanner/deep_analyzer.py - v7.2.13 FINAL (모멘텀 팩터 통합)
+- 모든 수치 연산 전에 float() 강제 변환
+- 🔥 수정: momentum을 별도의 정규화된 팩터로 간주하여 가중 평균에 포함 (강제 부스트 제거)
+- 🔥 디버그 관제탑 적용
 """
 
 import math
 import time
 import asyncio
+import traceback
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
-from data.news_crawler import NewsCrawler  # 🔥 감성 분석용
+from data.news_crawler import NewsCrawler
 from filters.macro_filter import MacroFilter
 from filters.sector_filter import SectorFilter
 from filters.stock_filter import StockFilter
 from filters.korean_special_filter import KoreanSpecialFilter
 from filters.dynamic_weighter import DynamicWeighter
 from decision.hybrid_decider import HybridDecider
+from core.debug_tower import debug_tower
 
 logger = setup_logger("analyzer")
-
 
 class DeepAnalyzer:
     def __init__(self, db_manager: DatabaseManager = None):
@@ -35,24 +35,20 @@ class DeepAnalyzer:
         self.weighter = DynamicWeighter()
         self.decider = HybridDecider()
         self.weights = {'momentum': 1.0, 'volume': 1.0, 'volatility': 1.0, 'macro': 1.0, 'sector': 1.0}
-        
+
         self.trailing_stops: Dict[str, dict] = {}
         self._lock = asyncio.Lock()
         self._last_atr_alert: Dict[str, float] = {}
         self._atr_cooldown_seconds = 600
-        
-        # 🔥 OHLCV 캐시
+
         self._ohlcv_cache: Dict[str, Dict] = {}
         self._cache_time: Dict[str, float] = {}
-        
-        # 🔥 피드백 통계 캐시
+
         self._feedback_stats = {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
         self._feedback_stats_loaded = False
-        
-        # 🔥 뉴스 크롤러 (지연 초기화)
+
         self._news_crawler = None
-        
-        # 설정
+
         self.max_hold_hours = 2.0
         self.time_warning_minutes = 30
         self.sideways_threshold_minutes = 30
@@ -61,6 +57,9 @@ class DeepAnalyzer:
         self.atr_multiplier_stop = 2.0
         self.atr_multiplier_trail = 1.5
         self.atr_spike_threshold = 0.3
+        
+        # 🔥 모멘텀 팩터 가중치 (기존 팩터와 동등한 수준)
+        self.momentum_weight = 0.12
 
     async def load_weights(self):
         if self.db:
@@ -69,13 +68,13 @@ class DeepAnalyzer:
             self._feedback_stats_loaded = True
             logger.info(f"📊 최신 가중치 로드: {self.weights}")
             logger.info(f"📊 피드백 통계: 승률 {self._feedback_stats['win_rate']:.1%}, 샤프 {self._feedback_stats['sharpe']:.2f}")
+            debug_tower.log("SYSTEM", "WEIGHTS_LOADED", {"weights": self.weights})
 
     async def calculate_atr(self, ticker: str, period: int = 14) -> float:
         if not self.db:
             return 0.0
         try:
             ohlcv_list = await self.db.get_ohlcv(ticker, period)
-            # 🔥 방어: high==0 or low==0인 오염 레코드 제거
             clean_list = [d for d in ohlcv_list if d.get('high', 0) > 0 and d.get('low', 0) > 0]
             if len(clean_list) < 2:
                 return 0.0
@@ -95,13 +94,10 @@ class DeepAnalyzer:
             return round(atr, 2)
         except Exception as e:
             logger.error(f"❌ {ticker} ATR 계산 오류: {e}")
+            debug_tower.capture_snapshot(ticker, e, "ATR_CALC")
             return 0.0
 
-    # ============================================================
-    # 🔥 뉴스 감성 분석 (지연 초기화)
-    # ============================================================
     async def _get_sentiment_score(self, ticker: str) -> float:
-        """뉴스 감성 점수 조회 (캐시 포함)"""
         try:
             if self._news_crawler is None:
                 self._news_crawler = NewsCrawler()
@@ -113,27 +109,24 @@ class DeepAnalyzer:
             logger.debug(f"감성 점수 조회 실패 ({ticker}): {e}")
             return 0.0
 
-    # ============================================================
-    # 🔥 OHLCV 캐시 + 기술 지표
-    # ============================================================
     async def _get_cached_ohlcv(self, ticker: str, period: int = 30) -> Dict:
         now = time.time()
         cache_key = f"{ticker}_{period}"
         if cache_key in self._ohlcv_cache and (now - self._cache_time.get(cache_key, 0)) < 60:
             return self._ohlcv_cache[cache_key]
-        
+
         if not self.db:
             return {}
-        
+
         data = await self.db.get_ohlcv(ticker, period)
         if len(data) < 5:
             return {}
-        
+
         closes = [d['close'] for d in data]
         highs = [d['high'] for d in data]
         lows = [d['low'] for d in data]
         volumes = [d.get('volume', 0) for d in data if d.get('volume', 0) > 0]
-        
+
         def ema(values, n):
             if len(values) < n:
                 return values[-1] if values else 0
@@ -142,7 +135,7 @@ class DeepAnalyzer:
             for v in values[1:]:
                 ema_val = v * k + ema_val * (1 - k)
             return ema_val
-        
+
         def rsi(values, n=14):
             if len(values) < n + 1:
                 return 50
@@ -153,48 +146,48 @@ class DeepAnalyzer:
                     gains.append(diff); losses.append(0)
                 else:
                     gains.append(0); losses.append(-diff)
-            avg_gain = sum(gains[-n:]) / n
-            avg_loss = sum(losses[-n:]) / n
+            avg_gain = sum(gains[-n:]) / n if n > 0 else 0
+            avg_loss = sum(losses[-n:]) / n if n > 0 else 0
             if avg_loss == 0:
                 return 100
             rs = avg_gain / avg_loss
             return 100 - (100 / (1 + rs))
-        
+
         avg_volume = sum(volumes) / len(volumes) if volumes else 1
         current_volume = volumes[-1] if volumes else 1
         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
-        
+
         result = {
-            "current_price": data[-1]['close'],
-            "high": data[-1]['high'],
-            "low": data[-1]['low'],
-            "volume_ratio": round(volume_ratio, 2),
-            "ema5": round(ema(closes, 5), 2),
-            "ema20": round(ema(closes, 20), 2),
-            "ema60": round(ema(closes, 60), 2) if len(closes) >= 60 else round(ema(closes, len(closes)), 2),
-            "rsi": round(rsi(closes, 14), 2),
+            "current_price": float(data[-1]['close']),
+            "high": float(data[-1]['high']),
+            "low": float(data[-1]['low']),
+            "volume_ratio": float(volume_ratio),
+            "ema5": float(ema(closes, 5)),
+            "ema20": float(ema(closes, 20)),
+            "ema60": float(ema(closes, 60)) if len(closes) >= 60 else float(ema(closes, len(closes))),
+            "rsi": float(rsi(closes, 14)),
         }
-        
+
         self._ohlcv_cache[cache_key] = result
         self._cache_time[cache_key] = now
         return result
 
     # ============================================================
-    # 🔥 4대 개체 평가 (기존 유지 + 감성 반영)
+    # 4대 개체 평가 (기존 유지)
     # ============================================================
     def _evaluate_technical(self, ticker: str, entry_price: float, tech_data: Dict, atr: float) -> Dict:
         score = 0.0
         reasons = []
         if not tech_data:
             return {"score": 0.0, "reasons": ["📊 기술 데이터 부족"]}
-        
+
         price = tech_data.get("current_price", entry_price)
         ema5 = tech_data.get("ema5", price)
         ema20 = tech_data.get("ema20", price)
         ema60 = tech_data.get("ema60", price)
         rsi = tech_data.get("rsi", 50)
         volume_ratio = tech_data.get("volume_ratio", 1.0)
-        
+
         if ema5 > ema20 and ema20 > ema60:
             score += 0.4; reasons.append("📈 EMA 정배열 (+0.4)")
         elif ema5 > ema20:
@@ -203,7 +196,7 @@ class DeepAnalyzer:
             score -= 0.4; reasons.append("📉 EMA 역배열 (-0.4)")
         elif ema5 < ema20:
             score -= 0.2; reasons.append("📉 단기 하락 추세 (-0.2)")
-        
+
         if rsi > 80:
             score -= 0.7; reasons.append(f"🔥 과매수 (RSI {rsi:.0f}) (-0.7)")
         elif rsi > 70:
@@ -212,17 +205,17 @@ class DeepAnalyzer:
             score += 0.7; reasons.append(f"📉 과매도 (RSI {rsi:.0f}) (+0.7)")
         elif rsi < 30:
             score += 0.4; reasons.append(f"📉 과매도 임박 (RSI {rsi:.0f}) (+0.4)")
-        
+
         if volume_ratio > 2.0:
             score += 0.3; reasons.append(f"📊 거래량 급증 (×{volume_ratio:.1f}) (+0.3)")
         elif volume_ratio < 0.5:
             score -= 0.2; reasons.append(f"📊 거래량 부진 (×{volume_ratio:.1f}) (-0.2)")
-        
+
         if atr > 0:
             move_ratio = abs(price - entry_price) / atr
             if move_ratio > 2.0:
                 score += 0.3; reasons.append(f"💪 강한 모멘텀 (ATR×{move_ratio:.1f}) (+0.3)")
-        
+
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _evaluate_risk(self, ticker: str, current_price: float, stop_price: float, atr: float, highest_price: float, feedback_stats: Dict) -> Dict:
@@ -230,10 +223,10 @@ class DeepAnalyzer:
         reasons = []
         win_rate = feedback_stats.get("win_rate", 0.5)
         sharpe = feedback_stats.get("sharpe", 1.0)
-        
+
         risk_penalty = 1.2 if win_rate < 0.4 else (0.8 if win_rate > 0.6 else 1.0)
-        
-        if stop_price > 0:
+
+        if current_price > 0 and stop_price > 0:
             distance_to_stop = (current_price - stop_price) / current_price * 100
             if distance_to_stop < 0.5:
                 score -= 0.9 * risk_penalty
@@ -244,8 +237,8 @@ class DeepAnalyzer:
             elif distance_to_stop < 2.0:
                 score -= 0.2 * risk_penalty
                 reasons.append(f"🔻 손절가 접근 ({distance_to_stop:.1f}%)")
-        
-        if highest_price > current_price:
+
+        if highest_price > 0 and highest_price > current_price:
             drawdown = (highest_price - current_price) / highest_price * 100
             if drawdown > 5.0:
                 score -= 0.5 * risk_penalty
@@ -253,14 +246,14 @@ class DeepAnalyzer:
             elif drawdown > 3.0:
                 score -= 0.2 * risk_penalty
                 reasons.append(f"📉 조정 발생 ({drawdown:.1f}%)")
-        
+
         if sharpe > 1.5 and win_rate > 0.55:
             score += 0.2
             reasons.append(f"✅ 과거 성과 우수 (샤프 {sharpe:.2f}) (+0.2)")
         elif sharpe < 0.5 and win_rate < 0.45:
             score -= 0.3
             reasons.append(f"⚠️ 과거 성과 부진 (샤프 {sharpe:.2f}) (-0.3)")
-        
+
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _evaluate_time_value(self, entry_time: str, current_price: float, entry_price: float) -> Dict:
@@ -272,63 +265,60 @@ class DeepAnalyzer:
             elapsed_hours = (now - entry_dt).total_seconds() / 3600
         except:
             elapsed_hours = 0
-        
+
         if elapsed_hours < 0.01:
             return {"score": 0.0, "reasons": ["⏳ 진입 직전"]}
-        
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
         annualized_return = (pnl_pct / elapsed_hours) * 24 * 365 if elapsed_hours > 0 else 0
-        
+
         if annualized_return > 30:
             score += 0.7; reasons.append(f"💰 연환산 수익률 {annualized_return:.0f}% (+0.7)")
         elif annualized_return > 15:
             score += 0.4; reasons.append(f"💰 연환산 수익률 {annualized_return:.0f}% (+0.4)")
         elif annualized_return < -30:
             score -= 0.7; reasons.append(f"📉 연환산 손실률 {annualized_return:.0f}% (-0.7)")
-        
+
         if elapsed_hours > 1 and pnl_pct < 1.0:
             score -= 0.3
             reasons.append(f"⏳ 시간 대비 수익률 부진 ({elapsed_hours:.1f}시간) (-0.3)")
-        
+
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
     def _evaluate_microstructure(self, ticker: str, tech_data: Dict, imbalance: float) -> Dict:
         score = 0.0
         reasons = []
         volume_ratio = tech_data.get("volume_ratio", 1.0) if tech_data else 1.0
-        
+
         if imbalance > 0.6:
             score += 0.3; reasons.append(f"⚖️ 매수 우세 ({imbalance:.0%}) (+0.3)")
         elif imbalance < 0.4:
             score -= 0.3; reasons.append(f"⚖️ 매도 우세 ({imbalance:.0%}) (-0.3)")
         else:
             reasons.append(f"⚖️ 중립 ({imbalance:.0%}) (0.0)")
-        
+
         if volume_ratio > 1.5:
             score += 0.3; reasons.append(f"📊 거래량 활발 (×{volume_ratio:.1f}) (+0.3)")
         elif volume_ratio < 0.6:
             score -= 0.2; reasons.append(f"📊 거래량 부진 (×{volume_ratio:.1f}) (-0.2)")
-        
+
         return {"score": max(-1.0, min(1.0, score)), "reasons": reasons[:3]}
 
-    # ============================================================
-    # 🔥 합의 엔진
-    # ============================================================
     def _run_consensus(self, state: dict, current_price: float, atr: float, tech_data: Dict, imbalance: float) -> Dict:
         ticker = state.get("ticker")
         entry_price = state.get("entry_price")
         stop_price = state.get("current_stop")
         entry_time = state.get("entry_time")
         highest_price = state.get("highest_price", entry_price)
-        
+
         tech = self._evaluate_technical(ticker, entry_price, tech_data, atr)
         risk = self._evaluate_risk(ticker, current_price, stop_price, atr, highest_price, self._feedback_stats)
         time_val = self._evaluate_time_value(entry_time, current_price, entry_price)
         micro = self._evaluate_microstructure(ticker, tech_data, imbalance)
-        
+
         base_risk_weight = 2.0 if self._feedback_stats.get("win_rate", 0.5) < 0.4 else 1.8
         weights = {"technical": 1.0, "risk": base_risk_weight, "time_value": 0.8, "micro": 0.6}
-        
+
         weighted_sum = (
             tech["score"] * weights["technical"] +
             risk["score"] * weights["risk"] +
@@ -337,21 +327,21 @@ class DeepAnalyzer:
         )
         total_weight = sum(weights.values())
         consensus_score = max(-1.0, min(1.0, weighted_sum / total_weight))
-        
+
         votes = {"technical": tech["score"], "risk": risk["score"], "time_value": time_val["score"], "micro": micro["score"]}
         hold_votes = sum(1 for v in votes.values() if v > 0.2)
         exit_votes = sum(1 for v in votes.values() if v < -0.2)
-        
+
         if consensus_score > 0.4 and hold_votes >= 3:
             recommendation, action_label = "HOLD", "보유 유지"
         elif consensus_score < -0.4 and exit_votes >= 2:
             recommendation, action_label = "EXIT", "청산 권고"
         else:
             recommendation, action_label = "HOLD", "관망 (추가 데이터 필요)"
-        
+
         all_reasons = (tech["reasons"] + risk["reasons"] + time_val["reasons"] + micro["reasons"])[:5]
         summary = f"합의: {consensus_score:.2f} | 기술:{tech['score']:.2f} 리스크:{risk['score']:.2f} 시간:{time_val['score']:.2f} 수급:{micro['score']:.2f}"
-        
+
         return {
             "recommendation": recommendation,
             "action_label": action_label,
@@ -361,9 +351,6 @@ class DeepAnalyzer:
             "summary": summary
         }
 
-    # ============================================================
-    # 🔥 TP 도달 체크
-    # ============================================================
     def _check_tp_hit(self, state: dict, current_price: float) -> Optional[Dict]:
         action = state.get("action")
         entry_price = state.get("entry_price")
@@ -371,7 +358,7 @@ class DeepAnalyzer:
         tp1 = state.get("tp1_price", entry_price + 0)
         tp2 = state.get("tp2_price", entry_price + 0)
         tp3 = state.get("tp3_price", entry_price + 0)
-        
+
         if tp_hit_level < 1:
             if (action == "BUY" and current_price >= tp1) or (action == "SELL" and current_price <= tp1):
                 state["tp_hit_level"] = 1
@@ -426,25 +413,28 @@ class DeepAnalyzer:
         return None
 
     # ============================================================
-    # 🔥 트레일링 스탑 업데이트
+    # 트레일링 스탑 업데이트 (기존 유지)
     # ============================================================
     async def _update_trailing_stop(self, ticker: str, current_price: float, atr: float, tech_data: Dict, imbalance: float) -> Optional[Dict]:
-        # tech_data가 비어있으면 캐시에서 재조회 (Critical-03 해결)
+        current_price = self._to_float(current_price, 0.0)
+        atr = self._to_float(atr, 0.0)
+
         if not tech_data and self.db:
             tech_data = await self._get_cached_ohlcv(ticker, 30)
-        
+
         async with self._lock:
             state = self.trailing_stops.get(ticker)
             if not state:
                 return None
 
             action = state.get("action")
-            entry_price = state.get("entry_price")
-            current_stop = state.get("current_stop")
-            highest_price = state.get("highest_price", entry_price)
-            lowest_price = state.get("lowest_price", entry_price)
-            prev_atr = state.get("atr", atr)
-            
+            entry_price = self._to_float(state.get("entry_price"), 0.0)
+            current_stop = self._to_float(state.get("current_stop"), 0.0)
+            highest_price = self._to_float(state.get("highest_price"), entry_price)
+            lowest_price = self._to_float(state.get("lowest_price"), entry_price)
+            prev_atr = self._to_float(state.get("atr"), atr)
+            tp_hit_level = state.get("tp_hit_level", 0)
+
             state["last_update_time"] = datetime.now().isoformat()
 
             updated = False
@@ -454,7 +444,7 @@ class DeepAnalyzer:
                 if current_price > highest_price:
                     highest_price = current_price
                     state["highest_price"] = highest_price
-                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
                     trail_mult = 1.0 if pnl_pct > self.trail_aggressive_threshold else self.atr_multiplier_trail
                     new_stop = highest_price - (atr * trail_mult)
                     if new_stop > current_stop:
@@ -465,7 +455,7 @@ class DeepAnalyzer:
                 if current_price < lowest_price:
                     lowest_price = current_price
                     state["lowest_price"] = lowest_price
-                    pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                    pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price != 0 else 0
                     trail_mult = 1.0 if pnl_pct > self.trail_aggressive_threshold else self.atr_multiplier_trail
                     new_stop = lowest_price + (atr * trail_mult)
                     if new_stop < current_stop:
@@ -482,8 +472,8 @@ class DeepAnalyzer:
                     atr_spike = True
                     self._last_atr_alert[ticker] = now
                     state["atr"] = atr
-                    
-                    if state.get("tp_hit_level", 0) < 2 and entry_price > 0:
+
+                    if tp_hit_level < 2 and entry_price > 0:
                         old_tp2 = state.get("tp2_price", entry_price + (atr * 5.0))
                         old_tp3 = state.get("tp3_price", entry_price + (atr * 7.0))
                         if action == "BUY":
@@ -494,6 +484,7 @@ class DeepAnalyzer:
                             state["tp3_price"] = entry_price - (atr * 7.0)
                         tp_adjusted = True
                         logger.info(f"🔄 {ticker} 동적 TP 조정: TP2 {old_tp2:.0f}→{state['tp2_price']:.0f}, TP3 {old_tp3:.0f}→{state['tp3_price']:.0f}")
+                        debug_tower.log(ticker, "TP_ADJUSTED", {"tp2": state['tp2_price'], "tp3": state['tp3_price']})
 
             tp_event = self._check_tp_hit(state, current_price)
             if tp_event:
@@ -505,7 +496,7 @@ class DeepAnalyzer:
                 return self._create_exit_signal(ticker, state, "트레일링 스탑 도달")
 
             consensus = self._run_consensus(state, current_price, atr, tech_data, imbalance)
-            
+
             if updated:
                 return {
                     "ticker": ticker,
@@ -519,14 +510,14 @@ class DeepAnalyzer:
                     "lowest_price": state.get("lowest_price"),
                     "atr": atr,
                     "entry_time": state.get("entry_time"),
-                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" else ((entry_price - current_price) / entry_price * 100),
+                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0,
                     "timestamp": datetime.now().isoformat(),
                     "consensus": consensus,
                     "tp_adjusted": tp_adjusted,
                     "tp2_price": state.get("tp2_price") or 0.0,
                     "tp3_price": state.get("tp3_price") or 0.0,
                 }
-            
+
             if atr_spike:
                 return {
                     "ticker": ticker,
@@ -538,7 +529,7 @@ class DeepAnalyzer:
                     "new_atr": atr,
                     "old_stop": current_stop,
                     "new_stop": new_stop,
-                    "atr_change_ratio": abs(atr - prev_atr) / prev_atr,
+                    "atr_change_ratio": abs(atr - prev_atr) / prev_atr if prev_atr != 0 else 0,
                     "entry_time": state.get("entry_time"),
                     "timestamp": datetime.now().isoformat(),
                     "consensus": consensus,
@@ -546,7 +537,7 @@ class DeepAnalyzer:
                     "tp2_price": state.get("tp2_price") or 0.0,
                     "tp3_price": state.get("tp3_price") or 0.0,
                 }
-            
+
             if consensus.get("recommendation") == "EXIT" and consensus.get("consensus_score", 0) < -0.4:
                 return {
                     "ticker": ticker,
@@ -555,7 +546,7 @@ class DeepAnalyzer:
                     "price": current_price,
                     "entry_price": entry_price,
                     "entry_time": state.get("entry_time"),
-                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" else ((entry_price - current_price) / entry_price * 100),
+                    "pnl": ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0,
                     "advice": consensus,
                     "timestamp": datetime.now().isoformat(),
                 }
@@ -567,8 +558,9 @@ class DeepAnalyzer:
         entry_price = state.get("entry_price")
         current_stop = state.get("current_stop")
         current_price = state.get("last_price", entry_price)
-        pnl = ((current_price - entry_price) / entry_price * 100) if action == "BUY" else ((entry_price - current_price) / entry_price * 100)
+        pnl = ((current_price - entry_price) / entry_price * 100) if action == "BUY" and entry_price != 0 else ((entry_price - current_price) / entry_price * 100) if action == "SELL" and entry_price != 0 else 0
         del self.trailing_stops[ticker]
+        debug_tower.log(ticker, "EXIT_SIGNAL", {"reason": reason, "pnl": pnl})
         return {
             "ticker": ticker,
             "action": "EVENT_EXIT",
@@ -585,20 +577,34 @@ class DeepAnalyzer:
             "timestamp": datetime.now().isoformat(),
         }
 
+    def _to_float(self, value: Any, default: float = 0.0) -> float:
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
     # ============================================================
-    # 🔥 메인 분석 (신규 진입 수정)
+    # 메인 분석 (모멘텀 팩터 통합)
     # ============================================================
     async def analyze(self, stock: Dict) -> Dict:
         try:
             ticker = stock.get('ticker', '')
-            current_price = float(stock.get('price', 0))
-            imbalance = stock.get('imbalance', 0.5)
-            if not isinstance(imbalance, (int, float)) or imbalance < 0 or imbalance > 1:
+            trace_id = stock.get('trace_id', f"T-{ticker}-{int(time.time()*1000)}")
+            debug_tower.log(ticker, "ANALYZE_START", {"price": stock.get('price')}, trace_id)
+
+            current_price = self._to_float(stock.get('price'), 0.0)
+            entry_price = self._to_float(stock.get('entry_price', current_price), current_price)
+
+            imbalance = self._to_float(stock.get('imbalance'), 0.5)
+            if imbalance < 0 or imbalance > 1:
                 imbalance = 0.5
-            
+
             tech_data = await self._get_cached_ohlcv(ticker, 30) if self.db else {}
-            atr = await self.calculate_atr(ticker, 14) if self.db else 0.0
-            
+            atr_raw = await self.calculate_atr(ticker, 14) if self.db else 0.0
+            atr = self._to_float(atr_raw, 0.0)
+
             macro_score = self.macro.check(stock)
             sector_score = self.sector.check(stock)
             stock_score = self.stock.check(stock)
@@ -612,21 +618,51 @@ class DeepAnalyzer:
                 "flow": stock.get("flow", {})
             })
 
+            # 기존 팩터 점수 계산
             base_score = (
                 macro_score["score"] * weights.get("trend_weight", 0.3) +
                 sector_score["score"] * weights.get("risk_weight", 0.2) +
                 stock_score["score"] * weights.get("flow_weight", 0.4) +
                 korean_score["score"] * 0.1
             )
-            
-            # 🔥 뉴스 감성 점수 (10% 반영)
+
             sentiment_score = await self._get_sentiment_score(ticker)
             sentiment_factor = max(0.0, min(1.0, (sentiment_score + 1) / 2))
-            
-            final_score = (base_score * 0.85) + (imbalance_factor * 0.10) + (sentiment_factor * 0.05)
+
+            # ============================================================
+            # 🔥🔥🔥 핵심 수정: 모멘텀을 정규화된 팩터로 통합 (강제 부스트 제거)
+            # ============================================================
+            momentum = stock.get('momentum', 0.0)
+            # 모멘텀을 0~1 사이의 점수로 정규화 (변동률 0% → 0.5, ±5% → 1.0)
+            momentum_score = max(0.0, min(1.0, 0.5 + abs(momentum) * 10))
+            # 방향성 반영: 상승 모멘텀은 BUY에 유리, 하락 모멘텀은 SELL에 유리
+            # 하지만 여기서는 절대값 기반으로 강도만 측정 (방향은 action에서 결정)
+            # → 모멘텀 강도가 높을수록 신뢰도 상승
+
+            # 최종 점수 = 기존 팩터(85%) + 모멘텀 팩터(12%) + 감성(3%)
+            final_score = (
+                base_score * 0.73 +      # 기존 팩터 비중 (0.85 * 0.86)
+                momentum_score * self.momentum_weight +
+                sentiment_factor * 0.03
+            )
             final_score = max(0.0, min(1.0, final_score))
 
-            # 🔥 HybridDecider 호출 (영문 액션 반환)
+            logger.info(
+                f"📊 [점수 디버그] {ticker}: "
+                f"Macro={macro_score['score']:.2f}, "
+                f"Sector={sector_score['score']:.2f}, "
+                f"Stock={stock_score['score']:.2f}, "
+                f"Korean={korean_score['score']:.2f}, "
+                f"Momentum={momentum:.2%}(점수:{momentum_score:.2f}), "
+                f"Final={final_score:.3f}"
+            )
+            debug_tower.log(ticker, "SCORE_CALC", {
+                "base": base_score,
+                "momentum": momentum,
+                "momentum_score": momentum_score,
+                "final": final_score
+            }, trace_id)
+
             decision = self.decider.decide({
                 "score": final_score,
                 "macro": macro_score,
@@ -635,10 +671,8 @@ class DeepAnalyzer:
                 "korean": korean_score
             })
 
-            # 🔥 decision["action"]은 "BUY"/"SELL"/"HOLD" 중 하나 (영문)
-            # decision["action_label"]은 "강력 매수" 등 (한국어 표시용)
             original_action = decision.get("action", "HOLD")
-            
+
             positives = decision.get("reasons", ["다중 팩터 우위"])
             positives.append(f"📊 ATR: {atr:,.0f}원" if atr > 0 else "📊 ATR: 수집 중")
             if tech_data:
@@ -646,13 +680,15 @@ class DeepAnalyzer:
                 positives.append(f"📈 RSI: {tech_data.get('rsi', 50):.0f}")
             if sentiment_score != 0:
                 positives.append(f"📰 뉴스 감성: {sentiment_score:+.2f}")
+            if abs(momentum) > 0.01:
+                positives.append(f"⚡ 모멘텀 강도: {momentum:+.2%} (점수 {momentum_score:.2f})")
 
             result = {
                 "ticker": ticker,
                 "name": stock.get("name", stock.get("ticker", "")),
                 "price": current_price,
-                "action": original_action,  # 🔥 영문 액션 (BUY/SELL/HOLD)
-                "action_label": decision.get("action_label", ""),  # 한국어 표시
+                "action": original_action,
+                "action_label": decision.get("action_label", ""),
                 "score": final_score,
                 "confidence": decision.get("confidence", 0.5),
                 "positives": positives,
@@ -660,8 +696,10 @@ class DeepAnalyzer:
                 "counterfactuals": decision.get("counterfactuals", []),
                 "imbalance": imbalance,
                 "atr": atr,
-                "entry_price": stock.get("entry_price", current_price),
+                "entry_price": entry_price,
                 "sentiment_score": sentiment_score,
+                "momentum": momentum,
+                "momentum_score": momentum_score,
                 "details": {
                     "macro": macro_score["score"],
                     "sector": sector_score["score"],
@@ -670,31 +708,34 @@ class DeepAnalyzer:
                     "imbalance": imbalance,
                     "atr": atr,
                     "sentiment": sentiment_factor,
+                    "momentum": momentum,
+                    "momentum_score": momentum_score,
                 },
                 "timestamp": stock.get("timestamp", "")
             }
 
-            # ---- 🔥 신규 포지션 등록 (영문 액션 체크) ----
             if result["action"] in ["BUY", "SELL"]:
                 async with self._lock:
                     if ticker not in self.trailing_stops:
-                        entry_price = current_price
-                        tp1 = entry_price + (atr * 3.0) if result["action"] == "BUY" else entry_price - (atr * 3.0)
-                        tp2 = entry_price + (atr * 5.0) if result["action"] == "BUY" else entry_price - (atr * 5.0)
-                        tp3 = entry_price + (atr * 7.0) if result["action"] == "BUY" else entry_price - (atr * 7.0)
-                        stop_price = entry_price - (atr * self.atr_multiplier_stop) if result["action"] == "BUY" else entry_price + (atr * self.atr_multiplier_stop)
-                        
+                        entry_price_f = self._to_float(entry_price, 0.0)
+                        atr_f = self._to_float(atr, 0.0)
+
+                        tp1 = entry_price_f + (atr_f * 3.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 3.0)
+                        tp2 = entry_price_f + (atr_f * 5.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 5.0)
+                        tp3 = entry_price_f + (atr_f * 7.0) if result["action"] == "BUY" else entry_price_f - (atr_f * 7.0)
+                        stop_price = entry_price_f - (atr_f * self.atr_multiplier_stop) if result["action"] == "BUY" else entry_price_f + (atr_f * self.atr_multiplier_stop)
+
                         self.trailing_stops[ticker] = {
                             "action": result["action"],
                             "ticker": ticker,
-                            "entry_price": entry_price,
+                            "entry_price": entry_price_f,
                             "current_stop": stop_price,
                             "tp1_price": tp1,
                             "tp2_price": tp2,
                             "tp3_price": tp3,
-                            "highest_price": entry_price if result["action"] == "BUY" else None,
-                            "lowest_price": entry_price if result["action"] == "SELL" else None,
-                            "atr": atr,
+                            "highest_price": entry_price_f if result["action"] == "BUY" else None,
+                            "lowest_price": entry_price_f if result["action"] == "SELL" else None,
+                            "atr": atr_f,
                             "entry_time": datetime.now().isoformat(),
                             "last_update_time": datetime.now().isoformat(),
                             "last_advice_time": 0,
@@ -703,18 +744,18 @@ class DeepAnalyzer:
                             "last_price": current_price,
                         }
                         logger.info(f"✅ {ticker} 포지션 추적 시작 (액션: {result['action']}, TP1:{tp1:.0f}, TP2:{tp2:.0f}, TP3:{tp3:.0f})")
+                        debug_tower.log(ticker, "POSITION_START", {"action": result['action'], "tp1": tp1, "tp2": tp2, "tp3": tp3}, trace_id)
                         result["current_stop"] = stop_price
                         result["trailing_active"] = True
                         result["entry_time"] = datetime.now().isoformat()
                         result["side"] = result["action"]
-                        result["action"] = "SIGNAL_ENTRY"  # 🔥 Telegram 이벤트 타입으로 변경
+                        result["action"] = "SIGNAL_ENTRY"
                         result["max_hold_hours"] = self.max_hold_hours
                         result["tp1"] = tp1
                         result["tp2"] = tp2
                         result["tp3"] = tp3
 
             elif ticker in self.trailing_stops:
-                # 🔥 락 누락 구간 보완 (Critical-02 해결)
                 async with self._lock:
                     state = self.trailing_stops.get(ticker)
                     if state:
@@ -723,12 +764,16 @@ class DeepAnalyzer:
                     ticker, current_price, atr, tech_data, imbalance
                 )
                 if event:
+                    debug_tower.log(ticker, "EVENT_GENERATED", {"event": event['action']}, trace_id)
                     return event
 
+            debug_tower.log(ticker, "ANALYZE_COMPLETE", {"action": result.get('action')}, trace_id)
             return result
 
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
+            logger.error(traceback.format_exc())
+            debug_tower.capture_snapshot(stock.get('ticker', 'SYSTEM'), e, "ANALYZE")
             return {
                 "ticker": stock.get("ticker", ""),
                 "name": stock.get("name", ""),
@@ -750,3 +795,4 @@ class DeepAnalyzer:
             if ticker in self.trailing_stops:
                 del self.trailing_stops[ticker]
                 logger.info(f"🗑️ {ticker} 트레일링 스탑 상태 제거")
+                debug_tower.log(ticker, "CLEAR_STOP", {})

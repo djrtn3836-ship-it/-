@@ -1,13 +1,5 @@
 """
-Stock Filter v5.1.2 — 13개 지표 기반 종목 분석 (호가잔량 3개 포함)
-
-변경사항:
-1. 기존 10개 지표 유지
-2. 신규 3개 호가잔량 피처 추가
-   - Orderbook Imbalance (매수/매도 잔량 비율)
-   - Trade Intensity (체결 강도)
-   - Bid-Ask Spread (호가 스프레드)
-3. 가중치 조정 (기존 0.15 → 0.12, 신규 0.05씩)
+filters/stock_filter.py - v5.1.4 (문자열 price/ma_20 방어 추가)
 """
 
 from typing import Dict, List, Optional
@@ -51,6 +43,20 @@ class StockFilter:
         score = 0.0
         details = {}
         
+        # 🔥 문자열 price를 float으로 안전하게 변환
+        raw_price = data.get("price", 0)
+        try:
+            price = float(raw_price) if raw_price is not None else 0.0
+        except (ValueError, TypeError):
+            price = 0.0
+        
+        # 🔥 문자열 ma_20도 float으로 안전하게 변환
+        raw_ma_20 = data.get("ma_20", price)
+        try:
+            ma_20 = float(raw_ma_20) if raw_ma_20 is not None else 0.0
+        except (ValueError, TypeError):
+            ma_20 = 0.0
+        
         # ===== 1. RSI (40~70 구간 안전) =====
         rsi = data.get("rsi", 50)
         if 40 < rsi < 70:
@@ -69,23 +75,27 @@ class StockFilter:
         else:
             details['volume'] = f"보통 ({volume_ratio:.1f}배)"
         
-        # ===== 3. 20일선 상회 =====
-        price = data.get("price", 0)
-        ma_20 = data.get("ma_20", price)
-        if price > ma_20:
+        # ===== 3. 20일선 상회 (ZeroDivision 방어) =====
+        if price <= 0 or ma_20 <= 0:
+            details['ma'] = "데이터 부족 (가격/20일선 미확인)"
+        elif price > ma_20:
             score += self.feature_weights['ma_20']
-            details['ma'] = f"상회 (gap: {((price/ma_20)-1)*100:.1f}%)"
+            gap = ((price / ma_20) - 1) * 100
+            details['ma'] = f"상회 (gap: {gap:.1f}%)"
         else:
-            details['ma'] = f"하회 (gap: {((ma_20/price)-1)*100:.1f}%)"
+            gap = ((ma_20 / price) - 1) * 100
+            details['ma'] = f"하회 (gap: {gap:.1f}%)"
         
         # ===== 4. PER (업종 대비) =====
         per = data.get("per", 0)
         sector_avg_per = data.get("sector_avg_per", per)
-        if per < sector_avg_per:
+        if per > 0 and per < sector_avg_per:
             score += self.feature_weights['per']
             details['per'] = f"저평가 (PER {per:.0f}, 업종 {sector_avg_per:.0f})"
-        else:
+        elif per > 0:
             details['per'] = f"고평가 (PER {per:.0f}, 업종 {sector_avg_per:.0f})"
+        else:
+            details['per'] = "PER 데이터 없음"
         
         # ===== 5. 기관 수급 =====
         institution_net = data.get("institution_net", 0)
@@ -95,15 +105,24 @@ class StockFilter:
         else:
             details['institution'] = f"순매도 ({institution_net:.0f}억)"
         
-        # ===== 6. ATR (변동성 정상) =====
-        atr_ratio = data.get("atr_ratio", 0.02)
+        # ===== 6. ATR (변동성) — ZeroDivision 방어 =====
+        atr_ratio = data.get("atr_ratio", 0.0)
+        if atr_ratio == 0.0:
+            atr = data.get("atr", 0.0)
+            if price > 0 and atr > 0:
+                atr_ratio = atr / price
+            else:
+                atr_ratio = 0.0
+        
         if 0.01 < atr_ratio < 0.05:
             score += self.feature_weights['atr']
             details['atr'] = f"정상 ({atr_ratio:.2%})"
-        else:
+        elif atr_ratio > 0:
             details['atr'] = f"변동 ({atr_ratio:.2%})"
+        else:
+            details['atr'] = "ATR 데이터 없음"
         
-        # ===== 7. ADX (추세 강도) =====
+        # ===== 7. ADX =====
         adx = data.get("adx", 20)
         if adx > 25:
             score += self.feature_weights['adx']
@@ -135,7 +154,7 @@ class StockFilter:
         else:
             details['fcf'] = "부족 (현금흐름 마이너스)"
         
-        # ===== 11. Orderbook Imbalance (호가잔량 불균형) =====
+        # ===== 11. Orderbook Imbalance =====
         imbalance = data.get("orderbook_imbalance", 0)
         if imbalance > 0.3:
             score += self.feature_weights['orderbook_imbalance']
@@ -145,7 +164,7 @@ class StockFilter:
         else:
             details['orderbook_imbalance'] = "중립"
         
-        # ===== 12. Trade Intensity (체결 강도) =====
+        # ===== 12. Trade Intensity =====
         intensity = data.get("trade_intensity", 1.0)
         if intensity > 1.2:
             score += self.feature_weights['trade_intensity']
@@ -155,7 +174,7 @@ class StockFilter:
         else:
             details['trade_intensity'] = "중립"
         
-        # ===== 13. Bid-Ask Spread (호가 스프레드) =====
+        # ===== 13. Bid-Ask Spread =====
         spread = data.get("bid_ask_spread", 0)
         if spread < 0.001:
             score += self.feature_weights['bid_ask_spread']
