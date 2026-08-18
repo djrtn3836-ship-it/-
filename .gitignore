@@ -1,5 +1,37 @@
-﻿.env
-*.db
+﻿# 환경 변수
+.env
+.env.*
+*.key
+*.pem
+
+# 로그 및 데이터베이스
 logs/
-__pycache__/
 *.log
+*.db
+*.sqlite
+*.sqlite3
+scanner.pid
+
+# 캐시 및 임시 파일
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 프로젝트별 민감 설정
+config/discovered_keys.json
+config/corp_code_cache.json
+config/nlp_model.pkl
+config/naver_api_cache.json
+
+# 리포트 및 테스트 임시 파일
+reports/
+tests/invalid_path/
