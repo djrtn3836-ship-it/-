@@ -1,11 +1,10 @@
 """
-DART Connector v5.3.3 FINAL (User-Agent 추가, 캐시 강화)
-- get_corp_code_sync(): 티커(6자리) → DART 고유번호(8자리) 매핑
-- DART Open API corpCode.xml 다운로드 및 캐싱 (7일 TTL)
-- 실패 시 빈 캐시 저장하여 재시도 방지
-- 모든 HTTP 요청에 User-Agent 헤더 추가 (HTML 응답 방지)
+DART Connector v5.4.0 FINAL (매핑 재시도 + 연도 동적 탐색 + CollectorStatus 연동)
+- get_corp_code_sync() 실패 시 빈 캐시를 저장하지 않고 1시간 후 재시도
+- 재무제표 연도를 2024, 2023, 2022 순차 탐색 (하드코딩 제거)
+- CollectorStatusManager 연동 (수집기 상태 추적)
 - 기존 Risk Score + 공시 분석 (비동기) 100% 유지
-- 모든 HTTP 요청 Timeout/ConnectionError 처리
+- 모든 HTTP 요청에 User-Agent 헤더 추가
 """
 
 import json
@@ -13,7 +12,6 @@ import re
 import asyncio
 import aiohttp
 import requests
-import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -22,12 +20,13 @@ from enum import Enum
 from pathlib import Path
 
 from core.logger import setup_logger
+from collector.collector_status import collector_status
 
 logger = setup_logger("dart_connector")
 
-# 캐시 파일 및 TTL
 CACHE_FILE = Path(__file__).parent.parent / "config" / "corp_code_cache.json"
 CACHE_TTL_DAYS = 7
+RETRY_INTERVAL_HOURS = 1  # 🔥 v5.4.0: 재시도 간격
 
 
 class RiskLevel(Enum):
@@ -98,13 +97,17 @@ class DartConnector:
             'merger': {'pattern': r'합병\s*(결정|공고)', 'weight': self.RISK_WEIGHTS['merger']}
         }
 
-        # 🔥 corp_code 매핑 캐시 관련 변수 (v5.3.3 개선)
+        # 🔥 corp_code 매핑 캐시 관련 변수 (v5.4.0 개선)
         self._corp_code_map = None
         self._cache_loaded = False
+        self._last_retry_time: Dict[str, float] = {}  # 🔥 v5.4.0: 마지막 재시도 시간
 
-    # ============================================================
-    # 🔥 개선된 corp_code 매핑 (User-Agent, 빈 캐시 저장)
-    # ============================================================
+        # 캐시 로드
+        self._load_cache()
+
+        # 🔥 v5.4.0: CollectorStatus 등록
+        collector_status.register("dart_connector", freshness_seconds=86400)  # 1일
+
     def _load_cache(self):
         """로컬 캐시에서 corp_code 매핑 로드 (유효기간 확인)"""
         if CACHE_FILE.exists():
@@ -116,6 +119,7 @@ class DartConnector:
                     self._corp_code_map = data.get('mapping', {})
                     self._cache_loaded = True
                     logger.debug(f"✅ corp_code 캐시 로드 완료 ({len(self._corp_code_map)}개)")
+                    collector_status.record_success("dart_connector", {"cache_size": len(self._corp_code_map)})
                     return
                 else:
                     logger.info("⏳ corp_code 캐시 만료, 재다운로드 필요")
@@ -154,7 +158,6 @@ class DartConnector:
             resp = requests.get(url, params=params, headers=headers, timeout=30)
             resp.raise_for_status()
 
-            # Content-Type 확인 (HTML 응답 방지)
             content_type = resp.headers.get('Content-Type', '')
             if 'xml' not in content_type and not resp.text.strip().startswith('<?xml'):
                 logger.warning(f"⚠️ DART 응답이 XML 아님 (Content-Type: {content_type})")
@@ -168,6 +171,7 @@ class DartConnector:
                 if corp_code and stock_code and stock_code.isdigit() and len(stock_code) >= 6:
                     mapping[stock_code] = corp_code
             logger.info(f"✅ DART corp_code 매핑 다운로드 완료 ({len(mapping)}개)")
+            collector_status.record_success("dart_connector", {"mapping_size": len(mapping)})
             return mapping
         except requests.exceptions.Timeout:
             logger.error("❌ corpCode.xml 다운로드 타임아웃 (30초)")
@@ -175,13 +179,14 @@ class DartConnector:
             logger.error(f"❌ corpCode.xml 파싱 오류: {e}")
         except Exception as e:
             logger.error(f"❌ corpCode.xml 다운로드 실패: {e}")
+            collector_status.record_failure("dart_connector", str(e))
         return {}
 
     def get_corp_code_sync(self, ticker: str) -> Optional[str]:
         """
         티커(6자리 종목코드) → DART 고유번호(8자리) 반환
         - 캐시 우선 조회, 없으면 다운로드
-        - 다운로드 실패 시 빈 캐시 저장하여 재시도 방지 (v5.3.3)
+        - 다운로드 실패 시 빈 캐시를 저장하지 않고 1시간 후 재시도 (v5.4.0)
         """
         if not ticker or not ticker.isdigit() or len(ticker) < 6:
             return None
@@ -194,16 +199,26 @@ class DartConnector:
         if self._corp_code_map and ticker in self._corp_code_map:
             return self._corp_code_map[ticker]
 
-        # 3. 캐시에 없거나 만료 → 다운로드
+        # 3. 🔥 v5.4.0: 빈 캐시일 때도 재시도 가능하도록 변경
+        now = datetime.now().timestamp()
+        last_retry = self._last_retry_time.get(ticker, 0)
+        if self._cache_loaded and (now - last_retry) < RETRY_INTERVAL_HOURS * 3600:
+            remaining = (RETRY_INTERVAL_HOURS * 3600 - (now - last_retry)) / 60
+            logger.debug(f"⏳ {ticker} 재시도 대기 중 (남은 시간: {remaining:.0f}분)")
+            return None
+
+        # 4. 다운로드 시도
         logger.info(f"📥 corp_code 매핑 다운로드 시작 (티커: {ticker})")
         new_mapping = self._download_corp_code()
         if new_mapping:
+            self._corp_code_map = new_mapping
+            self._cache_loaded = True
             self._save_cache(new_mapping)
             return new_mapping.get(ticker)
         else:
-            # 실패 시 빈 캐시 저장 (재시도 방지)
-            self._save_cache({})
-            logger.warning(f"⚠️ {ticker}에 대한 corp_code를 찾을 수 없음")
+            # 🔥 v5.4.0: 실패 시 빈 캐시를 저장하지 않고 재시도 시간만 기록
+            self._last_retry_time[ticker] = now
+            logger.warning(f"⚠️ {ticker} corp_code 매핑 실패 → {RETRY_INTERVAL_HOURS}시간 후 재시도")
             return None
 
     # ============================================================
@@ -399,70 +414,74 @@ class DartConnector:
             self.last_reset = datetime.now()
 
     # ============================================================
-    # 안정성 강화 동기 메서드 (User-Agent 추가)
+    # 안정성 강화 동기 메서드 (User-Agent 추가 + 연도 자동 탐색 v5.4.0)
     # ============================================================
-    def get_financials_sync(self, corp_code: str, year: str = "2024") -> Dict[str, float]:
+    def get_financials_sync(self, corp_code: str, year: str = None) -> Dict[str, float]:
         """
         재무제표 조회 + 정규화 반환 (예외 발생 시 빈 딕셔너리)
-        v5.3.3: User-Agent 헤더 추가
+        v5.4.0: year=None이면 2024→2023→2022 순차 탐색
         """
         if not self.api_key:
             return {}
 
-        try:
-            resp = requests.get(
-                f"{self.base_url}/fnlttSinglAcnt.json",
-                params={
-                    "crtfc_key": self.api_key,
-                    "corp_code": corp_code,
-                    "bsns_year": year,
-                    "reprt_code": "11011"
-                },
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=10
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        years_to_try = [year] if year else ["2024", "2023", "2022"]
 
-            if data.get('status') != '000':
-                logger.warning(f"⚠️ {corp_code} 재무제표 조회 실패 ({year}): {data.get('message')}")
-                return {}
+        for try_year in years_to_try:
+            try:
+                resp = requests.get(
+                    f"{self.base_url}/fnlttSinglAcnt.json",
+                    params={
+                        "crtfc_key": self.api_key,
+                        "corp_code": corp_code,
+                        "bsns_year": try_year,
+                        "reprt_code": "11011"
+                    },
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=10
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-            result = {}
-            target = ['매출액', '영업이익', '당기순이익', '자산총계', '부채총계', '자본총계']
-            for item in data.get('list', []):
-                if item.get('sj_div') != 'CFS':
-                    continue
-                acc = item.get('account_nm')
-                if acc in target:
-                    raw = item.get('thstrm_amount', '0')
-                    try:
-                        result[acc] = float(raw.replace(',', ''))
-                    except:
-                        result[acc] = 0.0
+                if data.get('status') == '000':
+                    result = {}
+                    target = ['매출액', '영업이익', '당기순이익', '자산총계', '부채총계', '자본총계']
+                    for item in data.get('list', []):
+                        if item.get('sj_div') != 'CFS':
+                            continue
+                        acc = item.get('account_nm')
+                        if acc in target:
+                            raw = item.get('thstrm_amount', '0')
+                            try:
+                                result[acc] = float(raw.replace(',', ''))
+                            except:
+                                result[acc] = 0.0
 
-            # 재무비율 자동 계산
-            revenue = result.get('매출액', 0)
-            op = result.get('영업이익', 0)
-            net = result.get('당기순이익', 0)
-            eq = result.get('자본총계', 0)
-            debt = result.get('부채총계', 0)
+                    revenue = result.get('매출액', 0)
+                    op = result.get('영업이익', 0)
+                    net = result.get('당기순이익', 0)
+                    eq = result.get('자본총계', 0)
+                    debt = result.get('부채총계', 0)
 
-            if revenue > 0:
-                result['영업이익률'] = (op / revenue) * 100 if op else 0.0
-            if eq > 0:
-                result['ROE'] = (net / eq) * 100 if net else 0.0
-                result['부채비율'] = (debt / eq) * 100 if debt else 0.0
+                    if revenue > 0:
+                        result['영업이익률'] = (op / revenue) * 100 if op else 0.0
+                    if eq > 0:
+                        result['ROE'] = (net / eq) * 100 if net else 0.0
+                        result['부채비율'] = (debt / eq) * 100 if debt else 0.0
 
-            logger.debug(f"✅ {corp_code} 재무제표 정규화 완료 ({year})")
-            return result
+                    logger.debug(f"✅ {corp_code} 재무제표 정규화 완료 ({try_year})")
+                    collector_status.record_success("dart_connector", {"year": try_year})
+                    return result
+                else:
+                    logger.debug(f"ℹ️ {corp_code} {try_year}년 데이터 없음, 다음 연도 시도")
+            except requests.exceptions.Timeout:
+                logger.warning(f"⚠️ {corp_code} {try_year}년 재무 Timeout")
+            except requests.exceptions.ConnectionError:
+                logger.warning(f"⚠️ {corp_code} {try_year}년 연결 오류")
+            except Exception as e:
+                logger.warning(f"⚠️ {corp_code} {try_year}년 재무 조회 실패: {e}")
 
-        except requests.exceptions.Timeout:
-            logger.error(f"❌ {corp_code} 재무제표 Timeout")
-        except requests.exceptions.ConnectionError:
-            logger.error(f"❌ {corp_code} 재무제표 연결 오류")
-        except Exception as e:
-            logger.error(f"❌ {corp_code} 재무제표 예외: {e}")
+        logger.warning(f"⚠️ {corp_code} 재무제표 데이터 없음 (모든 연도 실패)")
+        collector_status.record_failure("dart_connector", f"재무제표 없음 ({corp_code})")
         return {}
 
     def get_company_info_sync(self, corp_code: str) -> Optional[Dict]:

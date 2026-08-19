@@ -1,0 +1,12 @@
+# config/debug_config.yaml - v1.0
+# Debug Tower 설정
+
+debug_tower:
+  ring_buffer_size: 10000      # 링 버퍼 최대 이벤트 수
+  trace_file_max_mb: 50        # debug_trace.jsonl 최대 크기 (MB)
+  crash_snapshot_ttl_days: 7   # 크래시 스냅샷 보관 기간 (일)
+  include_system_state: true   # 스냅샷에 CPU/메모리 정보 포함 여부
+
+logging:
+  structured: false            # JSON 로그 사용 여부 (logger.py와 연동)
+  level: "DEBUG"               # 기본 로그 레벨

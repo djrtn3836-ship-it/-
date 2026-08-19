@@ -1,14 +1,19 @@
 """
-strategy/trend_strategy.py - v1.0 FINAL (추세 추종 전략)
+strategy/trend_strategy.py - v1.2 FINAL (config 기반 가중치)
+- config에서 기본 가중치를 읽어옴 (strategy_default_trend_weight)
 - EMA 정배열/역배열, ADX, 20일선 이탈/돌파 기반
-- 상승장에서 강한 매수 신호
 """
 
 from typing import Dict, Any
-from .base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy, config
+
+DEFAULT_WEIGHT_KEY = "strategy_default_trend_weight"
+
 
 class TrendStrategy(BaseStrategy):
-    def __init__(self, weight: float = 0.40):
+    def __init__(self, weight: float = None):
+        if weight is None:
+            weight = config.get_float(DEFAULT_WEIGHT_KEY, 0.40)
         self._weight = weight
 
     @property
@@ -20,21 +25,29 @@ class TrendStrategy(BaseStrategy):
         return self._weight
 
     def analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        price = data.get('price', 0.0)
+        price = self._safe_get(data, 'price', 0.0)
         tech = data.get('tech_data', {})
-        ema5 = tech.get('ema5', price)
-        ema20 = tech.get('ema20', price)
-        ema60 = tech.get('ema60', price)
-        adx = data.get('adx', 20)
-        volume_ratio = tech.get('volume_ratio', 1.0)
-        regime = data.get('regime', 'Sideways')
+        ema5 = self._safe_get(tech, 'ema5', price)
+        ema20 = self._safe_get(tech, 'ema20', price)
+        ema60 = self._safe_get(tech, 'ema60', price)
+        adx = self._safe_get(data, 'adx', 20.0)
+        volume_ratio = self._safe_get(tech, 'volume_ratio', 1.0)
+        regime = self._safe_get(data, 'regime', 'Sideways')
+
+        if price <= 0 or ema20 <= 0:
+            return {
+                'score': 0.5,
+                'action': 'HOLD',
+                'confidence': 0.3,
+                'reason': '가격 또는 이평선 데이터 부족',
+                'details': {'ema5': ema5, 'ema20': ema20, 'ema60': ema60}
+            }
 
         score = 0.5
         action = 'HOLD'
         confidence = 0.5
         reasons = []
 
-        # 1. EMA 정배열 (Bullish)
         if ema5 > ema20 > ema60:
             score += 0.25
             reasons.append("EMA 정배열 (강한 상승 추세)")
@@ -51,7 +64,6 @@ class TrendStrategy(BaseStrategy):
             score -= 0.10
             reasons.append("단기 하락 추세")
 
-        # 2. ADX (추세 강도)
         if adx > 30:
             score += 0.10
             reasons.append(f"ADX {adx:.0f} (강한 추세)")
@@ -62,20 +74,17 @@ class TrendStrategy(BaseStrategy):
             score -= 0.05
             reasons.append(f"ADX {adx:.0f} (추세 약함)")
 
-        # 3. 20일선 이탈/돌파
-        if price > ema20 and ema20 > 0:
+        if price > ema20:
             score += 0.10
             reasons.append("20일선 상회 (지지)")
-        elif price < ema20 and ema20 > 0:
+        elif price < ema20:
             score -= 0.10
             reasons.append("20일선 하회 (저항)")
 
-        # 4. 거래량 확인 (추세 지속성)
         if volume_ratio > 1.5 and score > 0.6:
             score += 0.05
             reasons.append("거래량 동반 상승 (추세 지속)")
 
-        # 5. 액션 결정
         if score >= 0.70:
             action = 'BUY'
             confidence = min(0.95, 0.6 + (score - 0.7) * 1.5)

@@ -1,13 +1,16 @@
 """
-report/weekly_pdf.py - v6.0 FINAL (ML 예측 + VaR 정보 추가)
-- 7일치 decision에서 ml_score, risk_adjustment_factor 집계
-- PDF에 'ML 인사이트' 및 '리스크 조정 계수' 표 추가
+report/weekly_pdf.py - v6.1 FINAL (성능 로깅 + 폰트 폴백 강화)
+- PDF 생성 시간 측정 및 로깅 추가
+- 폰트 로드 실패 시 Helvetica로 안전하게 폴백 (font_utils 연동)
+- ML/VaR 정보 포함 (v6.0 유지)
 """
 
 import os
 import json
 import math
 import statistics
+import time
+import traceback
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -18,9 +21,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
 from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from core.logger import setup_logger
-from core.font_utils import FONT_NAME, FONT_BOLD
+from core.font_utils import FONT_NAME, FONT_BOLD, register_korean_fonts
 from data.db_manager import DatabaseManager
 from data.dart_connector import DartConnector
 from data.kiwoom_connector import KiwoomConnectorV512
@@ -49,87 +54,101 @@ class WeeklyPDFGenerator:
         self.styles = None
         self.story = []
 
+        # 🔥 v6.1: 폰트 등록 (이미 font_utils에서 전역으로 처리)
+        try:
+            register_korean_fonts()
+            logger.info(f"✅ 한글 폰트 등록 완료 (FONT: {FONT_NAME})")
+        except Exception as e:
+            logger.warning(f"⚠️ 폰트 등록 실패, Helvetica로 폴백: {e}")
+
     async def generate(self, date_ref: Optional[str] = None) -> Optional[Path]:
+        start_time = time.time()
         if date_ref is None:
             date_ref = datetime.now().strftime("%Y-%m-%d")
 
-        logger.info(f"📄 [v6.0] 주간 PDF 보고서 생성 시작 (ML/VaR 포함)")
-
-        await self.db.init_db()
-        weekly_data = await self._collect_weekly_data(date_ref)
-
-        if weekly_data['total_decisions'] == 0:
-            logger.info("⚠️ 금주 신호 없음 → '관망' 페이지 포함하여 PDF 생성")
+        logger.info(f"📄 [v6.1] 주간 PDF 보고서 생성 시작 (기준일: {date_ref})")
 
         try:
-            news_items, _ = await self.news.get_news_with_sentiment("코스피", limit=5)
-            weekly_data['headlines'] = [item.get("title", "") for item in news_items[:5]]
-        except Exception as e:
-            logger.warning(f"뉴스 수집 실패: {e}")
-            weekly_data['headlines'] = ["뉴스 데이터를 불러올 수 없습니다."]
+            await self.db.init_db()
+            weekly_data = await self._collect_weekly_data(date_ref)
 
-        exits = [d for d in weekly_data['decisions'] if d.get('action') == 'EXIT']
-        weekly_data['exit_count'] = len(exits)
-        weekly_data['exit_avg_pnl'] = statistics.mean([d.get('pnl', 0.0) for d in exits]) if exits else 0.0
+            if weekly_data['total_decisions'] == 0:
+                logger.info("⚠️ 금주 신호 없음 → '관망' 페이지 포함하여 PDF 생성")
 
-        # 🔥 v6.0: ML/VaR 통계 집계
-        ml_scores = [d.get('ml_score', 0.5) for d in weekly_data['decisions'] if d.get('ml_score') is not None]
-        risk_adjs = [d.get('risk_adjustment_factor', 1.0) for d in weekly_data['decisions'] if d.get('risk_adjustment_factor') is not None]
-        weekly_data['avg_ml'] = statistics.mean(ml_scores) if ml_scores else 0.5
-        weekly_data['avg_risk_adj'] = statistics.mean(risk_adjs) if risk_adjs else 1.0
-        weekly_data['ml_high'] = max(ml_scores) if ml_scores else 0.5
-        weekly_data['ml_low'] = min(ml_scores) if ml_scores else 0.5
-
-        if self.kiwoom and not self.kiwoom.is_connected():
             try:
-                await self.kiwoom.connect()
-                if not self.kiwoom.is_connected():
+                news_items, _ = await self.news.get_news_with_sentiment("코스피", limit=5)
+                weekly_data['headlines'] = [item.get("title", "") for item in news_items[:5]]
+            except Exception as e:
+                logger.warning(f"뉴스 수집 실패: {e}")
+                weekly_data['headlines'] = ["뉴스 데이터를 불러올 수 없습니다."]
+
+            exits = [d for d in weekly_data['decisions'] if d.get('action') == 'EXIT']
+            weekly_data['exit_count'] = len(exits)
+            weekly_data['exit_avg_pnl'] = statistics.mean([d.get('pnl', 0.0) for d in exits]) if exits else 0.0
+
+            ml_scores = [d.get('ml_score', 0.5) for d in weekly_data['decisions'] if d.get('ml_score') is not None]
+            risk_adjs = [d.get('risk_adjustment_factor', 1.0) for d in weekly_data['decisions'] if d.get('risk_adjustment_factor') is not None]
+            weekly_data['avg_ml'] = statistics.mean(ml_scores) if ml_scores else 0.5
+            weekly_data['avg_risk_adj'] = statistics.mean(risk_adjs) if risk_adjs else 1.0
+            weekly_data['ml_high'] = max(ml_scores) if ml_scores else 0.5
+            weekly_data['ml_low'] = min(ml_scores) if ml_scores else 0.5
+
+            if self.kiwoom and not self.kiwoom.is_connected():
+                try:
+                    await self.kiwoom.connect()
+                    if not self.kiwoom.is_connected():
+                        self.kiwoom = None
+                except:
                     self.kiwoom = None
-            except:
-                self.kiwoom = None
 
-        weekly_data = await self._enrich_stock_data(weekly_data)
+            weekly_data = await self._enrich_stock_data(weekly_data)
 
-        filename = f"Weekly_Report_{date_ref}.pdf"
-        filepath = PDF_DIR / filename
+            filename = f"Weekly_Report_{date_ref}.pdf"
+            filepath = PDF_DIR / filename
 
-        doc = SimpleDocTemplate(
-            str(filepath), pagesize=A4,
-            leftMargin=15*mm, rightMargin=15*mm,
-            topMargin=20*mm, bottomMargin=20*mm,
-            title=f"Quant Weekly - {date_ref}",
-            author="v6.0 Quant System"
-        )
+            doc = SimpleDocTemplate(
+                str(filepath), pagesize=A4,
+                leftMargin=15*mm, rightMargin=15*mm,
+                topMargin=20*mm, bottomMargin=20*mm,
+                title=f"Quant Weekly - {date_ref}",
+                author="v6.1 Quant System"
+            )
 
-        self.story = []
-        self._build_styles()
+            self.story = []
+            self._build_styles()
 
-        self._build_title_page(date_ref, weekly_data)
-        self._build_executive_summary(weekly_data)
+            self._build_title_page(date_ref, weekly_data)
+            self._build_executive_summary(weekly_data)
 
-        if weekly_data['total_decisions'] == 0:
-            self._build_no_signal_page()
-        else:
-            self._build_market_review(weekly_data)
-            self._build_financial_health(weekly_data)
-            self._build_supply_demand(weekly_data)
-            # 🔥 v6.0: ML 인사이트 섹션 추가
-            self._build_ml_insights(weekly_data)
+            if weekly_data['total_decisions'] == 0:
+                self._build_no_signal_page()
+            else:
+                self._build_market_review(weekly_data)
+                self._build_financial_health(weekly_data)
+                self._build_supply_demand(weekly_data)
+                self._build_ml_insights(weekly_data)
 
-        self._build_trailing_stop_stats(weekly_data)
-        self._build_news_summary(weekly_data)
-        self._build_factor_attribution(weekly_data)
-        self._build_portfolio_positioning(weekly_data)
-        self._build_risk_analysis(weekly_data)
-        self._build_scenario_analysis(weekly_data)
-        self._build_appendix(weekly_data)
+            self._build_trailing_stop_stats(weekly_data)
+            self._build_news_summary(weekly_data)
+            self._build_factor_attribution(weekly_data)
+            self._build_portfolio_positioning(weekly_data)
+            self._build_risk_analysis(weekly_data)
+            self._build_scenario_analysis(weekly_data)
+            self._build_appendix(weekly_data)
 
-        doc.build(self.story)
-        logger.info(f"✅ PDF 생성 완료: {filepath}")
-        return filepath
+            doc.build(self.story)
+            elapsed = time.time() - start_time
+            logger.info(f"✅ PDF 생성 완료: {filepath} (소요 {elapsed:.2f}초)")
+            return filepath
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"❌ PDF 생성 실패 (소요 {elapsed:.2f}초): {e}")
+            logger.error(traceback.format_exc())
+            return None
 
     # ============================================================
-    # 데이터 수집 (기존 유지, ml_score 추가 추출)
+    # 데이터 수집 (기존 v6.0 유지)
     # ============================================================
     async def _collect_weekly_data(self, date_ref: str) -> Dict:
         end_date = datetime.strptime(date_ref, "%Y-%m-%d")
@@ -167,7 +186,6 @@ class WeeklyPDFGenerator:
             'weights': weights,
             'daily_counts': daily_counts,
             'decisions': decisions,
-            # v6.0: ML/VaR 통계 (나중에 채움)
             'avg_ml': 0.5,
             'avg_risk_adj': 1.0,
             'ml_high': 0.5,
@@ -175,7 +193,6 @@ class WeeklyPDFGenerator:
         }
 
     async def _enrich_stock_data(self, data: Dict) -> Dict:
-        """Top BUY 종목에 재무비율 + 수급 데이터 추가 (기존 유지)"""
         years_to_try = ["2024", "2023", "2022"]
         for stock in data['top_buy']:
             ticker = stock.get('ticker', '')
@@ -189,7 +206,6 @@ class WeeklyPDFGenerator:
                             fin = self.dart.get_financials_sync(corp_code, year)
                             if fin and len(fin) > 0:
                                 financials = fin
-                                logger.info(f"✅ {ticker} 재무 데이터 ({year}년) 정규화 성공")
                                 break
                         except Exception as e:
                             logger.warning(f"⚠️ {ticker} {year}년 재무 조회 실패: {e}")
@@ -214,10 +230,14 @@ class WeeklyPDFGenerator:
         return data
 
     # ============================================================
-    # 스타일 빌드 (기존 유지)
+    # 스타일 빌드 (v6.1 - 폰트 폴백 강화)
     # ============================================================
     def _build_styles(self):
         self.styles = getSampleStyleSheet()
+        # FONT_NAME이 'Helvetica'이면 폴백 경고 (font_utils에서 처리)
+        if FONT_NAME == 'Helvetica':
+            logger.warning("⚠️ 한글 폰트 없음 → Helvetica 사용 (한글 깨짐 가능)")
+
         self.styles.add(ParagraphStyle(
             name='Title1', parent=self.styles['Title'],
             fontName=FONT_BOLD, fontSize=22, spaceAfter=12*mm,
@@ -243,17 +263,16 @@ class WeeklyPDFGenerator:
         ))
 
     # ============================================================
-    # 각 섹션 빌드 (기존 유지 + ML 섹션 추가)
+    # 각 섹션 빌드 (v6.1 - 데이터 부족 방어 강화, 성능 로깅)
     # ============================================================
     def _build_title_page(self, date_ref, data):
         self.story.append(Spacer(1, 30*mm))
-        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트 v6.0</b>", self.styles['Title1']))
+        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트 v6.1</b>", self.styles['Title1']))
         self.story.append(Spacer(1, 5*mm))
         self.story.append(Paragraph(f"<font size=14>{date_ref}</font>", self.styles['BodyText']))
         self.story.append(Spacer(1, 30*mm))
         self.story.append(Paragraph(f"<b>시그널 건수</b>: {data['total_decisions']}건", self.styles['BodyText']))
         self.story.append(Paragraph(f"<b>매수/매도</b>: {data['buy_count']} / {data['sell_count']}", self.styles['BodyText']))
-        # v6.0: ML 정보 추가
         self.story.append(Paragraph(f"<b>ML 평균 예측</b>: {data['avg_ml']:.1%}", self.styles['BodyText']))
         self.story.append(Paragraph(f"<b>VaR 조정 계수</b>: {data['avg_risk_adj']:.2f}", self.styles['BodyText']))
         self.story.append(Spacer(1, 20*mm))
@@ -272,7 +291,6 @@ class WeeklyPDFGenerator:
             f"매수 우위 국면이 지속되었으나 강도는 {avg*100:.0f}% 수준입니다.",
             self.styles['BodyText']
         ))
-        # v6.0: ML 요약
         self.story.append(Paragraph(
             f"<b>ML 인사이트</b>: 평균 예측 확률 {data['avg_ml']:.1%} (최고 {data['ml_high']:.1%}, 최저 {data['ml_low']:.1%}), "
             f"VaR 조정 계수 평균 {data['avg_risk_adj']:.2f}",
@@ -373,9 +391,6 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph("<i>수급 데이터 없음</i>", self.styles['BodyText']))
         self.story.append(PageBreak())
 
-    # ============================================================
-    # 🔥 v6.0: ML 인사이트 섹션 (신규)
-    # ============================================================
     def _build_ml_insights(self, data):
         self.story.append(Paragraph("🧠 ML 예측 인사이트", self.styles['SectionTitle']))
         self.story.append(Paragraph(
@@ -386,7 +401,6 @@ class WeeklyPDFGenerator:
             f"• VaR 조정 계수 평균: <b>{data['avg_risk_adj']:.2f}</b> (1.0=기준, 낮을수록 리스크 축소)",
             self.styles['BodyText']
         ))
-        # ML이 높은 Top 3 종목
         sorted_by_ml = sorted([d for d in data['decisions'] if d.get('ml_score') is not None],
                               key=lambda x: x.get('ml_score', 0), reverse=True)[:3]
         if sorted_by_ml:

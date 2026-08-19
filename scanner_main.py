@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v7.4.0 FINAL (ML 신호 융합 + VaR 포지션 사이징 통합)
-- SchedulerManager, RegimeManager, MacroCollector 등 기존 기능 유지
-- 🔥 FeedbackLearner 인스턴스 생성 후 DeepAnalyzer에 주입
-- 🔥 PortfolioAllocator에 VaR 계산 결과 전달 (risk/var_calculator.py 연동)
+scanner_main.py - v7.6.2 FINAL (Telegram 로그 레벨 조정)
+- 기존 v7.6.1 + Telegram 디버그 로그 억제
 """
 
 import asyncio
 import sys
 import os
+import signal
 import subprocess
 import traceback
 import time
+import logging  # 🔥 추가
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -25,10 +25,23 @@ from core.logger import setup_logger
 from core.scheduler import SchedulerManager
 from core.holiday_utils import is_trading_day
 from core.config import get_config
-from core.exceptions import KiwoomError
+from core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    KiwoomError,
+    KiwoomAuthError,
+    KiwoomWebSocketError,
+    DataCollectionError,
+    StrategyExecutionError,
+)
 from core.blackbox_logger import log_event, log_error, get_status
 from core.debug_tower import debug_tower
 from core.regime_manager import regime_manager
+from core.exception_handler import (
+    setup_global_exception_handler,
+    restore_exception_handler,
+    set_alert_handler,
+)
 from scheduler.macro_collector import fetch_macro_data, get_cached_macro
 from dotenv import load_dotenv
 
@@ -46,6 +59,7 @@ from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
 from feedback.feedback_learner import FeedbackLearner
 from scheduler.daily_collector import collect_daily_ohlcv
+from collector.collector_status import collector_status
 
 logger = setup_logger("scanner")
 config = get_config()
@@ -57,16 +71,17 @@ _db: Optional[DatabaseManager] = None
 _start_time: float = 0.0
 _error_sender: Optional[TelegramSender] = None
 _scheduler: Optional[SchedulerManager] = None
-_worker_tasks: list = []
+_worker_tasks: List[asyncio.Task] = []
+_all_tasks: List[asyncio.Task] = []
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
 _health_task: Optional[asyncio.Task] = None
 _telegram_cmd: Optional[TelegramCommandHandler] = None
+_original_exception_handlers: Optional[Dict] = None
 PID_FILE = Path(__file__).parent / "scanner.pid"
 MESSAGE_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=config.get_int("queue_maxsize", 100000))
 
 _last_data_time = 0.0
 _DATA_FLOW_TIMEOUT = 180
-
 
 # ============================================================
 # Telegram 명령어용 시스템 상태 수집 콜백
@@ -101,6 +116,7 @@ def get_system_stats() -> Dict[str, Any]:
 
     regime_status = regime_manager.get_status()
     macro = get_cached_macro()
+    collector_summary = collector_status.get_summary()
 
     return {
         "status": "운영 중" if (_kiwoom and _kiwoom.is_connected()) else "연결 끊김",
@@ -119,9 +135,45 @@ def get_system_stats() -> Dict[str, Any]:
             "usdkrw": macro.usdkrw,
             "vix": macro.vix,
             "bond_3y": macro.bond_3y,
+        },
+        "collector_status": {
+            "healthy": collector_summary.get('healthy', 0),
+            "total": collector_summary.get('total', 0),
+            "fresh": collector_summary.get('fresh', 0),
         }
     }
 
+# ============================================================
+# 시그널 핸들러 (Windows/Unix 호환)
+# ============================================================
+def setup_signal_handlers():
+    """
+    SIGINT/SIGTERM 시그널 핸들러 등록 (Windows 호환)
+    - Windows: signal.signal 사용
+    - Unix: asyncio add_signal_handler 사용
+    """
+    is_windows = sys.platform == "win32"
+
+    def _signal_handler(sig, frame):
+        logger.info(f"📡 시그널 {sig} 수신 → 시스템 종료 시작...")
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.stop()
+        except Exception as e:
+            logger.warning(f"⚠️ 이벤트 루프 중지 실패: {e}")
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            if is_windows:
+                signal.signal(sig, _signal_handler)
+                logger.debug(f"Windows: 시그널 {sig} 핸들러 등록 완료")
+            else:
+                loop = asyncio.get_running_loop()
+                loop.add_signal_handler(sig, _signal_handler, sig, None)
+                logger.debug(f"Unix: 시그널 {sig} 핸들러 등록 완료")
+        except Exception as e:
+            logger.warning(f"⚠️ 시그널 {sig} 핸들러 등록 실패: {e}")
 
 # ============================================================
 # 1. 유틸리티 함수
@@ -150,7 +202,6 @@ def check_and_create_pid() -> None:
         f.write(str(os.getpid()))
     print(f"✅ PID 파일 생성: {os.getpid()}")
 
-
 def validate_env() -> None:
     required_keys = ['KIWOOM_APP_KEY', 'KIWOOM_APP_SECRET', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']
     missing = [k for k in required_keys if not os.getenv(k)]
@@ -159,7 +210,6 @@ def validate_env() -> None:
         sys.exit(1)
     logger.info("✅ 환경변수 검증 완료")
     debug_tower.log("SYSTEM", "ENV_VALIDATED", {})
-
 
 # ============================================================
 # 2. APScheduler 작업들
@@ -171,28 +221,22 @@ async def trading_day_task_wrapper(func, job_name: str = "작업", *args, **kwar
         return
     await func(*args, **kwargs)
 
-
 async def run_feedback_and_reload(learner: FeedbackLearner, analyzer: DeepAnalyzer) -> None:
     await trading_day_task_wrapper(learner.run, "피드백 학습")
     await analyzer.load_weights()
 
-
 async def run_weekly_pdf(pdf_gen: WeeklyPDFGenerator) -> None:
     await trading_day_task_wrapper(pdf_gen.generate, "주간 PDF")
-
 
 async def run_daily_report(reporter: DailyReportGenerator) -> None:
     await trading_day_task_wrapper(reporter.generate_and_send, "일일 리포트")
 
-
 async def run_daily_ohlcv_collect(kiwoom: KiwoomConnectorV512, db: DatabaseManager, tickers: list) -> None:
     await trading_day_task_wrapper(collect_daily_ohlcv, "OHLCV 수집", kiwoom, db, tickers)
-
 
 async def run_macro_update() -> None:
     logger.info("📊 정기 거시 데이터 갱신 시작")
     await fetch_macro_data(force=True)
-
 
 # ============================================================
 # 3. 재연결
@@ -218,7 +262,6 @@ async def reconnect_and_resubscribe(kiwoom: KiwoomConnectorV512, monitor: Realti
     debug_tower.log("SYSTEM", "RECONNECT_SUCCESS_OUTER", {})
     await monitor.resubscribe_all()
     logger.info("✅ 재연결 및 전체 구독 재등록 완료.")
-
 
 # ============================================================
 # 4. 전략 Worker
@@ -289,11 +332,22 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
             logger.info(f"🛑 전략 Worker-{worker_id} 종료")
             debug_tower.log("SYSTEM", f"WORKER_STOP_{worker_id}", {})
             break
+        except DatabaseError as e:
+            logger.error(f"❌ DB 오류 (Worker-{worker_id}): {e}")
+            await send_error_alert(f"DB 오류 (Worker-{worker_id})", str(e))
+            await asyncio.sleep(5)
+        except KiwoomError as e:
+            logger.error(f"❌ 키움 API 오류 (Worker-{worker_id}): {e} (code: {e.code})")
+            await send_error_alert(f"키움 오류 (Worker-{worker_id})", f"{type(e).__name__}: {e}")
+            await asyncio.sleep(3)
+        except DataCollectionError as e:
+            logger.error(f"❌ 데이터 수집 오류 (Worker-{worker_id}): [{e.source}] {e.message}")
+            await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"❌ 전략 Worker-{worker_id} 오류: {e}", exc_info=True)
             debug_tower.capture_snapshot("SYSTEM", e, f"WORKER_{worker_id}")
+            await send_error_alert(f"Worker-{worker_id} 오류", str(e)[:200])
             await asyncio.sleep(1)
-
 
 # ============================================================
 # 5. Telegram 알림 함수
@@ -314,7 +368,6 @@ async def send_error_alert(error_msg: str, error_detail: str = "") -> None:
         await _error_sender.send_raw(message)
     except:
         pass
-
 
 async def send_startup_notification(success: bool, details: Optional[Dict] = None) -> None:
     global _error_sender
@@ -347,7 +400,7 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v7.4.0 FINAL (ML 신호 융합 + VaR 포지션 사이징)
+📊 <b>버전</b>: v7.6.2 FINAL (Telegram 로그 조정)
 📈 <b>거시 지표</b>: KOSPI 5일 {macro.kospi_trend:.2f}% | USD/KRW {macro.usdkrw:.0f} | VIX {macro.vix:.1f}
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -364,7 +417,6 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
     except Exception as e:
         log_error("시작 알림 전송 실패", e)
         debug_tower.capture_snapshot("SYSTEM", e, "STARTUP_NOTIFY")
-
 
 async def send_shutdown_notification(reason: str = "정상 종료") -> None:
     global _error_sender
@@ -384,7 +436,6 @@ async def send_shutdown_notification(reason: str = "정상 종료") -> None:
     except:
         pass
 
-
 # ============================================================
 # 6. 헬스체크 서버
 # ============================================================
@@ -395,6 +446,7 @@ async def health_check(request: web.Request) -> web.Response:
 
     regime_status = regime_manager.get_status()
     macro = get_cached_macro()
+    collector_summary = collector_status.get_summary()
 
     status = {
         "status": "healthy" if (queue_usage < 90 and data_flow_healthy) else "degraded",
@@ -409,10 +461,10 @@ async def health_check(request: web.Request) -> web.Response:
         "blackbox": get_status(),
         "debug_tower": debug_tower.get_stats(),
         "regime_manager": regime_status,
-        "macro": macro.to_dict()
+        "macro": macro.to_dict(),
+        "collector_status": collector_summary,
     }
     return web.json_response(status)
-
 
 async def start_health_server(host: str = '0.0.0.0', port: int = 8080) -> None:
     for offset in range(10):
@@ -432,12 +484,11 @@ async def start_health_server(host: str = '0.0.0.0', port: int = 8080) -> None:
     logger.warning("⚠️ 헬스체크 서버 시작 실패")
     debug_tower.log("SYSTEM", "HEALTH_SERVER_FAIL", {})
 
-
 # ============================================================
 # 7. 메인 함수
 # ============================================================
 async def main() -> None:
-    global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time, _health_task, _telegram_cmd
+    global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time, _health_task, _telegram_cmd, _all_tasks, _original_exception_handlers
 
     if not is_trading_day():
         log_event("NON_TRADING_DAY", {"date": datetime.now().strftime("%Y-%m-%d")})
@@ -448,8 +499,8 @@ async def main() -> None:
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.4.0"})
-    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.4.0"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.6.2"})
+    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.6.2"})
 
     check_and_create_pid()
     load_dotenv(override=True)
@@ -458,8 +509,16 @@ async def main() -> None:
     _start_time = asyncio.get_event_loop().time()
     _error_sender = TelegramSender()
 
+    # 전역 예외 핸들러 설정
+    _original_exception_handlers = setup_global_exception_handler()
+    logger.info("✅ 전역 예외 핸들러 활성화")
+
+    # 시그널 핸들러 등록 (Windows/Unix 호환)
+    setup_signal_handlers()
+    logger.info("✅ 시그널 핸들러 등록 완료 (SIGINT/SIGTERM)")
+
     logger.info("=" * 70)
-    logger.info("🚀 v7.4.0 FINAL - ML 신호 융합 + VaR 포지션 사이징")
+    logger.info("🚀 v7.6.2 FINAL - 멀티 전략 + VaR + CollectorStatus + Telegram 로그 조정")
     logger.info("📌 기능: 실시간 스캔, 이벤트 알림, Telegram 자연어 명령어")
     logger.info("📱 Telegram: '현황', '신호', '삼전' → 종합 분석 리포트")
     logger.info("=" * 70)
@@ -468,7 +527,12 @@ async def main() -> None:
     startup_details: Dict[str, Any] = {}
 
     try:
-        # 거시 데이터 초기 수집
+        set_alert_handler(send_error_alert)
+        logger.info("✅ Telegram 알림 핸들러 연결 완료")
+
+        collector_status.register("system", freshness_seconds=None)
+        logger.info("✅ CollectorStatus 관리자 초기화 완료")
+
         logger.info("📊 거시 데이터 초기 수집 중...")
         await fetch_macro_data(force=True)
         macro = get_cached_macro()
@@ -517,23 +581,16 @@ async def main() -> None:
         log_event("MONITOR_STARTED", {"count": startup_details['ticker_count']})
         debug_tower.log("SYSTEM", "MONITOR_STARTED", {"count": startup_details['ticker_count']})
 
-        # RegimeManager 시작
         await regime_manager.start()
         logger.info("✅ RegimeManager 시작됨 (60초 간격 국면 갱신)")
         debug_tower.log("SYSTEM", "REGIME_MANAGER_STARTED", {})
 
-        # ============================================================
-        # 🔥 v7.4.0: FeedbackLearner 생성 및 DeepAnalyzer 주입
-        # ============================================================
         feedback_learner = FeedbackLearner(kiwoom_connector=_kiwoom, db_manager=_db)
-        # (선택) 기존 학습된 모델이 있다면 __init__에서 자동 로드됨
-
         analyzer = DeepAnalyzer(db_manager=_db, feedback_learner=feedback_learner)
         await analyzer.load_weights()
 
         sender = TelegramSender()
 
-        # DART 및 뉴스 크롤러 초기화 (종합 분석 리포트용)
         dart_api_key = os.getenv("DART_API_KEY")
         if dart_api_key:
             dart_connector = DartConnector(api_key=dart_api_key)
@@ -550,9 +607,6 @@ async def main() -> None:
         daily_reporter = DailyReportGenerator(db_manager=_db, telegram_sender=sender)
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=_db, kiwoom_connector=_kiwoom)
 
-        # ============================================================
-        # TelegramCommandHandler 생성 및 의존성 주입
-        # ============================================================
         _telegram_cmd = TelegramCommandHandler(
             token=os.getenv("TELEGRAM_BOT_TOKEN"),
             chat_id=os.getenv("TELEGRAM_CHAT_ID"),
@@ -567,9 +621,11 @@ async def main() -> None:
             kiwoom=_kiwoom
         )
         await _telegram_cmd.start()
+        # 🔥 Telegram 디버그 로그 레벨을 INFO로 상향 (Bad Gateway 등 노이즈 억제)
+        logging.getLogger("telegram.ext").setLevel(logging.INFO)
+        logging.getLogger("telegram.request").setLevel(logging.INFO)
         logger.info("📱 Telegram 자연어 명령어 + 종합 분석 리포트 활성화")
 
-        # 스케줄러 등록
         _scheduler = SchedulerManager()
         _scheduler.add_job_with_retry(
             run_daily_report,
@@ -610,7 +666,6 @@ async def main() -> None:
             max_retries=3,
             retry_delay=5
         )
-        # 거시 데이터 갱신 (매일 08:00)
         _scheduler.add_job_with_retry(
             run_macro_update,
             CronTrigger(hour=8, minute=0, timezone="Asia/Seoul"),
@@ -619,18 +674,25 @@ async def main() -> None:
             retry_delay=5
         )
         _scheduler.start()
-        startup_details['job_count'] = 6  # ML 추가로 1개 증가
+        startup_details['job_count'] = 6
         logger.info(f"⏰ 스케줄러 등록 완료 (총 {startup_details['job_count']}개 작업)")
         log_event("SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
         debug_tower.log("SYSTEM", "SCHEDULER_STARTED", {"jobs": startup_details['job_count']})
 
-        # 워커 시작
         _worker_tasks = []
+        _all_tasks = []
         for i in range(2):
             task = asyncio.create_task(strategy_worker(i + 1, analyzer, _db, sender))
             _worker_tasks.append(task)
+            _all_tasks.append(task)
 
         _health_task = asyncio.create_task(start_health_server())
+        _all_tasks.append(_health_task)
+
+        if hasattr(analyzer, 'portfolio_manager'):
+            pm_task = analyzer.portfolio_manager._update_task
+            if pm_task:
+                _all_tasks.append(pm_task)
 
         startup_success = True
         await send_startup_notification(True, startup_details)
@@ -709,21 +771,22 @@ async def main() -> None:
             except:
                 pass
 
-        if _health_task and not _health_task.done():
-            _health_task.cancel()
+        if _all_tasks:
+            logger.info(f"⏳ {len(_all_tasks)}개 태스크 종료 대기 중...")
+            for task in _all_tasks:
+                if not task.done():
+                    task.cancel()
             try:
-                await _health_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(
+                    asyncio.gather(*_all_tasks, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ 일부 태스크가 5초 내에 종료되지 않음")
+            logger.info("✅ 모든 태스크 종료 완료")
 
-        if _worker_tasks:
-            for t in _worker_tasks:
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except asyncio.CancelledError:
-                        pass
+        if hasattr(analyzer, 'portfolio_manager'):
+            await analyzer.portfolio_manager.stop()
 
         if _telegram_cmd:
             await _telegram_cmd.stop()
@@ -737,11 +800,25 @@ async def main() -> None:
         if _scheduler:
             _scheduler.shutdown()
 
-        debug_tower.flush()
+        try:
+            summary = collector_status.get_summary()
+            logger.info(f"📊 수집기 상태 요약: 건강 {summary['healthy']}/{summary['total']}, 신선 {summary['fresh']}/{summary['total']}")
+            if summary['unhealthy'] > 0:
+                unhealthy = [name for name, s in summary['collectors'].items() if not s['is_healthy']]
+                logger.warning(f"⚠️ 비정상 수집기: {', '.join(unhealthy)}")
+        except Exception as e:
+            logger.debug(f"CollectorStatus 요약 실패: {e}")
 
+        if _original_exception_handlers:
+            try:
+                restore_exception_handler(_original_exception_handlers)
+                logger.info("✅ 전역 예외 핸들러 복원 완료")
+            except Exception as e:
+                logger.debug(f"⚠️ 예외 핸들러 복원 실패: {e}")
+
+        debug_tower.flush()
         await asyncio.sleep(0.2)
         logger.info("✅ 시스템 안전하게 종료 완료")
-
 
 if __name__ == "__main__":
     try:

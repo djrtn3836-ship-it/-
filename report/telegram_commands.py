@@ -56,7 +56,10 @@ class TelegramCommandHandler:
 
         await self.app.initialize()
         await self.app.start()
-        await self.app.updater.start_polling()
+        # 🔥 allowed_updates 추가로 불필요한 업데이트 타입 제외
+        await self.app.updater.start_polling(
+            allowed_updates=["message", "callback_query"]
+        )
 
         self._running = True
         logger.info("✅ Telegram 봇 시작됨 (v7.3.0)")

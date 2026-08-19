@@ -1,0 +1,21 @@
+# config/risk_config.yaml - 포트폴리오 VaR 설정
+# v7.6.0 FINAL
+
+var:
+  confidence: 0.95          # 신뢰수준 (95%)
+  num_simulations: 10000    # Monte Carlo 시뮬레이션 횟수
+  lookback_days: 252        # 과거 데이터 일수 (1년)
+  update_interval_seconds: 300  # 5분마다 포트폴리오 VaR 갱신
+
+thresholds:
+  # 포트폴리오 VaR 기준 글로벌 리스크 패널티
+  # var_95가 해당 %를 초과하면 risk_adjustment_factor 적용
+  severe: 5.0    # 5% 이상 → 0.50배
+  high: 3.0      # 3% 이상 → 0.75배
+  medium: 1.5    # 1.5% 이상 → 0.90배
+  # 1.5% 미만 → 1.00배 (패널티 없음)
+
+alerts:
+  # Telegram 알림 임계값
+  warn_var: 3.0   # VaR 3% 초과 시 경고
+  critical_var: 5.0  # VaR 5% 초과 시 위험 알림

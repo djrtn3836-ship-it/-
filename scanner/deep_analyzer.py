@@ -1,9 +1,8 @@
 """
-scanner/deep_analyzer.py - v7.5.0 FINAL (멀티 전략 라우터 + ML/VaR 저장)
-- StrategyRouter를 통해 3개 전략(추세/역추세/돌파) 병렬 실행 및 점수 집계 (30% 가중치)
-- 기존 ML 점수(18%), Base(42%), 모멘텀(8%), 감성(2%) 융합
-- 최종 결과에 ml_score, risk_adjustment_factor(VaR) 포함
+scanner/deep_analyzer.py - v7.6.0 FINAL (설정 중앙화 + PortfolioManager 연동)
+- 모든 하드코딩 값을 config.yaml에서 로드 (trading_* 키)
 - ATR=0 방어, Almgren-Chriss 시장 충격, 3분할 체결, 4대 평가, 트레일링 스탑 100% 포함
+- PortfolioManager 연동 (v7.6.0)
 """
 
 import math
@@ -16,6 +15,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
 from core.logger import setup_logger
+from core.config import get_config
 from data.db_manager import DatabaseManager
 from data.news_crawler import NewsCrawler
 from filters.macro_filter import MacroFilter
@@ -28,8 +28,10 @@ from core.debug_tower import debug_tower
 from validation.execution_simulator import RealisticExecutionSimulator
 from orchestrator.strategy_router import StrategyRouter
 from risk.var_calculator import VaRCalculator
+from orchestrator.portfolio_manager import PortfolioManager
 
 logger = setup_logger("analyzer")
+config = get_config()
 
 CALIBRATION_FILE = Path(__file__).parent.parent / "config" / "calibration_config.json"
 
@@ -61,42 +63,51 @@ class DeepAnalyzer:
 
         self.exec_sim = RealisticExecutionSimulator(max_slippage_bps=100.0, num_slices=3)
 
-        self.max_hold_hours = 2.0
-        self.trail_aggressive_threshold = 5.0
-        self.atr_multiplier_stop = 2.0
-        self.atr_multiplier_trail = 1.5
-        self.atr_spike_threshold = 0.3
+        # 🔥 v7.6.0: 모든 설정을 config에서 로드
+        self.max_hold_hours = config.get_float("trading_max_hold_hours", 2.0)
+        self.trail_aggressive_threshold = config.get_float("trading_trail_aggressive_threshold", 5.0)
+        self.atr_multiplier_stop = config.get_float("trading_atr_multiplier_stop", 2.0)
+        self.atr_multiplier_trail = config.get_float("trading_atr_multiplier_trail", 1.5)
+        self.atr_spike_threshold = config.get_float("trading_atr_spike_threshold", 0.3)
 
-        # v7.5.0: ML 가중치 재조정 (전략 추가로 인해 22% -> 18%)
-        self.momentum_weight = 0.08
-        self.ml_weight = 0.18
-        self.sentiment_weight = 0.02
-        self.base_weight = 0.42
-        self.strategy_weight = 0.30  # 멀티 전략 점수 가중치
+        self.momentum_weight = config.get_float("trading_momentum_weight", 0.08)
+        self.ml_weight = config.get_float("trading_ml_weight", 0.18)
+        self.sentiment_weight = config.get_float("trading_sentiment_weight", 0.02)
+        self.base_weight = config.get_float("trading_base_weight", 0.42)
+        self.strategy_weight = config.get_float("trading_strategy_weight", 0.30)
 
         self._load_calibration_config()
 
-        # 🔥 v7.5.0: 전략 라우터 및 VaR 계산기 초기화
         self.strategy_router = StrategyRouter()
-        self.var_calc = VaRCalculator(confidence=0.95, window=252)
+        self.var_calc = VaRCalculator(
+            confidence=config.get_float("risk_var_confidence", 0.95),
+            window=config.get_int("risk_var_lookback_days", 252)
+        )
+
+        self.portfolio_manager = PortfolioManager()
+        try:
+            asyncio.create_task(self.portfolio_manager.start())
+            logger.info("✅ PortfolioManager 백그라운드 갱신 시작됨")
+        except RuntimeError:
+            logger.warning("⚠️ 이벤트 루프 없음, PortfolioManager 시작 보류")
 
     def _load_calibration_config(self):
         default = {
-            "FILL_RATIO_REJECT": 0.30,
-            "FILL_RATIO_REDUCE": 0.70,
-            "ORDER_VOLUME_RATIO": 0.008,
-            "ORDER_VOLUME_MIN": 10,
-            "ORDER_VOLUME_MAX": 500,
+            "FILL_RATIO_REJECT": config.get_float("trading_fill_ratio_reject", 0.30),
+            "FILL_RATIO_REDUCE": config.get_float("trading_fill_ratio_reduce", 0.70),
+            "ORDER_VOLUME_RATIO": config.get_float("trading_order_volume_ratio", 0.008),
+            "ORDER_VOLUME_MIN": config.get_int("trading_order_volume_min", 10),
+            "ORDER_VOLUME_MAX": config.get_int("trading_order_volume_max", 500),
         }
         if CALIBRATION_FILE.exists():
             try:
                 with open(CALIBRATION_FILE, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    self.FILL_RATIO_REJECT = config.get("FILL_RATIO_REJECT", default["FILL_RATIO_REJECT"])
-                    self.FILL_RATIO_REDUCE = config.get("FILL_RATIO_REDUCE", default["FILL_RATIO_REDUCE"])
-                    self.ORDER_VOLUME_RATIO = config.get("ORDER_VOLUME_RATIO", default["ORDER_VOLUME_RATIO"])
-                    self.ORDER_VOLUME_MIN = config.get("ORDER_VOLUME_MIN", default["ORDER_VOLUME_MIN"])
-                    self.ORDER_VOLUME_MAX = config.get("ORDER_VOLUME_MAX", default["ORDER_VOLUME_MAX"])
+                    cfg = json.load(f)
+                    self.FILL_RATIO_REJECT = cfg.get("FILL_RATIO_REJECT", default["FILL_RATIO_REJECT"])
+                    self.FILL_RATIO_REDUCE = cfg.get("FILL_RATIO_REDUCE", default["FILL_RATIO_REDUCE"])
+                    self.ORDER_VOLUME_RATIO = cfg.get("ORDER_VOLUME_RATIO", default["ORDER_VOLUME_RATIO"])
+                    self.ORDER_VOLUME_MIN = cfg.get("ORDER_VOLUME_MIN", default["ORDER_VOLUME_MIN"])
+                    self.ORDER_VOLUME_MAX = cfg.get("ORDER_VOLUME_MAX", default["ORDER_VOLUME_MAX"])
                     logger.info(f"✅ Calibration 설정 로드: REJECT={self.FILL_RATIO_REJECT:.1%}, REDUCE={self.FILL_RATIO_REDUCE:.1%}")
                     return
             except Exception as e:
@@ -499,7 +510,7 @@ class DeepAnalyzer:
             return default
 
     # ============================================================
-    # 🔥 v7.5.0 메인 분석 (멀티 전략 + VaR 포함)
+    # 🔥 v7.6.0 메인 분석 (PortfolioManager 연동 + config 적용)
     # ============================================================
     async def analyze(self, stock: Dict) -> Dict:
         try:
@@ -554,7 +565,7 @@ class DeepAnalyzer:
                     logger.debug(f"⚠️ ML 예측 실패 ({ticker}): {e}")
                     ml_score = 0.5
 
-            # 3. 🔥 v7.5.0: 멀티 전략 점수 (StrategyRouter)
+            # 3. 멀티 전략 점수 (StrategyRouter)
             strategy_data = {
                 'ticker': ticker,
                 'price': current_price,
@@ -572,7 +583,7 @@ class DeepAnalyzer:
             strategy_action = strategy_result['final_action']
             strategy_confidence = strategy_result['final_confidence']
 
-            # 4. 최종 점수 융합 (Base + ML + 전략 + 모멘텀 + 감성)
+            # 4. 최종 점수 융합 (config 가중치 적용)
             final_score = (
                 base_score * self.base_weight +
                 momentum_score * self.momentum_weight +
@@ -600,7 +611,7 @@ class DeepAnalyzer:
                 except Exception as e:
                     logger.debug(f"⚠️ VaR 계산 실패 ({ticker}): {e}")
 
-            # 6. 액션 결정 (전략 결과 우선, 점수로 보정)
+            # 6. 액션 결정 (전략 결과 우선)
             if strategy_action in ['BUY', 'SELL'] and strategy_confidence > 0.6:
                 final_action = strategy_action
                 final_confidence = strategy_confidence
@@ -683,7 +694,7 @@ class DeepAnalyzer:
             }
 
             # ============================================================
-            # 8. 체결 시뮬레이터 (기존 유지)
+            # 8. 체결 시뮬레이터
             # ============================================================
             orderbook = stock.get('orderbook', {})
             if orderbook and result["action"] in ["BUY", "SELL"]:
@@ -725,7 +736,7 @@ class DeepAnalyzer:
                     result["negatives"].append(f"⚠️ 체결 불가: {sim_result.reason}")
 
             # ============================================================
-            # 9. 포지션 진입 처리
+            # 9. 포지션 진입 처리 (v7.6.0: PortfolioManager 연동)
             # ============================================================
             if result["action"] in ["BUY", "SELL"]:
                 async with self._lock:
@@ -759,11 +770,33 @@ class DeepAnalyzer:
                         result["tp2"] = tp2
                         result["tp3"] = tp3
 
+                        try:
+                            self.portfolio_manager.update_position(
+                                ticker=ticker,
+                                price=current_price,
+                                qty=100,
+                                entry_price=entry_price_f,
+                                action=result["action"]
+                            )
+                            logger.debug(f"📈 {ticker} PortfolioManager에 포지션 등록 완료")
+                        except Exception as e:
+                            logger.warning(f"⚠️ PortfolioManager 업데이트 실패: {e}")
+
             elif ticker in self.trailing_stops:
                 async with self._lock:
                     state = self.trailing_stops.get(ticker)
                     if state:
                         state["last_price"] = current_price
+                    try:
+                        self.portfolio_manager.update_position(
+                            ticker=ticker,
+                            price=current_price,
+                            qty=0,
+                            action='HOLD'
+                        )
+                    except Exception as e:
+                        logger.debug(f"⚠️ PortfolioManager 가격 업데이트 실패: {e}")
+
                 event = await self._update_trailing_stop(ticker, current_price, atr, tech_data, imbalance)
                 if event:
                     debug_tower.log(ticker, "EVENT_GENERATED", {"event": event['action']}, trace_id)
@@ -798,4 +831,14 @@ class DeepAnalyzer:
         async with self._lock:
             if ticker in self.trailing_stops:
                 del self.trailing_stops[ticker]
-                logger.info(f"🗑️ {ticker} 트레일링 스탑 상태 제거")
+                try:
+                    self.portfolio_manager.update_position(
+                        ticker=ticker,
+                        price=0,
+                        qty=0,
+                        action='EXIT'
+                    )
+                    logger.info(f"🗑️ {ticker} 트레일링 스탑 및 포트폴리오 제거")
+                except Exception as e:
+                    logger.warning(f"⚠️ PortfolioManager 포지션 제거 실패: {e}")
+                debug_tower.log(ticker, "CLEAR_STOP", {})

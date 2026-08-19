@@ -64,3 +64,43 @@ position_sizing:
 telegram:
   enabled: true
   # chat_id는 .env에서 로드됨
+
+# config/config.yaml - v7.0 (설정 중앙화)
+
+# 기존 설정 (WebSocket, Rate Limit 등)은 그대로 유지
+# 아래는 신규 추가되는 트레이딩/전략/리스크 설정
+
+trading:
+  # DeepAnalyzer 기본값
+  max_hold_hours: 2.0
+  trail_aggressive_threshold: 5.0
+  atr_multiplier_stop: 2.0
+  atr_multiplier_trail: 1.5
+  atr_spike_threshold: 0.3
+  
+  # 가중치 (ML/전략 등)
+  momentum_weight: 0.08
+  ml_weight: 0.18
+  sentiment_weight: 0.02
+  base_weight: 0.42
+  strategy_weight: 0.30
+
+  # 체결/주문량
+  fill_ratio_reject: 0.30
+  fill_ratio_reduce: 0.70
+  order_volume_ratio: 0.008
+  order_volume_min: 10
+  order_volume_max: 500
+
+strategy:
+  # 전략별 기본 가중치 (strategies.yaml에서 덮어쓰기 가능)
+  default_trend_weight: 0.40
+  default_reversal_weight: 0.30
+  default_breakout_weight: 0.30
+
+risk:
+  # VaR 기본값 (portfolio_var.py에서 사용)
+  var_confidence: 0.95
+  var_num_simulations: 10000
+  var_lookback_days: 252
+  var_update_interval: 300

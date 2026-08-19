@@ -1,14 +1,19 @@
 """
-strategy/breakout_strategy.py - v1.0 FINAL (돌파/모멘텀 전략)
+strategy/breakout_strategy.py - v1.2 FINAL (config 기반 가중치)
+- config에서 기본 가중치를 읽어옴 (strategy_default_breakout_weight)
 - 52주 신고가/신저가, 거래량 급증, 변동성 돌파 기반
-- 강한 모멘텀 신호 포착
 """
 
 from typing import Dict, Any
-from .base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy, config
+
+DEFAULT_WEIGHT_KEY = "strategy_default_breakout_weight"
+
 
 class BreakoutStrategy(BaseStrategy):
-    def __init__(self, weight: float = 0.30):
+    def __init__(self, weight: float = None):
+        if weight is None:
+            weight = config.get_float(DEFAULT_WEIGHT_KEY, 0.30)
         self._weight = weight
 
     @property
@@ -20,20 +25,28 @@ class BreakoutStrategy(BaseStrategy):
         return self._weight
 
     def analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        price = data.get('price', 0.0)
+        price = self._safe_get(data, 'price', 0.0)
         tech = data.get('tech_data', {})
-        high_52w = data.get('high_52w', price * 1.2)
-        low_52w = data.get('low_52w', price * 0.8)
-        volume_ratio = tech.get('volume_ratio', 1.0)
-        atr = data.get('atr', price * 0.02)
-        regime = data.get('regime', 'Sideways')
+        high_52w = self._safe_get(data, 'high_52w', price * 1.2 if price > 0 else 0.0)
+        low_52w = self._safe_get(data, 'low_52w', price * 0.8 if price > 0 else 0.0)
+        volume_ratio = self._safe_get(tech, 'volume_ratio', 1.0)
+        atr = self._safe_get(data, 'atr', price * 0.02 if price > 0 else 0.0)
+        regime = self._safe_get(data, 'regime', 'Sideways')
+
+        if price <= 0 or high_52w <= 0:
+            return {
+                'score': 0.5,
+                'action': 'HOLD',
+                'confidence': 0.3,
+                'reason': '가격 또는 52주 데이터 부족',
+                'details': {'high_52w': high_52w, 'low_52w': low_52w}
+            }
 
         score = 0.5
         action = 'HOLD'
         confidence = 0.5
         reasons = []
 
-        # 1. 52주 신고가/신저가 돌파
         if price >= high_52w * 0.98:
             score += 0.25
             reasons.append("52주 신고가 근접 (돌파 임박)")
@@ -44,7 +57,6 @@ class BreakoutStrategy(BaseStrategy):
             score -= 0.25
             reasons.append("52주 신저가 근접 (하방 위험)")
 
-        # 2. 거래량 급증 (돌파 시 동반)
         if volume_ratio > 2.0 and price > tech.get('ema20', price):
             score += 0.15
             reasons.append(f"거래량 급증 (×{volume_ratio:.1f})")
@@ -52,19 +64,16 @@ class BreakoutStrategy(BaseStrategy):
             score += 0.05
             reasons.append(f"거래량 증가 (×{volume_ratio:.1f})")
 
-        # 3. ATR 기반 변동성 돌파
-        if atr > 0:
+        if atr > 0 and price > 0:
             atr_ratio = atr / price
             if atr_ratio > 0.03:
                 score += 0.10
                 reasons.append(f"변동성 확대 (ATR {atr_ratio:.2%})")
 
-        # 4. 국면 가속 (Bull에서 강화)
         if regime == 'Bull' and score > 0.6:
             score += 0.10
             reasons.append("상승 국면에서 모멘텀 가속")
 
-        # 5. 액션 결정
         if score >= 0.75:
             action = 'BUY'
             confidence = min(0.95, 0.55 + (score - 0.75) * 1.6)

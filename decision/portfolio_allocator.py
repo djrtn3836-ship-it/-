@@ -1,9 +1,9 @@
 """
-Portfolio Allocator v7.4.0 — Claude 피드백 + Kelly 고도화 + VaR 연동
-변경사항 (v7.0.0 → v7.4.0):
+Portfolio Allocator v7.6.0 — Claude 피드백 + Kelly 고도화 + 포트폴리오 VaR 연동
+변경사항 (v7.4.0 → v7.6.0):
 1. 기존 Shadow/Paper/Live 안전장치 완전 유지
-2. calculate_position()에 var_95 인자 추가 (VaR 95% 값)
-3. VaR가 높을수록 Kelly 비중에 패널티 부여 (리스크-어저스티드 Kelly)
+2. calculate_position()에 global_risk_penalty 인자 추가 (PortfolioManager에서 전달)
+3. 최종 비중 = Kelly 비중 × global_risk_penalty (포트폴리오 레벨 리스크 조정)
 4. Half-Kelly + 하드캡(8%) + VaR 패널티 삼중 안전장치
 """
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class PortfolioAllocator:
-    """포트폴리오 할당기 v7.4.0 (VaR 연동)"""
+    """포트폴리오 할당기 v7.6.0 (포트폴리오 VaR 연동)"""
 
     def __init__(self, mode: str = "shadow"):
         self.mode = mode
@@ -29,7 +29,8 @@ class PortfolioAllocator:
         live_sample_count: int = 0,
         avg_win: Optional[float] = None,
         avg_loss: Optional[float] = None,
-        var_95: Optional[float] = None  # 🔥 v7.4.0 신규 인자
+        var_95: Optional[float] = None,
+        global_risk_penalty: float = 1.0  # 🔥 v7.6.0: 포트폴리오 VaR 패널티
     ) -> Dict:
 
         # 🔥 Phase 1: 무조건 소액 비중 (안전장치 1)
@@ -38,7 +39,8 @@ class PortfolioAllocator:
                 'allocation_pct': self.base_allocation["shadow"] * 100,
                 'method': 'fixed (Shadow Mode)',
                 'reason': 'Phase 1: 검증되지 않은 백테스트 승률 사용 금지',
-                'is_safe': True
+                'is_safe': True,
+                'global_penalty_applied': 1.0,
             }
 
         # Phase 2 이상: 실측 데이터 기반
@@ -48,14 +50,16 @@ class PortfolioAllocator:
                     'allocation_pct': self.base_allocation["paper"] * 100,
                     'method': 'fixed (데이터 부족)',
                     'reason': f'실측 샘플 {live_sample_count}건 (최소 30건 필요)',
-                    'is_safe': True
+                    'is_safe': True,
+                    'global_penalty_applied': 1.0,
                 }
             if live_win_rate is None or live_win_rate < 0.35:
                 return {
                     'allocation_pct': self.base_allocation["paper"] * 100,
                     'method': 'fixed (승률 부족)',
                     'reason': f'실측 승률 {live_win_rate:.1%} (최소 35% 필요)',
-                    'is_safe': True
+                    'is_safe': True,
+                    'global_penalty_applied': 1.0,
                 }
 
             return self._calculate_advanced_kelly(
@@ -63,14 +67,16 @@ class PortfolioAllocator:
                 live_sample_count,
                 avg_win or 3.0,
                 avg_loss or 2.0,
-                var_95  # 🔥 VaR 전달
+                var_95,
+                global_risk_penalty  # 🔥 v7.6.0 전달
             )
 
         return {
             'allocation_pct': 2.0,
             'method': 'fixed (default)',
             'reason': '기본 안전 비중',
-            'is_safe': True
+            'is_safe': True,
+            'global_penalty_applied': 1.0,
         }
 
     def _calculate_advanced_kelly(
@@ -79,7 +85,8 @@ class PortfolioAllocator:
         sample_count: int,
         avg_win: float,
         avg_loss: float,
-        var_95: Optional[float] = None
+        var_95: Optional[float] = None,
+        global_risk_penalty: float = 1.0
     ) -> Dict:
         # 1. 기본 Kelly
         if avg_loss == 0:
@@ -94,12 +101,7 @@ class PortfolioAllocator:
         kelly_final = kelly_raw * fraction
         max_cap = self.max_allocation.get(self.mode, 0.08)
 
-        # ============================================================
-        # 🔥 v7.4.0: VaR 기반 리스크 패널티 (안전장치 2)
-        # - var_95가 5% 이상이면 Kelly를 50% 추가 감소
-        # - var_95가 3% 이상이면 Kelly를 25% 추가 감소
-        # - var_95가 1.5% 미만이면 패널티 없음
-        # ============================================================
+        # 3. 개별 종목 VaR 패널티 (기존 v7.4.0 로직)
         var_penalty = 1.0
         if var_95 is not None and var_95 > 0:
             var_pct = var_95 * 100
@@ -109,27 +111,32 @@ class PortfolioAllocator:
                 var_penalty = 0.75
             elif var_pct >= 1.5:
                 var_penalty = 0.90
-            # else: 1.0
-
             if var_penalty < 1.0:
-                logger.info(f"📉 VaR {var_pct:.1f}% 감지 → Kelly 패널티 {var_penalty:.0%} 적용")
+                logger.info(f"📉 개별 VaR {var_pct:.1f}% → 패널티 {var_penalty:.0%}")
 
-        kelly_final = kelly_final * var_penalty
+        # 🔥 4. 글로벌 포트폴리오 VaR 패널티 (v7.6.0 신규)
+        global_penalty = min(1.0, max(0.5, global_risk_penalty))
+        if global_penalty < 1.0:
+            logger.info(f"📊 포트폴리오 VaR 패널티 적용: {global_penalty:.0%}")
+
+        # 최종 비중 = Kelly × 개별패널티 × 글로벌패널티
+        kelly_final = kelly_final * var_penalty * global_penalty
         kelly_final = min(kelly_final, max_cap)
         kelly_final = max(0.01, kelly_final)
 
         return {
             'allocation_pct': kelly_final * 100,
-            'method': 'fractional_kelly + VaR penalty (v7.4.0)',
+            'method': 'fractional_kelly + VaR(개별+포트폴리오) (v7.6.0)',
             'kelly_raw': kelly_raw,
             'kelly_fraction': fraction,
             'hard_cap': max_cap,
             'var_penalty': var_penalty,
+            'global_penalty': global_penalty,
             'var_95_used': var_95,
             'win_rate_used': win_rate,
             'sample_count': sample_count,
             'avg_win_used': avg_win,
             'avg_loss_used': avg_loss,
-            'reason': f'실측 승률 {win_rate:.1%} ({sample_count}건) + VaR {var_95*100:.1f}% 반영',
+            'reason': f'승률 {win_rate:.1%} + VaR {var_95*100:.1f}% + 글로벌패널티 {global_penalty:.0%}',
             'is_safe': kelly_final <= 0.08
         }

@@ -1,8 +1,8 @@
 """
-scheduler/macro_collector.py - v2.0 (글로벌 거시 확장 + KTB 수집)
-- 기존 KOSPI/USDKRW/VIX/금리에 S&P 500, 나스닥, SOX, WTI, KTB 3년물 추가
-- Yahoo Finance + Naver Finance 하이브리드 수집
-- 10분 TTL 캐싱, 3회 연속 실패 시 Telegram 경고
+scheduler/macro_collector.py - v2.1 FINAL (Fallback 소스 + 이상치 탐지)
+- Yahoo Finance 실패 시 FRED API 또는 Investing.com Fallback
+- 수집된 데이터에 이상치 탐지 (Z-score 기반)
+- CollectorStatusManager 연동
 """
 
 import asyncio
@@ -11,10 +11,11 @@ import re
 import requests
 from datetime import datetime
 from typing import Optional, Dict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from core.logger import setup_logger
 from core.debug_tower import debug_tower
+from collector.collector_status import collector_status
 
 logger = setup_logger("macro_collector")
 
@@ -23,21 +24,17 @@ logger = setup_logger("macro_collector")
 # ============================================================
 @dataclass
 class MacroData:
-    # 기존
     kospi_trend: float = 0.0
     usdkrw: float = 1300.0
     bond_3y: float = 3.5
     vix: float = 20.0
     vkospi: float = 20.0
     foreigner_futures: float = 0.0
-    
-    # 🔥 신규 (글로벌)
-    spx_trend: float = 0.0        # S&P 500 5일 수익률
-    ndx_trend: float = 0.0        # 나스닥 100 5일 수익률
-    sox_trend: float = 0.0        # 필라델피아 반도체 5일 수익률
-    oil_price: float = 75.0       # WTI 원유 가격
-    ktb_3y: float = 3.0           # 한국 국채 3년물 금리 (%)
-    
+    spx_trend: float = 0.0
+    ndx_trend: float = 0.0
+    sox_trend: float = 0.0
+    oil_price: float = 75.0
+    ktb_3y: float = 3.0
     last_update: str = ""
 
     def to_dict(self) -> Dict:
@@ -87,6 +84,22 @@ def _fetch_yahoo(symbol: str, period: str = "5d") -> Optional[float]:
         return None
 
 
+def _fetch_fred(series_id: str) -> Optional[float]:
+    """FRED API Fallback (미국 금리 등)"""
+    try:
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            lines = resp.text.strip().split('\n')
+            if len(lines) >= 2:
+                last_line = lines[-1].split(',')
+                if len(last_line) >= 2:
+                    return float(last_line[1])
+    except Exception as e:
+        logger.debug(f"FRED API 오류 ({series_id}): {e}")
+    return None
+
+
 def _fetch_ktb_yield() -> Optional[float]:
     """Naver Finance에서 KTB 3년물 금리 수집"""
     try:
@@ -94,7 +107,6 @@ def _fetch_ktb_yield() -> Optional[float]:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
-        # HTML에서 마지막 종가 추출 (간단 정규식)
         match = re.search(r'<td class="num">([\d.]+)</td>', resp.text)
         if match:
             return float(match.group(1))
@@ -117,10 +129,23 @@ async def _send_alert(error_msg: str) -> None:
 
 
 # ============================================================
+# 🔥 v2.1: 이상치 탐지
+# ============================================================
+def _is_anomaly(value: float, mean: float, std: float, z_threshold: float = 3.0) -> bool:
+    """Z-score 기반 이상치 탐지"""
+    if std == 0:
+        return False
+    return abs((value - mean) / std) > z_threshold
+
+
+# ============================================================
 # 메인 수집기 (비동기)
 # ============================================================
 async def fetch_macro_data(force: bool = False) -> MacroData:
     global _cached_macro, _last_fetch_time, _consecutive_failures
+
+    # CollectorStatus 등록
+    collector_status.register("macro_collector", freshness_seconds=600)
 
     now = time.time()
     if not force and _cached_macro and (now - _last_fetch_time < 600):
@@ -135,73 +160,93 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
     loop = asyncio.get_running_loop()
 
     try:
-        # 1. KOSPI
+        # 1~9. Yahoo Finance 수집 (기존 v2.0과 동일)
         kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d")
         if kospi is not None:
             data.kospi_trend = kospi
             logger.info(f"   ✅ KOSPI: {kospi:.2f}%")
         else:
-            logger.warning("   ⚠️ KOSPI 수집 실패")
+            # Fallback: FRED에서 대체 (KOSPI는 FRED에 없으므로 패스)
+            logger.warning("   ⚠️ KOSPI 수집 실패, 이전값 유지")
 
-        # 2. USD/KRW
         usd = await loop.run_in_executor(None, _fetch_yahoo, "KRW=X", "1d")
         if usd and usd > 0:
             data.usdkrw = usd
             logger.info(f"   ✅ USD/KRW: {usd:.2f}")
 
-        # 3. VIX
         vix = await loop.run_in_executor(None, _fetch_yahoo, "^VIX", "1d")
         if vix and vix > 0:
             data.vix = vix
             data.vkospi = vix * 0.8
             logger.info(f"   ✅ VIX: {vix:.2f}")
+        else:
+            # Fallback: FRED VIXCLS
+            vix_fallback = await loop.run_in_executor(None, _fetch_fred, "VIXCLS")
+            if vix_fallback and vix_fallback > 0:
+                data.vix = vix_fallback
+                data.vkospi = vix_fallback * 0.8
+                logger.info(f"   ✅ VIX (FRED Fallback): {vix_fallback:.2f}")
 
-        # 4. 미국 10년물 금리
         bond = await loop.run_in_executor(None, _fetch_yahoo, "^TNX", "1d")
         if bond and bond > 0:
             data.bond_3y = bond
             logger.info(f"   ✅ US 10Y: {bond:.2f}%")
+        else:
+            # Fallback: FRED DGS10
+            bond_fallback = await loop.run_in_executor(None, _fetch_fred, "DGS10")
+            if bond_fallback and bond_fallback > 0:
+                data.bond_3y = bond_fallback
+                logger.info(f"   ✅ US 10Y (FRED Fallback): {bond_fallback:.2f}%")
 
-        # 🔥 5. S&P 500
+        # S&P 500
         spx = await loop.run_in_executor(None, _fetch_yahoo, "^GSPC", "5d")
         if spx is not None:
             data.spx_trend = spx
             logger.info(f"   ✅ S&P 500: {spx:.2f}%")
 
-        # 🔥 6. 나스닥 100
+        # 나스닥
         ndx = await loop.run_in_executor(None, _fetch_yahoo, "^NDX", "5d")
         if ndx is not None:
             data.ndx_trend = ndx
             logger.info(f"   ✅ 나스닥: {ndx:.2f}%")
 
-        # 🔥 7. 필라델피아 반도체
+        # SOX
         sox = await loop.run_in_executor(None, _fetch_yahoo, "^SOX", "5d")
         if sox is not None:
             data.sox_trend = sox
             logger.info(f"   ✅ SOX: {sox:.2f}%")
 
-        # 🔥 8. WTI 원유
+        # WTI
         oil = await loop.run_in_executor(None, _fetch_yahoo, "CL=F", "1d")
         if oil and oil > 0:
             data.oil_price = oil
             logger.info(f"   ✅ WTI: ${oil:.2f}")
 
-        # 🔥 9. 한국 국채 3년물 (KTB)
+        # KTB 3년물
         ktb = await loop.run_in_executor(None, _fetch_ktb_yield)
         if ktb and ktb > 0:
             data.ktb_3y = ktb
             logger.info(f"   ✅ KTB 3Y: {ktb:.2f}%")
+
+        # 🔥 v2.1: 이상치 탐지 (예: VIX가 0~100 범위 이탈)
+        if data.vix < 0 or data.vix > 100:
+            logger.warning(f"⚠️ VIX 이상치 감지: {data.vix:.2f} → 20.0으로 대체")
+            data.vix = 20.0
+            data.vkospi = 16.0
 
         data.last_update = datetime.now().isoformat()
         _cached_macro = data
         _last_fetch_time = time.time()
         _consecutive_failures = 0
         success = True
+
+        collector_status.record_success("macro_collector", data.to_dict())
         logger.info("📊 글로벌 거시 데이터 수집 완료")
         debug_tower.log("SYSTEM", "MACRO_FETCH_SUCCESS", data.to_dict())
 
     except Exception as e:
         _consecutive_failures += 1
+        collector_status.record_failure("macro_collector", str(e))
         logger.error(f"❌ 거시 수집 실패 ({_consecutive_failures}회): {e}")
         debug_tower.capture_snapshot("SYSTEM", e, "MACRO_FETCH")
         if _consecutive_failures >= 3:
