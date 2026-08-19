@@ -1,6 +1,15 @@
 """
-data/kiwoom_connector.py - v6.1.4 FINAL (register_realtime 중복 제거)
-- 기존 v6.1.3 + register_realtime 재시도 로직 정리
+data/kiwoom_connector.py - v6.1.5 FINAL (REG 재시도 3회, 간격 2초)
+- ThreadedResolver 적용 (DNS 오류 완전 차단)
+- connect() 호출 시 TCPConnector + ClientSession 완전 재생성
+- 외국인수급(ka10008) / 기관수급(ka10009) TR 완전 구현
+- _connect_lock으로 동시 연결/재연결 경쟁 조건 차단
+- REAL 메시지 배열 처리 추가 (파싱에러 해결)
+- WebSocket 재연결 시 _next_group_no 초기화 (그룹 번호 무한 증가 방지)
+- 토큰 갱신 실패 시 access_token=None으로 초기화하고 예외 발생
+- LOGIN 실패/WebSocket 종료 시 access_token 무효화
+- 디버그 관제탑 추가
+- _register_with_retry 재시도 3회, 간격 2초 (105110 대응)
 """
 
 import asyncio
@@ -27,6 +36,7 @@ config = get_config()
 
 DISCOVERED_KEYS_FILE = Path(__file__).parent.parent / "config" / "discovered_keys.json"
 
+
 class AsyncRateLimiter:
     def __init__(self, rate: float, per: float = 1.0):
         self.rate = rate
@@ -52,6 +62,7 @@ class AsyncRateLimiter:
                 self.tokens -= 1
             else:
                 self.tokens -= 1
+
 
 class KiwoomConnectorV512:
     REST_BASE_URL = "https://api.kiwoom.com"
@@ -89,7 +100,7 @@ class KiwoomConnectorV512:
         self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
         self._discovered_keys = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.1.4", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.1.5", "rate_limit": rate_limit})
 
     # ============================================================
     # 자가 적응 파서 (Dynamic Key Learning)
@@ -562,17 +573,20 @@ class KiwoomConnectorV512:
         logger.info("📡 WebSocket 연결 및 인증 완료")
 
     # ============================================================
-    # register_realtime (재시도 로직 포함, 중복 제거)
+    # register_realtime (재시도 로직 포함)
     # ============================================================
     async def _register_with_retry(self, ticker: str, handler: Callable, types: List[str]) -> bool:
-        for attempt in range(2):
+        """
+        REG 요청 재시도 (최대 3회, 간격 2초)
+        """
+        for attempt in range(3):
             try:
                 await self.register_realtime(ticker, handler, types)
                 return True
             except Exception as e:
-                if attempt == 0:
-                    logger.warning(f"⚠️ {ticker} REG 실패 (1차), 1초 후 재시도")
-                    await asyncio.sleep(1)
+                if attempt < 2:
+                    logger.warning(f"⚠️ {ticker} REG 실패 ({attempt+1}/3), 2초 후 재시도")
+                    await asyncio.sleep(2)
                 else:
                     log_error(f"REG 최종 실패 ({ticker})", e)
                     debug_tower.capture_snapshot(ticker, e, "REG")
@@ -590,41 +604,32 @@ class KiwoomConnectorV512:
             if not self._ws_logged_in:
                 return
 
-        # 🔥 재시도 루프 (최대 2회)
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                grp_no = self._group_allocator.get(ticker)
-                if grp_no is None:
-                    current_group_count = sum(1 for t, g in self._group_allocator.items() if g == str(self._next_group_no))
-                    if current_group_count >= self._group_max_size:
-                        self._next_group_no += 1
-                    grp_no = str(self._next_group_no)
-                    self._group_allocator[ticker] = grp_no
+        try:
+            grp_no = self._group_allocator.get(ticker)
+            if grp_no is None:
+                current_group_count = sum(1 for t, g in self._group_allocator.items() if g == str(self._next_group_no))
+                if current_group_count >= self._group_max_size:
+                    self._next_group_no += 1
+                grp_no = str(self._next_group_no)
+                self._group_allocator[ticker] = grp_no
 
-                self._realtime_handlers[ticker] = handler
-                self._subscribed_items[ticker] = types
+            self._realtime_handlers[ticker] = handler
+            self._subscribed_items[ticker] = types
 
-                subscribe_msg = {
-                    "trnm": "REG",
-                    "grp_no": grp_no,
-                    "refresh": "1",
-                    "data": [{"item": [ticker], "type": types}]
-                }
-                await self._ws.send(json.dumps(subscribe_msg))
-                log_event("REG_SENT", {"ticker": ticker, "group": grp_no})
-                logger.info(f"📡 REG 구독: {ticker}, 그룹: {grp_no}")
-                debug_tower.log(ticker, "REG_SENT", {"group": grp_no})
-                return  # 성공 시 종료
-
-            except Exception as e:
-                if attempt < max_retries:
-                    logger.warning(f"⚠️ {ticker} REG 실패 ({attempt+1}/{max_retries+1}), 1초 후 재시도")
-                    await asyncio.sleep(1)
-                else:
-                    logger.error(f"❌ {ticker} REG 최종 실패: {e}")
-                    debug_tower.log(ticker, "REG_FAIL", {"error": str(e)})
-                    return
+            subscribe_msg = {
+                "trnm": "REG",
+                "grp_no": grp_no,
+                "refresh": "1",
+                "data": [{"item": [ticker], "type": types}]
+            }
+            await self._ws.send(json.dumps(subscribe_msg))
+            log_event("REG_SENT", {"ticker": ticker, "group": grp_no})
+            logger.info(f"📡 REG 구독: {ticker}, 그룹: {grp_no}")
+            debug_tower.log(ticker, "REG_SENT", {"group": grp_no})
+        except Exception as e:
+            logger.error(f"❌ {ticker} REG 전송 실패: {e}")
+            debug_tower.log(ticker, "REG_FAIL", {"error": str(e)})
+            raise
 
     async def _acquire_rate_limit(self, api_id: str):
         await self._rate_limiters[api_id].acquire()

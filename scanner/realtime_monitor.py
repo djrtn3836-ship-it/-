@@ -1,26 +1,24 @@
 """
-scanner/realtime_monitor.py - v5.6.9 (RegimeManager 연동)
-- 구독 종목: 최대 500개
-- Queue 크기: 100,000
-- 쿨링(5분) + 방향 전환 시 즉시 전송 유지
-- 🔥 신규: scan()에서 RegimeManager.get_regime()을 호출하여 현재 시장 국면을 신호에 포함
-- 🔥 RegimeManager가 백그라운드에서 주기적으로 갱신하므로, 여기서는 캐싱/계산 로직 완전 제거 (단순화)
-- 🔥 디버그 관제탑 적용
+scanner/realtime_monitor.py - v5.7.0 FINAL (REG 요청 최적화 + 재시도 강화)
+- 등록 간격 0.05 → 0.15초로 증가 (초당 요청 수 제한 초과 방지)
+- 1차 등록 후 실패한 종목을 수집하여 3초 후 2차 재등록 시도
+- _register_with_retry 재시도 횟수 2→3회, 간격 1→2초
 """
 
 import asyncio
 import time
 from collections import deque
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from core.logger import setup_logger
 from core.config import get_config
 from data.stock_universe import get_universe
 from core.debug_tower import debug_tower
-from core.regime_manager import regime_manager  # 🔥 RegimeManager import
+from core.regime_manager import regime_manager
 
 logger = setup_logger("monitor")
 config = get_config()
+
 
 class RealtimeMonitor:
     DEFAULT_TICKERS = ["005930", "000660", "035420"]
@@ -50,10 +48,7 @@ class RealtimeMonitor:
         self.emergency_threshold = config.get_float("emergency_threshold", 0.05)
         self.max_subscriptions = 500
 
-        # 🔥 RegimeManager는 외부에서 관리하므로, 여기서는 캐시/인스턴스 불필요
-
     def _get_current_regime(self) -> str:
-        """RegimeManager에서 현재 국면 조회 (즉시 반환)"""
         return regime_manager.get_regime()
 
     async def start(self):
@@ -77,15 +72,54 @@ class RealtimeMonitor:
             self.tickers = self.DEFAULT_TICKERS
             self._name_cache = {t: f"종목_{t}" for t in self.tickers}
 
+        # ============================================================
+        # 🔥 v5.7.0: REG 등록 최적화 (간격 증가 + 실패 재시도)
+        # ============================================================
+        REGISTER_INTERVAL = 0.3
+        RETRY_INTERVAL = 0.2
+        RETRY_DELAY = 3.0  # 1차 완료 후 재시도 전 대기 시간
+
         self._subscribed_tickers.clear()
-        for ticker in self.tickers:
+        failed_tickers: List[str] = []
+
+        # 1차 등록
+        for idx, ticker in enumerate(self.tickers):
             try:
-                await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
-                self._subscribed_tickers.append(ticker)
-                await asyncio.sleep(0.05)
+                # 🔥 기존 등록 로직 (성공/실패 구분)
+                try:
+                    await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
+                    self._subscribed_tickers.append(ticker)
+                    logger.debug(f"✅ {ticker} 등록 성공 ({idx+1}/{len(self.tickers)})")
+                except Exception as e:
+                    logger.warning(f"⚠️ {ticker} 등록 실패: {e}")
+                    failed_tickers.append(ticker)
+
+                # 등록 간격 (0.15초)
+                await asyncio.sleep(REGISTER_INTERVAL)
+
             except Exception as e:
-                logger.error(f"❌ {ticker} 구독 실패: {e}")
-                debug_tower.capture_snapshot(ticker, e, "SUBSCRIBE")
+                logger.error(f"❌ {ticker} 등록 중 오류: {e}")
+                failed_tickers.append(ticker)
+
+        logger.info(f"✅ 1차 등록 완료: 성공 {len(self._subscribed_tickers)}개, 실패 {len(failed_tickers)}개")
+
+        # 2차 재등록 (실패한 종목만)
+        if failed_tickers:
+            logger.info(f"⏳ {len(failed_tickers)}개 종목 2차 재등록 시도 (3초 후)...")
+            await asyncio.sleep(RETRY_DELAY)
+
+            retry_success = 0
+            for ticker in failed_tickers:
+                try:
+                    await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
+                    self._subscribed_tickers.append(ticker)
+                    retry_success += 1
+                    logger.debug(f"✅ {ticker} 재등록 성공")
+                except Exception as e:
+                    logger.warning(f"⚠️ {ticker} 재등록 실패 (최종): {e}")
+                await asyncio.sleep(RETRY_INTERVAL)
+
+            logger.info(f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개")
 
         self._is_running = True
         self._last_scan_time = time.time()
@@ -172,9 +206,6 @@ class RealtimeMonitor:
             logger.error(f"❌ 데이터 핸들링 오류: {e}", exc_info=True)
             debug_tower.capture_snapshot(ticker, e, "MONITOR_HANDLER")
 
-    # ============================================================
-    # Imbalance 계산
-    # ============================================================
     def _calculate_imbalance(self, bids: List, asks: List) -> tuple:
         total_bid = sum(qty for _, qty in bids) if bids else 0
         total_ask = sum(qty for _, qty in asks) if asks else 0
@@ -189,9 +220,6 @@ class RealtimeMonitor:
             pressure = f"⚖️ 중립 ({imbalance:.1%})"
         return imbalance, pressure
 
-    # ============================================================
-    # 🔥 신호 스캔 (RegimeManager 연동)
-    # ============================================================
     async def scan(self) -> List[Dict]:
         if not self._is_running:
             return []
@@ -206,7 +234,6 @@ class RealtimeMonitor:
         if not changed_tickers:
             return []
 
-        # 🔥 RegimeManager에서 현재 국면 조회 (즉시 반환)
         regime = self._get_current_regime()
 
         for ticker in changed_tickers:
@@ -278,7 +305,7 @@ class RealtimeMonitor:
                     "timestamp": current_time,
                     "momentum": change_ratio,
                     "volume": data.get('volume', 0),
-                    "regime": regime,  # 🔥 RegimeManager에서 받은 국면 포함
+                    "regime": regime,
                     "flow": {},
                     "support_level": support_level,
                     "resistance_level": resistance_level,
@@ -290,9 +317,6 @@ class RealtimeMonitor:
         self._last_scan_time = current_time
         return detected
 
-    # ============================================================
-    # 재구독
-    # ============================================================
     async def resubscribe_all(self):
         if not self._subscribed_tickers:
             return
@@ -301,16 +325,13 @@ class RealtimeMonitor:
         for ticker in self._subscribed_tickers:
             try:
                 await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.15)  # 재구독 시에도 간격 유지
             except Exception as e:
                 logger.error(f"❌ 재구독 실패 ({ticker}): {e}")
                 debug_tower.capture_snapshot(ticker, e, "RESUBSCRIBE")
         logger.info(f"✅ 전체 종목 재구독 완료")
         debug_tower.log("SYSTEM", "RESUBSCRIBE_COMPLETE", {})
 
-    # ============================================================
-    # 유틸리티
-    # ============================================================
     def get_latest_price(self, ticker: str) -> Optional[float]:
         data = self._latest_data.get(ticker)
         return data.get('price') if data else None

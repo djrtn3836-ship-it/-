@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v7.6.2 FINAL (Telegram 로그 레벨 조정)
-- 기존 v7.6.1 + Telegram 디버그 로그 억제
+scanner_main.py - v7.6.4 FINAL (Ctrl+C 정상 동작 보장 + 플래그 기반 종료)
+- 시그널 핸들러에서 loop.stop() 제거, _shutdown_requested 플래그 사용
+- 메인 루프 while not _shutdown_requested: 로 변경
+- asyncio.run() 예외 처리 간소화 (RuntimeError 무시 불필요)
 """
 
 import asyncio
@@ -11,7 +13,7 @@ import signal
 import subprocess
 import traceback
 import time
-import logging  # 🔥 추가
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -77,6 +79,7 @@ _main_loop: Optional[asyncio.AbstractEventLoop] = None
 _health_task: Optional[asyncio.Task] = None
 _telegram_cmd: Optional[TelegramCommandHandler] = None
 _original_exception_handlers: Optional[Dict] = None
+_shutdown_requested: bool = False  # 🔥 v7.6.4: 종료 요청 플래그
 PID_FILE = Path(__file__).parent / "scanner.pid"
 MESSAGE_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=config.get_int("queue_maxsize", 100000))
 
@@ -144,24 +147,21 @@ def get_system_stats() -> Dict[str, Any]:
     }
 
 # ============================================================
-# 시그널 핸들러 (Windows/Unix 호환)
+# 🔥 v7.6.4: 시그널 핸들러 (플래그 기반, loop.stop 제거)
 # ============================================================
 def setup_signal_handlers():
     """
     SIGINT/SIGTERM 시그널 핸들러 등록 (Windows 호환)
-    - Windows: signal.signal 사용
-    - Unix: asyncio add_signal_handler 사용
+    - Ctrl+C 수신 시 _shutdown_requested 플래그만 true로 설정
+    - 메인 루프가 플래그를 감지하고 자연스럽게 종료됨
     """
+    global _shutdown_requested
     is_windows = sys.platform == "win32"
 
     def _signal_handler(sig, frame):
-        logger.info(f"📡 시그널 {sig} 수신 → 시스템 종료 시작...")
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.stop()
-        except Exception as e:
-            logger.warning(f"⚠️ 이벤트 루프 중지 실패: {e}")
+        global _shutdown_requested
+        _shutdown_requested = True
+        logger.info(f"📡 시그널 {sig} 수신 → 종료 플래그 설정 (시스템 정리 시작)")
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -329,7 +329,7 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
             MESSAGE_QUEUE.task_done()
 
         except asyncio.CancelledError:
-            logger.info(f"🛑 전략 Worker-{worker_id} 종료")
+            logger.info(f"🛑 전략 Worker-{worker_id} 종료 (Cancelled)")
             debug_tower.log("SYSTEM", f"WORKER_STOP_{worker_id}", {})
             break
         except DatabaseError as e:
@@ -400,7 +400,7 @@ async def send_startup_notification(success: bool, details: Optional[Dict] = Non
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v7.6.2 FINAL (Telegram 로그 조정)
+📊 <b>버전</b>: v7.6.4 FINAL (Ctrl+C 정상 작동)
 📈 <b>거시 지표</b>: KOSPI 5일 {macro.kospi_trend:.2f}% | USD/KRW {macro.usdkrw:.0f} | VIX {macro.vix:.1f}
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -488,7 +488,7 @@ async def start_health_server(host: str = '0.0.0.0', port: int = 8080) -> None:
 # 7. 메인 함수
 # ============================================================
 async def main() -> None:
-    global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time, _health_task, _telegram_cmd, _all_tasks, _original_exception_handlers
+    global _kiwoom, _monitor, _db, _start_time, _error_sender, _scheduler, _worker_tasks, _main_loop, _last_data_time, _health_task, _telegram_cmd, _all_tasks, _original_exception_handlers, _shutdown_requested
 
     if not is_trading_day():
         log_event("NON_TRADING_DAY", {"date": datetime.now().strftime("%Y-%m-%d")})
@@ -499,8 +499,8 @@ async def main() -> None:
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.6.2"})
-    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.6.2"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.6.4"})
+    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.6.4"})
 
     check_and_create_pid()
     load_dotenv(override=True)
@@ -518,7 +518,7 @@ async def main() -> None:
     logger.info("✅ 시그널 핸들러 등록 완료 (SIGINT/SIGTERM)")
 
     logger.info("=" * 70)
-    logger.info("🚀 v7.6.2 FINAL - 멀티 전략 + VaR + CollectorStatus + Telegram 로그 조정")
+    logger.info("🚀 v7.6.4 FINAL - Ctrl+C 정상 작동 + 플래그 기반 종료")
     logger.info("📌 기능: 실시간 스캔, 이벤트 알림, Telegram 자연어 명령어")
     logger.info("📱 Telegram: '현황', '신호', '삼전' → 종합 분석 리포트")
     logger.info("=" * 70)
@@ -621,7 +621,7 @@ async def main() -> None:
             kiwoom=_kiwoom
         )
         await _telegram_cmd.start()
-        # 🔥 Telegram 디버그 로그 레벨을 INFO로 상향 (Bad Gateway 등 노이즈 억제)
+        # Telegram 디버그 로그 레벨을 INFO로 상향
         logging.getLogger("telegram.ext").setLevel(logging.INFO)
         logging.getLogger("telegram.request").setLevel(logging.INFO)
         logger.info("📱 Telegram 자연어 명령어 + 종합 분석 리포트 활성화")
@@ -700,7 +700,8 @@ async def main() -> None:
         debug_tower.log("SYSTEM", "SYSTEM_READY", {})
 
         logger.info("🚀 메인 루프 진입 (Phoenix Watchdog 활성화)")
-        while True:
+        # 🔥 v7.6.4: 플래그 기반 루프 (Ctrl+C 수신 시 _shutdown_requested = True)
+        while not _shutdown_requested:
             try:
                 if not _kiwoom.is_connected():
                     await reconnect_and_resubscribe(_kiwoom, _monitor)
@@ -730,8 +731,8 @@ async def main() -> None:
                 await asyncio.sleep(1)
 
             except asyncio.CancelledError:
-                log_event("MAIN_LOOP_CANCELLED", {})
-                debug_tower.log("SYSTEM", "MAIN_LOOP_CANCELLED", {})
+                _shutdown_requested = True
+                logger.info("🛑 메인 루프 CancelledError 수신 → 종료")
                 break
             except Exception as e:
                 log_error("메인 루프 오류", e)
@@ -739,6 +740,7 @@ async def main() -> None:
                 await asyncio.sleep(5)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
+        _shutdown_requested = True
         log_event("SYSTEM_INTERRUPTED", {})
         logger.info("⏹ 종료 신호 수신")
         debug_tower.log("SYSTEM", "SYSTEM_INTERRUPTED", {})
