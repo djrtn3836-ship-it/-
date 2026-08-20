@@ -2,9 +2,8 @@
 regime/regime_detector.py - v5.2.0 FINAL (글로벌 매크로 + KOSPI 융합)
 """
 
-from datetime import datetime, timedelta
-from typing import Dict
 import logging
+from datetime import datetime, timedelta
 
 from scheduler.macro_collector import get_cached_macro
 
@@ -45,64 +44,72 @@ class KoreanSpecialFactors:
 class RegimeDetector:
     def __init__(self):
         self.korean = KoreanSpecialFactors()
-        self.current_regime = 'Sideways'
+        self.current_regime = "Sideways"
         self.current_date = datetime.now()
 
-    def detect(self, data: Dict) -> Dict:
+    def detect(self, data: dict) -> dict:
         macro = get_cached_macro()
         if data is None:
             data = {}
 
-        kospi = data.get('kospi_trend', macro.kospi_trend)
-        spx = data.get('spx_trend', macro.spx_trend)
-        ndx = data.get('ndx_trend', macro.ndx_trend)
-        sox = data.get('sox_trend', macro.sox_trend)
-        vix = data.get('vix', macro.vix)
-        oil = data.get('oil_price', macro.oil_price)
-        usdkrw = data.get('usdkrw', macro.usdkrw)
+        kospi = data.get("kospi_trend", macro.kospi_trend)
+        spx = data.get("spx_trend", macro.spx_trend)
+        ndx = data.get("ndx_trend", macro.ndx_trend)
+        sox = data.get("sox_trend", macro.sox_trend)
+        vix = data.get("vix", macro.vix)
+        oil = data.get("oil_price", macro.oil_price)
+        usdkrw = data.get("usdkrw", macro.usdkrw)
 
-        trend_score = (self._normalize(kospi, -3.0, 3.0) * 0.4 +
-                       self._normalize(spx, -3.0, 3.0) * 0.3 +
-                       self._normalize(sox, -5.0, 5.0) * 0.3)
+        trend_score = (
+            self._normalize(kospi, -3.0, 3.0) * 0.4
+            + self._normalize(spx, -3.0, 3.0) * 0.3
+            + self._normalize(sox, -5.0, 5.0) * 0.3
+        )
         risk_score = 1.0 - self._normalize(vix, 15.0, 35.0)
         oil_score = 1.0 - self._normalize(oil, 60.0, 100.0)
         fx_score = 1.0 - self._normalize(usdkrw, 1250.0, 1400.0)
 
         special_adjustment = 0.0
-        date = data.get('date', self.current_date)
+        date = data.get("date", self.current_date)
         if self.korean.is_futures_options_expiry(date):
             special_adjustment += 0.1
         if self.korean.is_dividend_ex_date(date):
             special_adjustment += 0.05
         program_imbalance = self.korean.get_program_trading_imbalance(
-            data.get('program_buy', 0), data.get('program_sell', 0)
+            data.get("program_buy", 0), data.get("program_sell", 0)
         )
         special_adjustment += program_imbalance * 0.1
 
         composite = (trend_score * 0.45 + risk_score * 0.30 + oil_score * 0.15 + fx_score * 0.10) + special_adjustment
 
         if composite >= 0.7:
-            regime = 'Bull'
+            regime = "Bull"
         elif composite >= 0.5:
-            regime = 'Sideways'
+            regime = "Sideways"
         elif composite >= 0.3:
-            regime = 'Correction'
+            regime = "Correction"
         elif composite >= 0.1:
-            regime = 'Bear'
+            regime = "Bear"
         else:
-            regime = 'Panic'
+            regime = "Panic"
 
         self.current_regime = regime
         return {
-            'regime': regime,
-            'score': composite,
-            'components': {'trend': trend_score, 'risk': risk_score, 'oil': oil_score, 'fx': fx_score, 'korean_special': special_adjustment},
-            'korean_factors': {
-                'futures_options_expiry': self.korean.is_futures_options_expiry(date),
-                'dividend_ex_date': self.korean.is_dividend_ex_date(date),
-                'program_imbalance': program_imbalance
+            "regime": regime,
+            "score": composite,
+            "components": {
+                "trend": trend_score,
+                "risk": risk_score,
+                "oil": oil_score,
+                "fx": fx_score,
+                "korean_special": special_adjustment,
             },
-            'timestamp': datetime.now().isoformat()
+            "korean_factors": {
+                "futures_options_expiry": self.korean.is_futures_options_expiry(date),
+                "dividend_ex_date": self.korean.is_dividend_ex_date(date),
+                "program_imbalance": program_imbalance,
+            },
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod

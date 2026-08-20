@@ -6,7 +6,7 @@ strategy/base_strategy.py - v1.2 FINAL (config 기반 가중치 로드)
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any
 
 from core.config import get_config
 
@@ -17,7 +17,7 @@ class BaseStrategy(ABC):
     """전략 추상 기본 클래스 (v1.2)"""
 
     @abstractmethod
-    def analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         전략 분석 실행
         Args:
@@ -45,7 +45,7 @@ class BaseStrategy(ABC):
         """전략 가중치 (0~1) - 설정 파일에서 로드 가능"""
         pass
 
-    def _safe_get(self, data: Dict, key: str, default: Any = 0.0) -> Any:
+    def _safe_get(self, data: dict, key: str, default: Any = 0.0) -> Any:
         """안전한 값 추출 (None 또는 KeyError 방지)"""
         value = data.get(key, default)
         return default if value is None else value

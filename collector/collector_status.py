@@ -5,12 +5,10 @@ collector/collector_status.py - v1.0 FINAL (데이터 수집기 통합 상태 �
 - Telegram 알림과 연동
 """
 
-import time
-from datetime import datetime, timedelta
-from typing import Dict, Optional, List
-from dataclasses import dataclass, field
-import asyncio
 import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +16,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CollectorStatus:
     """개별 수집기 상태"""
+
     name: str
-    last_success: Optional[datetime] = None
-    last_attempt: Optional[datetime] = None
+    last_success: datetime | None = None
+    last_attempt: datetime | None = None
     consecutive_failures: int = 0
     total_success: int = 0
     total_failures: int = 0
-    last_error: Optional[str] = None
+    last_error: str | None = None
     is_healthy: bool = True
-    data_freshness_seconds: Optional[int] = None  # 데이터 유효 TTL
-    last_data: Optional[Dict] = None
+    data_freshness_seconds: int | None = None  # 데이터 유효 TTL
+    last_data: dict | None = None
 
 
 class CollectorStatusManager:
@@ -42,20 +41,17 @@ class CollectorStatusManager:
         return cls._instance
 
     def _init(self):
-        self._collectors: Dict[str, CollectorStatus] = {}
-        self._alert_cooldown: Dict[str, float] = {}
+        self._collectors: dict[str, CollectorStatus] = {}
+        self._alert_cooldown: dict[str, float] = {}
         self._alert_cooldown_seconds = 1800  # 30분
 
-    def register(self, name: str, freshness_seconds: Optional[int] = None):
+    def register(self, name: str, freshness_seconds: int | None = None):
         """수집기 등록"""
         if name not in self._collectors:
-            self._collectors[name] = CollectorStatus(
-                name=name,
-                data_freshness_seconds=freshness_seconds
-            )
+            self._collectors[name] = CollectorStatus(name=name, data_freshness_seconds=freshness_seconds)
             logger.info(f"📊 수집기 등록: {name} (신선도: {freshness_seconds}s)")
 
-    def record_success(self, name: str, data: Optional[Dict] = None):
+    def record_success(self, name: str, data: dict | None = None):
         """성공 기록"""
         if name not in self._collectors:
             self.register(name)
@@ -83,11 +79,11 @@ class CollectorStatusManager:
             status.is_healthy = False
         logger.warning(f"⚠️ {name} 수집 실패 ({status.consecutive_failures}회 연속): {error}")
 
-    def get_status(self, name: str) -> Optional[CollectorStatus]:
+    def get_status(self, name: str) -> CollectorStatus | None:
         """특정 수집기 상태 조회"""
         return self._collectors.get(name)
 
-    def get_all_status(self) -> Dict[str, CollectorStatus]:
+    def get_all_status(self) -> dict[str, CollectorStatus]:
         """모든 수집기 상태 조회"""
         return self._collectors
 
@@ -127,7 +123,7 @@ class CollectorStatusManager:
         """경고 전송 기록"""
         self._alert_cooldown[name] = time.time()
 
-    def get_summary(self) -> Dict:
+    def get_summary(self) -> dict:
         """전체 상태 요약"""
         total = len(self._collectors)
         healthy = sum(1 for s in self._collectors.values() if s.is_healthy)
@@ -147,8 +143,9 @@ class CollectorStatusManager:
                     "last_error": s.last_error,
                 }
                 for name, s in self._collectors.items()
-            }
+            },
         }
+
 
 # 전역 인스턴스
 collector_status = CollectorStatusManager()

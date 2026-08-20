@@ -34,6 +34,7 @@ AFTER_HOURS_END = "18:00"
 # Regime 관련 (기존 유지)
 # ============================================================
 
+
 class Regime(Enum):
     BULL = "Bull"
     SIDEWAYS = "Sideways"
@@ -42,9 +43,11 @@ class Regime(Enum):
     PANIC = "Panic"
     RECOVERY = "Recovery"
 
+
 # ============================================================
 # Priority 관련 (기존 유지)
 # ============================================================
+
 
 class Priority(Enum):
     CRITICAL = 0
@@ -52,9 +55,11 @@ class Priority(Enum):
     NORMAL = 2
     LOW = 3
 
+
 # ============================================================
 # Risk Level 관련 (기존 유지)
 # ============================================================
+
 
 class RiskLevel(Enum):
     NORMAL = "NORMAL"
@@ -62,14 +67,17 @@ class RiskLevel(Enum):
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
+
 # ============================================================
 # Feature Status 관련 (기존 유지)
 # ============================================================
+
 
 class FeatureStatus(Enum):
     FRESH = "fresh"
     STALE = "stale"
     EXPIRED = "expired"
+
 
 # ============================================================
 # 🔥 한국 시장 특이 일정 (공휴일 목록 – holiday_utils와 공유)

@@ -4,6 +4,7 @@ test_parser.py - v1.0
 WebSocket 수신 데이터 파싱 로직 진단 (휴장일 테스트용)
 실제 키움 서버 연결 없이, 가상의 데이터 구조로 파싱 성공 여부를 확인합니다.
 """
+
 import sys
 from pathlib import Path
 
@@ -13,21 +14,17 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import sys
-import os
 from pathlib import Path
 
 # 프로젝트 루트를 path에 추가 (kiwoom_connector.py 임포트용)
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data.kiwoom_connector import KiwoomConnectorV512
 import logging
 
+from data.kiwoom_connector import KiwoomConnectorV512
+
 # 로깅을 DEBUG/INFO로 설정하여 WARNING 메시지가 보이도록 함
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("📡테스트")
 
 
@@ -40,11 +37,11 @@ def run_parser_test():
     # KiwoomConnectorV512 인스턴스 생성 (실제 연결은 하지 않음)
     # _handle_ws_message 함수만 사용할 것이므로, None으로 초기화해도 됨
     connector = KiwoomConnectorV512(rate_limit=5.0)
-    
+
     # 가짜 핸들러 등록 (수신된 데이터를 받아서 출력할 콜백)
     def mock_handler(data):
         print(f"   ✅ [콜백 성공] 데이터 수신됨: {data.get('price', 0)}")
-    
+
     # 테스트용 종목을 미리 등록 (핸들러 연결 확인용)
     connector._realtime_handlers["005930"] = mock_handler
     connector._realtime_handlers["000660"] = mock_handler
@@ -71,22 +68,22 @@ def run_parser_test():
     for idx, (desc, data, expected_ticker) in enumerate(test_cases, 1):
         print(f"\n--- 테스트 {idx}: {desc} ---")
         print(f"    입력 데이터: {data}")
-        
+
         # 실제 _handle_ws_message 로직을 그대로 복사하여 실행 (직접 호출)
         # (코드 중복을 피하기 위해 임시로 함수화하여 로직 실행)
         extracted_ticker = None
         warning_triggered = False
-        
+
         # 🔥 실제 `_handle_ws_message` 의 파싱 로직을 그대로 여기서 재현
         ticker = (
-            data.get("ticker") or 
-            data.get("symbol") or 
-            data.get("item") or 
-            data.get("stk_cd") or      # 🔥 추가된 부분
-            data.get("code") or         # 🔥 추가된 부분
-            data.get("item_cd")         # 🔥 추가된 부분
+            data.get("ticker")
+            or data.get("symbol")
+            or data.get("item")
+            or data.get("stk_cd")  # 🔥 추가된 부분
+            or data.get("code")  # 🔥 추가된 부분
+            or data.get("item_cd")  # 🔥 추가된 부분
         )
-        
+
         if not ticker:
             # WARNING 로그가 발생해야 하는 상황
             keys = list(data.keys())
@@ -95,7 +92,7 @@ def run_parser_test():
         else:
             extracted_ticker = ticker
             print(f"   ✅ [파싱성공] 티커 추출: {ticker}")
-            
+
             # 등록된 핸들러가 있으면 콜백 실행 (모의)
             if ticker in connector._realtime_handlers:
                 connector._realtime_handlers[ticker](data)
@@ -125,7 +122,7 @@ def run_parser_test():
     print("🏁 [테스트 완료] 최종 진단 리포트")
     print(f"   ✅ 통과: {success_count}개")
     print(f"   ❌ 실패: {fail_count}개")
-    
+
     if fail_count == 0:
         print("\n   🎉 모든 테스트 통과! 수정된 파싱 로직이 정상입니다.")
         print("   ➡️ 월요일 장중에 데이터가 들어오면 정상적으로 인식됩니다.")

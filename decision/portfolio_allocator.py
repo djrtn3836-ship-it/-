@@ -7,8 +7,6 @@ Portfolio Allocator v7.6.0 — Claude 피드백 + Kelly 고도화 + 포트폴리
 4. Half-Kelly + 하드캡(8%) + VaR 패널티 삼중 안전장치
 """
 
-from dataclasses import dataclass
-from typing import Optional, Dict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,42 +22,41 @@ class PortfolioAllocator:
 
     def calculate_position(
         self,
-        signal: Dict,
-        live_win_rate: Optional[float] = None,
+        signal: dict,
+        live_win_rate: float | None = None,
         live_sample_count: int = 0,
-        avg_win: Optional[float] = None,
-        avg_loss: Optional[float] = None,
-        var_95: Optional[float] = None,
-        global_risk_penalty: float = 1.0  # 🔥 v7.6.0: 포트폴리오 VaR 패널티
-    ) -> Dict:
-
+        avg_win: float | None = None,
+        avg_loss: float | None = None,
+        var_95: float | None = None,
+        global_risk_penalty: float = 1.0,  # 🔥 v7.6.0: 포트폴리오 VaR 패널티
+    ) -> dict:
         # 🔥 Phase 1: 무조건 소액 비중 (안전장치 1)
         if self.mode == "shadow":
             return {
-                'allocation_pct': self.base_allocation["shadow"] * 100,
-                'method': 'fixed (Shadow Mode)',
-                'reason': 'Phase 1: 검증되지 않은 백테스트 승률 사용 금지',
-                'is_safe': True,
-                'global_penalty_applied': 1.0,
+                "allocation_pct": self.base_allocation["shadow"] * 100,
+                "method": "fixed (Shadow Mode)",
+                "reason": "Phase 1: 검증되지 않은 백테스트 승률 사용 금지",
+                "is_safe": True,
+                "global_penalty_applied": 1.0,
             }
 
         # Phase 2 이상: 실측 데이터 기반
         if self.mode in ["paper", "live"]:
             if live_sample_count < 30:
                 return {
-                    'allocation_pct': self.base_allocation["paper"] * 100,
-                    'method': 'fixed (데이터 부족)',
-                    'reason': f'실측 샘플 {live_sample_count}건 (최소 30건 필요)',
-                    'is_safe': True,
-                    'global_penalty_applied': 1.0,
+                    "allocation_pct": self.base_allocation["paper"] * 100,
+                    "method": "fixed (데이터 부족)",
+                    "reason": f"실측 샘플 {live_sample_count}건 (최소 30건 필요)",
+                    "is_safe": True,
+                    "global_penalty_applied": 1.0,
                 }
             if live_win_rate is None or live_win_rate < 0.35:
                 return {
-                    'allocation_pct': self.base_allocation["paper"] * 100,
-                    'method': 'fixed (승률 부족)',
-                    'reason': f'실측 승률 {live_win_rate:.1%} (최소 35% 필요)',
-                    'is_safe': True,
-                    'global_penalty_applied': 1.0,
+                    "allocation_pct": self.base_allocation["paper"] * 100,
+                    "method": "fixed (승률 부족)",
+                    "reason": f"실측 승률 {live_win_rate:.1%} (최소 35% 필요)",
+                    "is_safe": True,
+                    "global_penalty_applied": 1.0,
                 }
 
             return self._calculate_advanced_kelly(
@@ -68,15 +65,15 @@ class PortfolioAllocator:
                 avg_win or 3.0,
                 avg_loss or 2.0,
                 var_95,
-                global_risk_penalty  # 🔥 v7.6.0 전달
+                global_risk_penalty,  # 🔥 v7.6.0 전달
             )
 
         return {
-            'allocation_pct': 2.0,
-            'method': 'fixed (default)',
-            'reason': '기본 안전 비중',
-            'is_safe': True,
-            'global_penalty_applied': 1.0,
+            "allocation_pct": 2.0,
+            "method": "fixed (default)",
+            "reason": "기본 안전 비중",
+            "is_safe": True,
+            "global_penalty_applied": 1.0,
         }
 
     def _calculate_advanced_kelly(
@@ -85,9 +82,9 @@ class PortfolioAllocator:
         sample_count: int,
         avg_win: float,
         avg_loss: float,
-        var_95: Optional[float] = None,
-        global_risk_penalty: float = 1.0
-    ) -> Dict:
+        var_95: float | None = None,
+        global_risk_penalty: float = 1.0,
+    ) -> dict:
         # 1. 기본 Kelly
         if avg_loss == 0:
             avg_loss = 1.0
@@ -125,18 +122,18 @@ class PortfolioAllocator:
         kelly_final = max(0.01, kelly_final)
 
         return {
-            'allocation_pct': kelly_final * 100,
-            'method': 'fractional_kelly + VaR(개별+포트폴리오) (v7.6.0)',
-            'kelly_raw': kelly_raw,
-            'kelly_fraction': fraction,
-            'hard_cap': max_cap,
-            'var_penalty': var_penalty,
-            'global_penalty': global_penalty,
-            'var_95_used': var_95,
-            'win_rate_used': win_rate,
-            'sample_count': sample_count,
-            'avg_win_used': avg_win,
-            'avg_loss_used': avg_loss,
-            'reason': f'승률 {win_rate:.1%} + VaR {var_95*100:.1f}% + 글로벌패널티 {global_penalty:.0%}',
-            'is_safe': kelly_final <= 0.08
+            "allocation_pct": kelly_final * 100,
+            "method": "fractional_kelly + VaR(개별+포트폴리오) (v7.6.0)",
+            "kelly_raw": kelly_raw,
+            "kelly_fraction": fraction,
+            "hard_cap": max_cap,
+            "var_penalty": var_penalty,
+            "global_penalty": global_penalty,
+            "var_95_used": var_95,
+            "win_rate_used": win_rate,
+            "sample_count": sample_count,
+            "avg_win_used": avg_win,
+            "avg_loss_used": avg_loss,
+            "reason": f"승률 {win_rate:.1%} + VaR {var_95*100:.1f}% + 글로벌패널티 {global_penalty:.0%}",
+            "is_safe": kelly_final <= 0.08,
         }

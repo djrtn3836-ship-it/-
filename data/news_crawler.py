@@ -6,21 +6,21 @@ data/news_crawler.py - v6.3.0 FINAL (재시도 + Fallback + 동적 TTL)
 - Circuit Breaker 유지
 """
 
+import asyncio
+import json
 import os
 import re
-import json
-import asyncio
-import aiohttp
 import socket
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-from aiohttp.resolver import ThreadedResolver
+from datetime import datetime
 
-from core.logger import setup_logger
-from core.circuit_breaker import NEWS_CRAWLER_CB
-from core.sentiment_analyzer import sentiment_analyzer
+import aiohttp
+from aiohttp.resolver import ThreadedResolver
+from dotenv import load_dotenv
+
 from collector.collector_status import collector_status
+from core.circuit_breaker import NEWS_CRAWLER_CB
+from core.logger import setup_logger
+from core.sentiment_analyzer import sentiment_analyzer
 
 logger = setup_logger("news")
 
@@ -30,16 +30,13 @@ class NewsCrawler:
         load_dotenv()
         self.client_id = os.getenv("NAVER_CLIENT_ID")
         self.client_secret = os.getenv("NAVER_CLIENT_SECRET")
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
         self._cache = {}
         self._cache_time = {}
         self._cache_ttl = 3600  # 기본 1시간
 
         self._connector = aiohttp.TCPConnector(
-            resolver=ThreadedResolver(),
-            use_dns_cache=False,
-            family=socket.AF_INET,
-            ttl_dns_cache=0
+            resolver=ThreadedResolver(), use_dns_cache=False, family=socket.AF_INET, ttl_dns_cache=0
         )
 
         # 🔥 v6.3.0: CollectorStatus 등록
@@ -58,7 +55,7 @@ class NewsCrawler:
             self._session = None
 
     @NEWS_CRAWLER_CB.protect
-    async def fetch_news(self, ticker: str, limit: int = 5, max_retries: int = 3) -> Optional[Tuple[List[Dict], float]]:
+    async def fetch_news(self, ticker: str, limit: int = 5, max_retries: int = 3) -> tuple[list[dict], float] | None:
         if not self.client_id or not self.client_secret:
             return [], 0.0
 
@@ -66,8 +63,12 @@ class NewsCrawler:
             await self.connect()
 
         stock_name_map = {
-            "005930": "삼성전자", "000660": "SK하이닉스", "005380": "현대차",
-            "035420": "NAVER", "051910": "LG화학", "006400": "삼성SDI",
+            "005930": "삼성전자",
+            "000660": "SK하이닉스",
+            "005380": "현대차",
+            "035420": "NAVER",
+            "051910": "LG화학",
+            "006400": "삼성SDI",
             "207940": "삼성바이오로직스",
         }
         query = stock_name_map.get(ticker, ticker)
@@ -104,15 +105,17 @@ class NewsCrawler:
                         items = data.get("items", [])
                         results, texts_for_sentiment = [], []
                         for item in items:
-                            title = re.sub(r'<[^>]+>', '', item.get("title", ""))
-                            description = re.sub(r'<[^>]+>', '', item.get("description", ""))
-                            results.append({
-                                "title": title,
-                                "summary": description,
-                                "link": item.get("originallink", item.get("link", "")),
-                                "pub_date": item.get("pubDate", ""),
-                                "source": "naver_api_hub"
-                            })
+                            title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                            description = re.sub(r"<[^>]+>", "", item.get("description", ""))
+                            results.append(
+                                {
+                                    "title": title,
+                                    "summary": description,
+                                    "link": item.get("originallink", item.get("link", "")),
+                                    "pub_date": item.get("pubDate", ""),
+                                    "source": "naver_api_hub",
+                                }
+                            )
                             texts_for_sentiment.append(title + " " + description)
 
                         sentiment_score = await sentiment_analyzer.analyze(texts_for_sentiment)
@@ -126,7 +129,7 @@ class NewsCrawler:
                         last_error = f"HTTP {resp.status}: {error_text[:100]}"
                         logger.warning(f"⚠️ 네이버 API 오류 ({resp.status}): {error_text[:200]}")
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = "Timeout (10s)"
                 logger.warning(f"⏰ 뉴스 수집 타임아웃 ({ticker}), 시도 {attempt+1}/{max_retries+1}")
             except Exception as e:
@@ -143,7 +146,9 @@ class NewsCrawler:
         logger.error(f"❌ {ticker} 뉴스 수집 최종 실패 (마지막 오류: {last_error})")
         return None
 
-    async def get_news_with_sentiment(self, ticker: str, limit: int = 5, cache_seconds: Optional[int] = None) -> Tuple[List[Dict], float]:
+    async def get_news_with_sentiment(
+        self, ticker: str, limit: int = 5, cache_seconds: int | None = None
+    ) -> tuple[list[dict], float]:
         """뉴스 조회 (캐싱 + 동적 TTL)"""
         cache_key = f"{ticker}_{limit}"
         now = datetime.now().timestamp()
@@ -173,11 +178,13 @@ class NewsCrawler:
         logger.info(f"📰 [뉴스 API] {ticker} 뉴스 {len(news)}개 수집, 감성: {sentiment:+.2f}")
         return news, sentiment
 
-    def get_headlines(self, query: str = "코스피", limit: int = 5) -> List[str]:
+    def get_headlines(self, query: str = "코스피", limit: int = 5) -> list[str]:
         import asyncio
+
         async def _inner():
             news, _ = await self.get_news_with_sentiment(query, limit=limit)
             return [item.get("title", "") for item in news[:limit]]
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

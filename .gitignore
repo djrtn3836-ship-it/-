@@ -26,11 +26,13 @@ htmlcov/
 *.swp
 *.swo
 
-# 프로젝트별 민감 설정
+# 민감 캐시 파일 (API 키 등)
+config/naver_api_cache.json
 config/discovered_keys.json
 config/corp_code_cache.json
+config/xgb_model.pkl
 config/nlp_model.pkl
-config/naver_api_cache.json
+config/calibration_config.json
 
 # 리포트 및 테스트 임시 파일
 reports/

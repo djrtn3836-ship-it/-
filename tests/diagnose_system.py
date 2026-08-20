@@ -2,37 +2,55 @@
 """
 diagnose_system.py - v1.3 (UTF-8 강제, ASCII 태그)
 """
+
 import sys
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 import os
 from pathlib import Path
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import json
 import asyncio
 import importlib
-import subprocess
+import json
 import re
+import subprocess
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+
 
 class Colors:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
 
-def print_ok(msg): print(f" {Colors.GREEN}[PASS]{Colors.END} {msg}")
-def print_fail(msg): print(f" {Colors.RED}[FAIL]{Colors.END} {msg}")
-def print_warn(msg): print(f" {Colors.YELLOW}[WARN]{Colors.END} {msg}")
-def print_info(msg): print(f" {Colors.BLUE}[INFO]{Colors.END} {msg}")
-def print_title(msg): print(f"\n{Colors.BOLD}[DIAG] {msg}{Colors.END}")
+
+def print_ok(msg):
+    print(f" {Colors.GREEN}[PASS]{Colors.END} {msg}")
+
+
+def print_fail(msg):
+    print(f" {Colors.RED}[FAIL]{Colors.END} {msg}")
+
+
+def print_warn(msg):
+    print(f" {Colors.YELLOW}[WARN]{Colors.END} {msg}")
+
+
+def print_info(msg):
+    print(f" {Colors.BLUE}[INFO]{Colors.END} {msg}")
+
+
+def print_title(msg):
+    print(f"\n{Colors.BOLD}[DIAG] {msg}{Colors.END}")
+
 
 class SystemDiagnostic:
     def __init__(self):
@@ -41,18 +59,22 @@ class SystemDiagnostic:
         self.kiwoom_token = None
 
     def log_result(self, test_name: str, status: str, message: str, suggestion: str = ""):
-        self.results["details"].append({"test": test_name, "status": status, "message": message, "suggestion": suggestion})
+        self.results["details"].append(
+            {"test": test_name, "status": status, "message": message, "suggestion": suggestion}
+        )
         if status == "PASS":
             self.results["passed"] += 1
             print_ok(f"{test_name}: {message}")
         elif status == "FAIL":
             self.results["failed"] += 1
             print_fail(f"{test_name}: {message}")
-            if suggestion: print(f"      -> [TIP] {suggestion}")
+            if suggestion:
+                print(f"      -> [TIP] {suggestion}")
         else:
             self.results["warnings"] += 1
             print_warn(f"{test_name}: {message}")
-            if suggestion: print(f"      -> [TIP] {suggestion}")
+            if suggestion:
+                print(f"      -> [TIP] {suggestion}")
 
     def test_python_version(self):
         v = sys.version_info
@@ -67,12 +89,15 @@ class SystemDiagnostic:
         if not missing:
             self.log_result("폴더/파일 구조", "PASS", f"필수 파일 {len(required)}개 존재")
         else:
-            self.log_result("폴더/파일 구조", "FAIL", f"{len(missing)}개 누락: {', '.join(missing[:3])}", "파일 복구 필요")
+            self.log_result(
+                "폴더/파일 구조", "FAIL", f"{len(missing)}개 누락: {', '.join(missing[:3])}", "파일 복구 필요"
+            )
 
     def test_env_variables(self):
         from dotenv import load_dotenv
+
         load_dotenv()
-        required = ['KIWOOM_APP_KEY', 'KIWOOM_APP_SECRET', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']
+        required = ["KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
         missing = [k for k in required if not os.getenv(k)]
         if not missing:
             self.log_result("환경변수 (.env)", "PASS", "모든 필수 키 존재")
@@ -85,7 +110,8 @@ class SystemDiagnostic:
         for m, c in modules:
             try:
                 mod = importlib.import_module(m)
-                if c and not hasattr(mod, c): raise AttributeError
+                if c and not hasattr(mod, c):
+                    raise AttributeError
             except Exception as e:
                 failed.append(f"{m} -> {str(e)[:30]}")
         if not failed:
@@ -96,8 +122,9 @@ class SystemDiagnostic:
     def test_config_load(self):
         try:
             from core.config import get_config
+
             cfg = get_config()
-            if cfg.get('ws_url'):
+            if cfg.get("ws_url"):
                 self.log_result("설정 로드", "PASS", "config.yaml 정상")
             else:
                 self.log_result("설정 로드", "WARN", "WS_URL 없음", "config/config.yaml 확인")
@@ -107,6 +134,7 @@ class SystemDiagnostic:
     async def test_database(self):
         try:
             from data.db_manager import DatabaseManager
+
             db = DatabaseManager()
             await db.init_db()
             self.log_result("데이터베이스", "PASS", "DB 연결 성공")
@@ -118,12 +146,17 @@ class SystemDiagnostic:
         try:
             import aiohttp
             from dotenv import load_dotenv
+
             load_dotenv()
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.kiwoom.com/oauth2/token",
-                    json={"grant_type": "client_credentials", "appkey": os.getenv("KIWOOM_APP_KEY"), "secretkey": os.getenv("KIWOOM_APP_SECRET")},
-                    timeout=10
+                    json={
+                        "grant_type": "client_credentials",
+                        "appkey": os.getenv("KIWOOM_APP_KEY"),
+                        "secretkey": os.getenv("KIWOOM_APP_SECRET"),
+                    },
+                    timeout=10,
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -139,6 +172,7 @@ class SystemDiagnostic:
     def test_blackbox_write(self):
         try:
             from core.blackbox_logger import log_raw_data
+
             log_raw_data("TEST", source="DIAG")
             self.log_result("블랙박스 로깅", "PASS", "로그 쓰기 성공")
         except Exception as e:
@@ -147,6 +181,7 @@ class SystemDiagnostic:
     def test_scheduler(self):
         try:
             import apscheduler
+
             self.log_result("APScheduler", "PASS", f"버전 {apscheduler.__version__}")
         except ImportError:
             self.log_result("APScheduler", "FAIL", "패키지 없음", "pip install apscheduler")
@@ -158,14 +193,18 @@ class SystemDiagnostic:
                 self.log_result("의존성 패키지", "WARN", "requirements.txt 없음", "선택 확인")
                 return
             with open(req_file) as f:
-                reqs = [re.split(r'[>=<~!]', line.strip())[0] for line in f if line.strip() and not line.startswith('#')]
-            installed = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze']).decode().split('\n')
-            installed_names = [p.split('==')[0] for p in installed if '==' in p]
+                reqs = [
+                    re.split(r"[>=<~!]", line.strip())[0] for line in f if line.strip() and not line.startswith("#")
+                ]
+            installed = subprocess.check_output([sys.executable, "-m", "pip", "freeze"]).decode().split("\n")
+            installed_names = [p.split("==")[0] for p in installed if "==" in p]
             missing = [p for p in reqs if p not in installed_names]
             if not missing:
                 self.log_result("의존성 패키지", "PASS", f"{len(reqs)}개 모두 설치됨")
             else:
-                self.log_result("의존성 패키지", "WARN", f"누락: {', '.join(missing[:3])}", "pip install -r requirements.txt")
+                self.log_result(
+                    "의존성 패키지", "WARN", f"누락: {', '.join(missing[:3])}", "pip install -r requirements.txt"
+                )
         except Exception as e:
             self.log_result("의존성 패키지", "WARN", f"pip 실행 실패: {e}", "pip 경로 확인")
 
@@ -185,18 +224,21 @@ class SystemDiagnostic:
         report_path = self.root_dir / "logs" / f"diagnostic_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         try:
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(report_path, 'w', encoding='utf-8') as f:
+            with open(report_path, "w", encoding="utf-8") as f:
                 json.dump(self.results, f, ensure_ascii=False, indent=2)
             print(f"\n[INFO] 보고서 저장됨: {report_path}")
-        except: pass
+        except:
+            pass
         print("=" * 60)
+
 
 async def run_async(diag):
     await diag.test_database()
     await diag.test_kiwoom_token()
 
+
 def main():
-    os.system('color')
+    os.system("color")
     print_title("시스템 전신 진단 시작")
     print(f"기준: {_PROJECT_ROOT}")
     print("-" * 60)
@@ -214,6 +256,7 @@ def main():
     asyncio.run(run_async(diag))
     diag.print_summary()
 
+
 if __name__ == "__main__":
     try:
         main()
@@ -221,4 +264,6 @@ if __name__ == "__main__":
         print("\n[STOP] 사용자 중단")
     except Exception as e:
         print(f"[ERROR] {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()

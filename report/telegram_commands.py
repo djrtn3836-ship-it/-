@@ -6,20 +6,15 @@ report/telegram_commands.py - v7.3.0 FINAL (완전 방어 및 사용자 경험 �
 - 한글 자연어 처리 통합
 """
 
-import os
-import re
-import traceback
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
+from typing import Any
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from core.logger import setup_logger
-from core.debug_tower import debug_tower
-from core.natural_language import nlp_engine, NLUResult
+from core.natural_language import nlp_engine
 
 logger = setup_logger("telegram_cmd")
 
@@ -57,9 +52,7 @@ class TelegramCommandHandler:
         await self.app.initialize()
         await self.app.start()
         # 🔥 allowed_updates 추가로 불필요한 업데이트 타입 제외
-        await self.app.updater.start_polling(
-            allowed_updates=["message", "callback_query"]
-        )
+        await self.app.updater.start_polling(allowed_updates=["message", "callback_query"])
 
         self._running = True
         logger.info("✅ Telegram 봇 시작됨 (v7.3.0)")
@@ -98,8 +91,7 @@ class TelegramCommandHandler:
                 await self._send_comprehensive_report(update, result.ticker)
             elif result.intent == "analyze" and not result.ticker:
                 await update.message.reply_text(
-                    "📊 어떤 종목을 분석할까요? 종목명이나 코드를 알려주세요.\n"
-                    "예: 삼전, 005930, 현대차"
+                    "📊 어떤 종목을 분석할까요? 종목명이나 코드를 알려주세요.\n" "예: 삼전, 005930, 현대차"
                 )
             else:
                 await update.message.reply_text(
@@ -126,7 +118,7 @@ class TelegramCommandHandler:
                 return
 
             stats = self.get_stats()
-            uptime_seconds = stats.get('uptime_seconds', 0)
+            uptime_seconds = stats.get("uptime_seconds", 0)
             hours = int(uptime_seconds // 3600)
             minutes = int((uptime_seconds % 3600) // 60)
             seconds = int(uptime_seconds % 60)
@@ -144,7 +136,7 @@ class TelegramCommandHandler:
 ━━━━━━━━━━━━━━━━━━━━━
 <i>🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>
 """
-            await update.message.reply_text(msg, parse_mode='HTML')
+            await update.message.reply_text(msg, parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"❌ 상태 명령어 오류: {e}")
@@ -168,7 +160,7 @@ class TelegramCommandHandler:
             for i in range(5):
                 day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
                 day_signals = await self._db_manager.get_decisions_by_date(day)
-                filtered = [s for s in day_signals if s.get('action') in ['BUY', 'SELL', 'SIGNAL_ENTRY']]
+                filtered = [s for s in day_signals if s.get("action") in ["BUY", "SELL", "SIGNAL_ENTRY"]]
                 signals.extend(filtered[:3])
 
             if not signals:
@@ -179,20 +171,20 @@ class TelegramCommandHandler:
             lines = ["📈 <b>최근 신호 (최대 10개)</b>", "━━━━━━━━━━━━━━━━━━━━━"]
 
             for s in signals:
-                ticker = s.get('ticker', 'N/A')
-                action = s.get('action', 'UNKNOWN')
-                price = s.get('price_at_decision', s.get('price', 0))
-                score = s.get('score', 0)
-                created = s.get('created_at', '')[:16]
-                emoji = "🟢" if action in ['BUY', 'SIGNAL_ENTRY'] else "🔴"
-                label = "매수" if action in ['BUY', 'SIGNAL_ENTRY'] else "매도"
+                ticker = s.get("ticker", "N/A")
+                action = s.get("action", "UNKNOWN")
+                price = s.get("price_at_decision", s.get("price", 0))
+                score = s.get("score", 0)
+                created = s.get("created_at", "")[:16]
+                emoji = "🟢" if action in ["BUY", "SIGNAL_ENTRY"] else "🔴"
+                label = "매수" if action in ["BUY", "SIGNAL_ENTRY"] else "매도"
                 lines.append(f"{emoji} <b>{ticker}</b> {label} @ {price:,.0f}원 (확신도 {score:.0%})")
                 lines.append(f"   🕒 {created}")
 
             lines.append("━━━━━━━━━━━━━━━━━━━━━")
             lines.append("<i>'삼전'으로 종합 분석</i>")
 
-            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"❌ 신호 명령어 오류: {e}")
@@ -212,6 +204,7 @@ class TelegramCommandHandler:
             # 1. 종목명 조회
             try:
                 from data.stock_universe import get_universe
+
                 universe = get_universe()
                 stock_name = universe.get(ticker, ticker)
             except:
@@ -226,7 +219,7 @@ class TelegramCommandHandler:
                 self._get_financial_data(ticker),
                 self._get_news(ticker),
                 self._get_supply_demand(ticker),
-                return_exceptions=True
+                return_exceptions=True,
             )
 
             # 4. AI 분석 실행
@@ -238,25 +231,34 @@ class TelegramCommandHandler:
                 "imbalance": 0.5,
                 "regime": "Sideways",
                 "momentum": 0.0,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
 
             try:
                 analysis = await self._analyzer.analyze(stock_data)
             except Exception as e:
                 logger.error(f"❌ AI 분석 실패: {e}")
-                analysis = {"action": "ERROR", "score": 0, "confidence": 0, "positives": [], "negatives": [], "regime": "N/A"}
+                analysis = {
+                    "action": "ERROR",
+                    "score": 0,
+                    "confidence": 0,
+                    "positives": [],
+                    "negatives": [],
+                    "regime": "N/A",
+                }
 
             # 5. 리포트 생성
-            report = self._build_safe_report(ticker, stock_name, price, price_status, tech_data, financials, news_items, supply, analysis)
+            report = self._build_safe_report(
+                ticker, stock_name, price, price_status, tech_data, financials, news_items, supply, analysis
+            )
 
             # 6. 전송
             if len(report) > 4000:
                 summary, detail = self._split_report(report)
-                await update.message.reply_text(summary, parse_mode='HTML')
-                await update.message.reply_text(detail, parse_mode='HTML')
+                await update.message.reply_text(summary, parse_mode="HTML")
+                await update.message.reply_text(detail, parse_mode="HTML")
             else:
-                await update.message.reply_text(report, parse_mode='HTML')
+                await update.message.reply_text(report, parse_mode="HTML")
 
             logger.info(f"✅ 종합 리포트 전송 성공 ({ticker})")
 
@@ -284,7 +286,7 @@ class TelegramCommandHandler:
             try:
                 ohlcv = await self._db_manager.get_ohlcv(ticker, period=1)
                 if ohlcv and len(ohlcv) > 0:
-                    price = ohlcv[-1].get('close', 0)
+                    price = ohlcv[-1].get("close", 0)
                     if price > 0:
                         status = "DB (전일 종가)"
                         return price, status
@@ -303,13 +305,13 @@ class TelegramCommandHandler:
     # ============================================================
     # 데이터 수집 헬퍼 (에러 허용)
     # ============================================================
-    async def _get_technical_data(self, ticker: str) -> Dict:
+    async def _get_technical_data(self, ticker: str) -> dict:
         try:
             if self._db_manager:
                 data = await self._db_manager.get_ohlcv(ticker, period=30)
                 if len(data) >= 5:
-                    closes = [d['close'] for d in data]
-                    volumes = [d.get('volume', 0) for d in data if d.get('volume', 0) > 0]
+                    closes = [d["close"] for d in data]
+                    volumes = [d.get("volume", 0) for d in data if d.get("volume", 0) > 0]
                     current_price = closes[-1]
 
                     ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else current_price
@@ -322,14 +324,14 @@ class TelegramCommandHandler:
                         "ma20": ma20,
                         "ma60": ma60,
                         "volume_ratio": vol_ratio,
-                        "data_count": len(data)
+                        "data_count": len(data),
                     }
             return {"error": "데이터 부족"}
         except Exception as e:
             logger.debug(f"기술적 지표 수집 실패 ({ticker}): {e}")
             return {"error": str(e)}
 
-    async def _get_financial_data(self, ticker: str) -> Dict:
+    async def _get_financial_data(self, ticker: str) -> dict:
         try:
             if not self._dart:
                 return {"error": "DART 미연동"}
@@ -345,28 +347,28 @@ class TelegramCommandHandler:
                 "net_profit": fin.get("당기순이익", 0),
                 "roe": fin.get("ROE", 0),
                 "debt_ratio": fin.get("부채비율", 0),
-                "op_margin": fin.get("영업이익률", 0)
+                "op_margin": fin.get("영업이익률", 0),
             }
         except Exception as e:
             logger.debug(f"재무 데이터 수집 실패 ({ticker}): {e}")
             return {"error": str(e)}
 
-    async def _get_news(self, ticker: str) -> Dict:
+    async def _get_news(self, ticker: str) -> dict:
         try:
             if not self._news:
                 return {"error": "뉴스 미연동"}
             items, sentiment = await self._news.get_news_with_sentiment(ticker, limit=3, cache_seconds=3600)
-            headlines = [item.get('title', '') for item in items[:3]]
+            headlines = [item.get("title", "") for item in items[:3]]
             return {
                 "sentiment": sentiment if isinstance(sentiment, (int, float)) else 0.0,
                 "headlines": headlines,
-                "count": len(items)
+                "count": len(items),
             }
         except Exception as e:
             logger.debug(f"뉴스 수집 실패 ({ticker}): {e}")
             return {"error": str(e)}
 
-    async def _get_supply_demand(self, ticker: str) -> Dict:
+    async def _get_supply_demand(self, ticker: str) -> dict:
         try:
             if not self._kiwoom:
                 return {"error": "키움 미연동"}
@@ -381,14 +383,10 @@ class TelegramCommandHandler:
             inst = await self._kiwoom.request_tr(ticker, "기관수급")
 
             # 응답 검증
-            foreign_net = foreign.get('net_buy', 0) if isinstance(foreign, dict) else 0
-            inst_net = inst.get('net_buy', 0) if isinstance(inst, dict) else 0
+            foreign_net = foreign.get("net_buy", 0) if isinstance(foreign, dict) else 0
+            inst_net = inst.get("net_buy", 0) if isinstance(inst, dict) else 0
 
-            return {
-                "foreign_net": foreign_net,
-                "inst_net": inst_net,
-                "status": "OK"
-            }
+            return {"foreign_net": foreign_net, "inst_net": inst_net, "status": "OK"}
         except Exception as e:
             logger.debug(f"수급 데이터 수집 실패 ({ticker}): {e}")
             return {"error": str(e)}
@@ -396,9 +394,18 @@ class TelegramCommandHandler:
     # ============================================================
     # 리포트 빌더 (안전)
     # ============================================================
-    def _build_safe_report(self, ticker: str, name: str, price: float, price_status: str,
-                           tech: Any, fin: Any, news: Any, supply: Any,
-                           analysis: Dict) -> str:
+    def _build_safe_report(
+        self,
+        ticker: str,
+        name: str,
+        price: float,
+        price_status: str,
+        tech: Any,
+        fin: Any,
+        news: Any,
+        supply: Any,
+        analysis: dict,
+    ) -> str:
         """각 섹션별 예외를 독립적으로 처리"""
 
         # 가격 표시
@@ -408,18 +415,18 @@ class TelegramCommandHandler:
             price_display = f"⚠️ {price_status}"
 
         # AI 분석 결과
-        action = analysis.get('action', 'HOLD')
-        score = analysis.get('score', 0)
-        confidence = analysis.get('confidence', 0)
-        positives = analysis.get('positives', [])[:4]
-        negatives = analysis.get('negatives', [])[:3]
-        regime = analysis.get('regime', 'N/A')
+        action = analysis.get("action", "HOLD")
+        score = analysis.get("score", 0)
+        confidence = analysis.get("confidence", 0)
+        positives = analysis.get("positives", [])[:4]
+        negatives = analysis.get("negatives", [])[:3]
+        regime = analysis.get("regime", "N/A")
 
-        if action in ['BUY', 'SIGNAL_ENTRY']:
+        if action in ["BUY", "SIGNAL_ENTRY"]:
             emoji = "🟢"
             action_label = "매수 추천"
             strength = "🔥 강력" if score >= 0.8 else "✅ 보통" if score >= 0.65 else "⚠️ 약한"
-        elif action in ['SELL', 'EXIT']:
+        elif action in ["SELL", "EXIT"]:
             emoji = "🔴"
             action_label = "매도 추천"
             strength = "⚠️ 주의"
@@ -431,10 +438,10 @@ class TelegramCommandHandler:
         # 기술적 지표
         tech_str = "데이터 부족"
         try:
-            if isinstance(tech, dict) and 'error' not in tech:
-                ma20 = tech.get('ma20', 0)
-                ma60 = tech.get('ma60', 0)
-                vol_ratio = tech.get('volume_ratio', 1.0)
+            if isinstance(tech, dict) and "error" not in tech:
+                ma20 = tech.get("ma20", 0)
+                ma60 = tech.get("ma60", 0)
+                vol_ratio = tech.get("volume_ratio", 1.0)
                 if isinstance(ma20, (int, float)) and isinstance(ma60, (int, float)) and ma20 > 0 and ma60 > 0:
                     tech_str = f"20일선 {ma20:,.0f} | 60일선 {ma60:,.0f} | 거래량 {vol_ratio:.1f}배"
                 else:
@@ -445,25 +452,25 @@ class TelegramCommandHandler:
         # 재무 지표
         fin_str = "데이터 부족"
         try:
-            if isinstance(fin, dict) and 'error' not in fin:
-                roe = fin.get('roe', 0)
-                debt = fin.get('debt_ratio', 0)
-                op_margin = fin.get('op_margin', 0)
+            if isinstance(fin, dict) and "error" not in fin:
+                roe = fin.get("roe", 0)
+                debt = fin.get("debt_ratio", 0)
+                op_margin = fin.get("op_margin", 0)
                 if isinstance(roe, (int, float)) and isinstance(debt, (int, float)):
                     fin_str = f"ROE {roe:.1f}% | 부채비율 {debt:.1f}% | 영업이익률 {op_margin:.1f}%"
                 else:
-                    fin_str = f"재무 데이터 수집 중 (DART API)"
+                    fin_str = "재무 데이터 수집 중 (DART API)"
         except:
             pass
 
         # 뉴스
         news_str = "데이터 부족"
         try:
-            if isinstance(news, dict) and 'error' not in news:
-                sentiment = news.get('sentiment', 0)
+            if isinstance(news, dict) and "error" not in news:
+                sentiment = news.get("sentiment", 0)
                 if isinstance(sentiment, (int, float)):
                     sentiment_label = "긍정" if sentiment > 0.2 else "부정" if sentiment < -0.2 else "중립"
-                    headlines = news.get('headlines', [])
+                    headlines = news.get("headlines", [])
                     news_str = f"감성 {sentiment:+.2f} ({sentiment_label})"
                     if headlines and isinstance(headlines[0], str):
                         news_str += f"\n📰 {headlines[0][:50]}..." if len(headlines[0]) > 50 else f"\n📰 {headlines[0]}"
@@ -475,9 +482,9 @@ class TelegramCommandHandler:
         # 수급
         supply_str = "데이터 부족"
         try:
-            if isinstance(supply, dict) and 'error' not in supply:
-                foreign = supply.get('foreign_net', 0)
-                inst = supply.get('inst_net', 0)
+            if isinstance(supply, dict) and "error" not in supply:
+                foreign = supply.get("foreign_net", 0)
+                inst = supply.get("inst_net", 0)
                 if isinstance(foreign, (int, float)) and isinstance(inst, (int, float)):
                     foreign_label = "순매수" if foreign > 0 else "순매도" if foreign < 0 else "중립"
                     inst_label = "순매수" if inst > 0 else "순매도" if inst < 0 else "중립"
@@ -485,7 +492,7 @@ class TelegramCommandHandler:
                 else:
                     supply_str = "수급 데이터 수집 중 (장중 필요)"
             else:
-                supply_str = supply.get('error', '수급 데이터 수집 중')
+                supply_str = supply.get("error", "수급 데이터 수집 중")
         except:
             pass
 
@@ -529,7 +536,7 @@ class TelegramCommandHandler:
         return msg
 
     def _split_report(self, report: str) -> tuple:
-        lines = report.split('\n')
+        lines = report.split("\n")
         summary_lines = lines[:15]
         detail_lines = lines[15:]
         return "\n".join(summary_lines), "\n".join(detail_lines)

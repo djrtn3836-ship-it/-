@@ -1,16 +1,13 @@
 """
-core/config.py - v7.0 FINAL (설정 중앙화 + 기본값 통합)
-- config.yaml의 모든 설정을 flat 키로 자동 변환 (trading_atr_multiplier_stop 등)
-- 환경변수 우선 적용 (KIWOOM_APP_KEY 등)
-- 누락된 설정에 대한 기본값을 딕셔너리로 중앙 관리
-- 설정값 타입 및 범위 검증 강화
+core/config.py - v7.0.1 (int → float 자동 변환)
+- YAML에서 int로 입력된 float 설정값을 자동 변환
 """
 
 import os
-import time
-import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
+import yaml
 from dotenv import load_dotenv
 
 from core.logger import setup_logger
@@ -19,13 +16,10 @@ logger = setup_logger("config")
 
 
 class ConfigError(Exception):
-    """설정 오류"""
     pass
 
 
 class ConfigManager:
-    """통합 설정 관리자 (싱글톤 + 자동 재로드 + 기본값 통합)"""
-
     _instance = None
     _last_mtime: float = 0
 
@@ -39,7 +33,7 @@ class ConfigManager:
         if self._initialized:
             return
         self._initialized = True
-        self._config: Dict[str, Any] = {}
+        self._config: dict[str, Any] = {}
         self._config_dir = Path(__file__).parent.parent / "config"
         self._env_loaded = False
 
@@ -57,9 +51,7 @@ class ConfigManager:
         return 0.0
 
     def _load_defaults(self):
-        """기본 설정 (모든 항목 명시) - v7.0 확장"""
         self._config = {
-            # WebSocket
             "ws_url": "wss://api.kiwoom.com:10000/api/dostk/websocket",
             "ws_mock_url": "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
             "ws_ping_interval": 20,
@@ -68,15 +60,12 @@ class ConfigManager:
             "ws_login_timeout": 10,
             "ws_reg_timeout": 5,
             "ws_silence_timeout": 60,
-            # Rate Limit
             "rate_limit_capacity": 5,
             "rate_limit_refill": 5.0,
-            # Signal
             "price_change_ratio": 0.02,
             "cooldown_seconds": 300,
             "emergency_threshold": 0.05,
             "max_subscriptions": 500,
-            # Scheduler
             "daily_report_hour": 7,
             "daily_report_minute": 0,
             "feedback_hour": 17,
@@ -86,22 +75,14 @@ class ConfigManager:
             "weekly_pdf_minute": 0,
             "ohlcv_hour": 16,
             "ohlcv_minute": 30,
-            # Reconnect
             "reconnect_max_attempts": 5,
             "reconnect_base_delay": 2,
             "reconnect_max_delay": 60,
             "reconnect_interval": 30,
-            # Queue
             "queue_maxsize": 100000,
-            # Connect
             "connect_retry_interval": 60,
-            # Logging
             "log_level": "DEBUG",
             "structured_logging": False,
-            # ============================================================
-            # 🔥 v7.0: 트레이딩/전략/리스크 기본값 통합
-            # ============================================================
-            # Trading (DeepAnalyzer)
             "trading_max_hold_hours": 2.0,
             "trading_trail_aggressive_threshold": 5.0,
             "trading_atr_multiplier_stop": 2.0,
@@ -117,11 +98,9 @@ class ConfigManager:
             "trading_order_volume_ratio": 0.008,
             "trading_order_volume_min": 10,
             "trading_order_volume_max": 500,
-            # Strategy
             "strategy_default_trend_weight": 0.40,
             "strategy_default_reversal_weight": 0.30,
             "strategy_default_breakout_weight": 0.30,
-            # Risk
             "risk_var_confidence": 0.95,
             "risk_var_num_simulations": 10000,
             "risk_var_lookback_days": 252,
@@ -129,11 +108,10 @@ class ConfigManager:
         }
 
     def _load_yaml(self):
-        """YAML 파일 로드 (존재하는 경우)"""
         config_file = self._config_dir / "config.yaml"
         if config_file.exists():
             try:
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, encoding="utf-8") as f:
                     yaml_config = yaml.safe_load(f)
                     if yaml_config:
                         self._update_from_dict(yaml_config)
@@ -141,8 +119,7 @@ class ConfigManager:
             except Exception as e:
                 logger.warning(f"⚠️ YAML 설정 로드 실패: {e}")
 
-    def _update_from_dict(self, data: Dict, prefix: str = ""):
-        """딕셔너리로 설정 업데이트 (재귀) - v7.0 유지"""
+    def _update_from_dict(self, data: dict, prefix: str = ""):
         for key, value in data.items():
             full_key = f"{prefix}{key}" if prefix else key
             if isinstance(value, dict):
@@ -151,11 +128,9 @@ class ConfigManager:
                 self._config[full_key] = value
 
     def _validate_config(self):
-        """설정값 타입 및 범위 검증 (v7.0 확장)"""
         errors = []
         warnings = []
 
-        # 타입 검증 규칙 (기존 + 신규)
         type_rules = {
             "ws_ping_interval": (int, 5, 120),
             "ws_ping_timeout": (int, 10, 300),
@@ -170,7 +145,6 @@ class ConfigManager:
             "reconnect_base_delay": (int, 1, 10),
             "reconnect_max_delay": (int, 10, 300),
             "connect_retry_interval": (int, 10, 600),
-            # 🔥 v7.0 신규 규칙
             "trading_max_hold_hours": (float, 0.5, 24.0),
             "trading_atr_multiplier_stop": (float, 0.5, 5.0),
             "trading_atr_multiplier_trail": (float, 0.5, 5.0),
@@ -197,19 +171,24 @@ class ConfigManager:
             if value is None:
                 warnings.append(f"⚠️ 설정 '{key}' 없음 → 기본값 사용")
                 continue
+
+            # 🔥 P1-6: int → float 자동 변환
+            if exp_type == float and isinstance(value, int):
+                self._config[key] = float(value)
+                value = self._config[key]
+
             if not isinstance(value, exp_type):
                 errors.append(f"❌ 설정 '{key}' 타입 오류: {type(value).__name__} (필요: {exp_type.__name__})")
                 continue
+
             if isinstance(value, (int, float)):
                 if value < min_val or value > max_val:
                     errors.append(f"❌ 설정 '{key}' 범위 초과: {value} (허용: {min_val}~{max_val})")
 
-        # 일별/주별 설정 검증
         if self._config.get("weekly_pdf_day") not in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
             warnings.append(f"⚠️ weekly_pdf_day='{self._config.get('weekly_pdf_day')}' → 'mon'으로 대체")
             self._config["weekly_pdf_day"] = "mon"
 
-        # 로그 레벨 검증
         log_level = self._config.get("log_level", "DEBUG").upper()
         if log_level not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             warnings.append(f"⚠️ log_level='{log_level}' → 'DEBUG'로 대체")
@@ -234,7 +213,6 @@ class ConfigManager:
         return False
 
     def get(self, key: str, default: Any = None) -> Any:
-        """설정값 조회 (환경 변수 우선)"""
         env_key = key.upper()
         env_value = os.getenv(env_key)
         if env_value is not None:
@@ -276,14 +254,11 @@ class ConfigManager:
             return value.lower() in ("true", "yes", "1", "on")
         return bool(value)
 
-    def get_all(self) -> Dict:
+    def get_all(self) -> dict:
         return self._config.copy()
 
 
-# ============================================================
-# 싱글톤 인스턴스
-# ============================================================
-_config_manager: Optional[ConfigManager] = None
+_config_manager: ConfigManager | None = None
 
 
 def get_config() -> ConfigManager:

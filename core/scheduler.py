@@ -15,14 +15,16 @@ core/scheduler.py - v2.1 — Claude 버그 수정 (시스템 시작 크래시)
   → max_retries/retry_delay를 *args 뒤 키워드 전용 인자로 이동.
 """
 
+import asyncio
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from core.logger import setup_logger
+
 from core.blackbox_logger import log_error
-import asyncio
-import functools
+from core.logger import setup_logger
 
 logger = setup_logger("scheduler")
+
 
 class SchedulerManager:
     def __init__(self):
@@ -37,8 +39,9 @@ class SchedulerManager:
         self.scheduler.shutdown()
         logger.info("⏰ Scheduler shutdown")
 
-    def add_job_with_retry(self, coro_func, trigger, job_id, *args,
-                            max_retries: int = 3, retry_delay: int = 5, **kwargs):
+    def add_job_with_retry(
+        self, coro_func, trigger, job_id, *args, max_retries: int = 3, retry_delay: int = 5, **kwargs
+    ):
         """
         재시도 로직이 포함된 스케줄 작업 등록
 
@@ -48,6 +51,7 @@ class SchedulerManager:
             add_job_with_retry(run_daily_report, trigger, "daily_report",
                                 daily_reporter, max_retries=3, retry_delay=5)
         """
+
         async def _wrapped_coro():
             for attempt in range(max_retries + 1):
                 try:

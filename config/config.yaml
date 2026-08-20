@@ -77,7 +77,7 @@ trading:
   atr_multiplier_stop: 2.0
   atr_multiplier_trail: 1.5
   atr_spike_threshold: 0.3
-  
+
   # 가중치 (ML/전략 등)
   momentum_weight: 0.08
   ml_weight: 0.18

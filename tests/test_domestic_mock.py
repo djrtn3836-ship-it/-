@@ -6,6 +6,7 @@ test_domestic_mock.py - v1.0 (국내장 파이프라인 Mock 검증기)
       "키움 연결이 없어도 Telegram이 오는가?"를 확인하는 최종 테스트입니다.
 사용법: python test_domestic_mock.py
 """
+
 import sys
 from pathlib import Path
 
@@ -15,20 +16,20 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import asyncio
-import sys
 import os
-from pathlib import Path
+import sys
 from datetime import datetime
-import random
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.logger import setup_logger
-from scanner.deep_analyzer import DeepAnalyzer
 from data.db_manager import DatabaseManager
 from report.telegram_sender import TelegramSender
+from scanner.deep_analyzer import DeepAnalyzer
 
 logger = setup_logger("mock_domestic")
+
 
 async def run_mock_test():
     print("\n" + "=" * 60)
@@ -58,7 +59,7 @@ async def run_mock_test():
 
     # 4. 🔥 가상의 국내 종목 데이터 생성 (실제 종목코드 + 원화 가격)
     print("\n[4/4] 국내 모의 데이터 분석 및 전송 실행...")
-    
+
     # 실제 국내 종목 코드를 사용하되, 가격은 임의로 설정 (키움과 무관)
     test_stocks = [
         {"ticker": "005930", "name": "삼성전자 (MOCK)", "base_price": 82000, "change": 2.5},
@@ -70,7 +71,7 @@ async def run_mock_test():
     for stock in test_stocks:
         # 변동률 적용 (2% 이상 -> 신호 발생 유도)
         price = stock["base_price"] * (1 + stock["change"] / 100)
-        
+
         # 실제 `realtime_monitor`에서 오는 데이터 구조를 완벽히 모방
         mock_data = {
             "ticker": stock["ticker"],
@@ -80,33 +81,33 @@ async def run_mock_test():
             "momentum": stock["change"] / 100.0,
             "imbalance": 0.7 if stock["change"] > 0 else 0.3,  # 매수/매도 불균형
             "timestamp": datetime.now().isoformat(),
-            "pressure": "외국인 및 기관 동반 매수" if stock["change"] > 0 else "외국인 순매도"
+            "pressure": "외국인 및 기관 동반 매수" if stock["change"] > 0 else "외국인 순매도",
         }
 
-        # 실제 `analyze` 함수 실행 (DB에서 ATR을 가져오려고 시도하지만, 
+        # 실제 `analyze` 함수 실행 (DB에서 ATR을 가져오려고 시도하지만,
         # DB에 OHLCV 데이터가 없으면 ATR은 0으로 처리됨. 그래도 로직은 돔)
         analysis = await analyzer.analyze(mock_data)
-        
+
         # 🔥 만약 분석 점수가 낮아서 HOLD가 나오면, 테스트를 위해 강제로 SIGNAL 부여
-        if analysis.get('action') not in ['BUY', 'SELL']:
+        if analysis.get("action") not in ["BUY", "SELL"]:
             if stock["change"] > 0:
-                analysis['action'] = 'BUY'
-                analysis['score'] = 0.85
-                analysis['confidence'] = 0.9
-                analysis['positives'] = ['모의 데이터 상승 검증', '전략 파이프라인 정상']
-                analysis['entry_price'] = price
-                analysis['current_stop'] = price * 0.97
+                analysis["action"] = "BUY"
+                analysis["score"] = 0.85
+                analysis["confidence"] = 0.9
+                analysis["positives"] = ["모의 데이터 상승 검증", "전략 파이프라인 정상"]
+                analysis["entry_price"] = price
+                analysis["current_stop"] = price * 0.97
             else:
-                analysis['action'] = 'SELL'
-                analysis['score'] = 0.80
-                analysis['confidence'] = 0.85
-                analysis['negatives'] = ['모의 데이터 하락 검증']
+                analysis["action"] = "SELL"
+                analysis["score"] = 0.80
+                analysis["confidence"] = 0.85
+                analysis["negatives"] = ["모의 데이터 하락 검증"]
 
         # DB 저장 (실제 decisions 테이블에 기록됨)
         await db.save_decision(analysis)
 
         # Telegram 전송
-        if analysis.get('action') in ['BUY', 'SELL']:
+        if analysis.get("action") in ["BUY", "SELL"]:
             result = await sender.send(analysis)
             if result:
                 print(f"   ✅ {stock['ticker']} ({stock['name']}) 신호 전송 성공! (액션: {analysis['action']})")
@@ -128,14 +129,15 @@ async def run_mock_test():
         print("   ➡️ 만약 알림이 왔다면, 시스템의 '분석→DB→전송' 파이프라인은 완벽합니다.")
         print("   ➡️ 월요일에 키움 데이터만 들어오면 자동으로 신호가 발송됩니다.")
     else:
-        print(f"   ❌ 실패: 단 하나의 신호도 전송되지 않았습니다.")
+        print("   ❌ 실패: 단 하나의 신호도 전송되지 않았습니다.")
         print("   ➡️ .env 파일의 TELEGRAM_BOT_TOKEN과 CHAT_ID를 확인하세요.")
     print("=" * 60)
 
     await db.close()
 
+
 if __name__ == "__main__":
-    os.system('color')
+    os.system("color")
     try:
         asyncio.run(run_mock_test())
     except KeyboardInterrupt:
@@ -143,4 +145,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"💥 오류 발생: {e}")
         import traceback
+
         traceback.print_exc()

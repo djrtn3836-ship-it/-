@@ -5,11 +5,9 @@ core/blackbox_logger.py - v1.0 FINAL (시스템 블랙박스 / Flight Recorder)
 - 시스템 상태 변화(연결, 재연결, 에러)를 상세 기록
 """
 
-import os
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from datetime import datetime
 
 # 블랙박스 저장 디렉토리
 BLACKBOX_DIR = Path(__file__).parent.parent / "logs" / "blackbox"
@@ -24,14 +22,13 @@ log_file_path = BLACKBOX_DIR / "blackbox.log"
 file_handler = RotatingFileHandler(
     log_file_path,
     maxBytes=10 * 1024 * 1024,  # 10MB
-    backupCount=5,              # 최대 5개 파일 (blackbox.log, blackbox.log.1 ~ .4)
-    encoding='utf-8'
+    backupCount=5,  # 최대 5개 파일 (blackbox.log, blackbox.log.1 ~ .4)
+    encoding="utf-8",
 )
 
 # 포맷: [시간] [레벨] [파일:줄번호] 메시지
 formatter = logging.Formatter(
-    '[%(asctime)s] [%(levelname)-8s] [%(filename)s:%(lineno)d] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    "[%(asctime)s] [%(levelname)-8s] [%(filename)s:%(lineno)d] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 )
 file_handler.setFormatter(formatter)
 
@@ -49,10 +46,12 @@ if not blackbox_logger.handlers:
 # 🔥 편의 함수 (외부에서 쉽게 호출)
 # ============================================================
 
+
 def log_raw_data(data: str, source: str = "WEBSOCKET"):
     """WebSocket 등에서 수신한 원본 데이터를 그대로 저장"""
     # 데이터가 너무 길면 500자로 자르되, 전체 내용은 파일에 기록됨 (핸들러가 알아서 처리)
     blackbox_logger.debug(f"[RAW][{source}] {data}")
+
 
 def log_event(event: str, details: dict = None):
     """시스템 이벤트(연결 성공, 재연결 시도 등) 기록"""
@@ -61,16 +60,19 @@ def log_event(event: str, details: dict = None):
     else:
         blackbox_logger.info(f"[EVENT] {event}")
 
+
 def log_error(error_msg: str, error_obj: Exception = None):
     """오류 발생 시 상세 기록"""
     if error_obj:
-        blackbox_logger.error(f"[ERROR] {error_msg} | Exception: {type(error_obj).__name__} - {str(error_obj)}")
+        blackbox_logger.error(f"[ERROR] {error_msg} | Exception: {type(error_obj).__name__} - {error_obj!s}")
     else:
         blackbox_logger.error(f"[ERROR] {error_msg}")
+
 
 def log_performance(module: str, action: str, elapsed_ms: float):
     """성능 측정 (선택 사항)"""
     blackbox_logger.debug(f"[PERF] {module} | {action} | {elapsed_ms:.2f}ms")
+
 
 # ============================================================
 # 상태: 현재 블랙박스 파일 정보
@@ -83,5 +85,5 @@ def get_status():
         "directory": str(BLACKBOX_DIR),
         "file_count": len(files),
         "total_size_mb": round(total_size / (1024 * 1024), 2),
-        "latest_file": str(files[0]) if files else None
+        "latest_file": str(files[0]) if files else None,
     }

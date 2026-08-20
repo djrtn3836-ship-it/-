@@ -7,16 +7,14 @@ tests/test_chaos_injection.py - v2.1 FINAL (DB 복제본 + Connector 완전 정�
 - 모든 테스트 후 자동 원복 및 복제본 삭제
 """
 
-import sys
-import os
 import asyncio
 import json
 import shutil
+import sys
 import time
 import traceback
-from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from pathlib import Path
 
 # 프로젝트 루트 추가
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -24,8 +22,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
-from report.telegram_sender import TelegramSender
 from data.kiwoom_connector import KiwoomConnectorV512
+from report.telegram_sender import TelegramSender
 
 logger = setup_logger("chaos_test")
 
@@ -37,28 +35,28 @@ DB_TEST_PATH = PROJECT_ROOT / "data" / "decisions_test.db"  # 🔥 복제본
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-TEST_RESULTS: List[Dict] = []
+TEST_RESULTS: list[dict] = []
 
 
 # ============================================================
 # 1. 네트워크 타임아웃 테스트 (Connector 완전 정리 포함)
 # ============================================================
-async def test_network_timeout() -> Tuple[bool, str]:
+async def test_network_timeout() -> tuple[bool, str]:
     """네트워크 타임아웃 테스트: 키움 API 타임아웃 모의"""
     connector = None
     try:
         logger.info("🔍 [시나리오 1] 네트워크 타임아웃 테스트...")
 
         # 1) 타임아웃이 발생하는 요청 모의 (aiohttp ClientTimeout)
+
         import aiohttp
-        import asyncio
 
         timeout = aiohttp.ClientTimeout(total=0.001)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
                 async with session.get("https://api.kiwoom.com/oauth2/token", timeout=timeout) as resp:
                     pass
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.info("✅ 타임아웃 정상 감지")
             except aiohttp.ClientConnectorError:
                 logger.info("✅ 연결 오류 정상 감지")
@@ -70,7 +68,7 @@ async def test_network_timeout() -> Tuple[bool, str]:
         connector = KiwoomConnectorV512(rate_limit=5.0)
         try:
             await connector.connect()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.info("✅ KiwoomConnector 타임아웃 정상 처리")
         except Exception as e:
             # 토큰이 없어서 발생하는 오류는 무시 (타임아웃 테스트와 무관)
@@ -95,7 +93,7 @@ async def test_network_timeout() -> Tuple[bool, str]:
 # ============================================================
 # 2. DB 손상 테스트 (복제본 사용)
 # ============================================================
-async def test_db_corruption() -> Tuple[bool, str]:
+async def test_db_corruption() -> tuple[bool, str]:
     """
     DB 손상 테스트: 복제본(decisions_test.db)을 생성하여 테스트
     - 메인 DB는 전혀 건드리지 않음 → PermissionError 발생하지 않음
@@ -172,13 +170,14 @@ async def test_db_corruption() -> Tuple[bool, str]:
 # ============================================================
 class DelayedTelegramSender(TelegramSender):
     """지연을 모의하는 TelegramSender (15초 지연)"""
+
     async def send_raw(self, message: str, max_retries: int = 4) -> bool:
         logger.info("⏳ Telegram 지연 모의: 15초 대기...")
         await asyncio.sleep(15)
         return await super().send_raw(message, max_retries)
 
 
-async def test_telegram_delay() -> Tuple[bool, str]:
+async def test_telegram_delay() -> tuple[bool, str]:
     """Telegram 지연 테스트: 15초 지연 후에도 전송 성공"""
     try:
         logger.info("🔍 [시나리오 3] Telegram 지연 테스트...")
@@ -257,7 +256,7 @@ async def run_all_tests():
     }
     report_path = LOG_DIR / f"chaos_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     try:
-        with open(report_path, 'w', encoding='utf-8') as f:
+        with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         print(f"\n📄 상세 보고서 저장됨: {report_path}")
     except Exception as e:

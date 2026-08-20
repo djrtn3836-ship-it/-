@@ -4,10 +4,10 @@ filters/macro_filter.py - v6.0 (Z-Score 가중 회귀 기반 매크로 필터)
 - Risk-on/off 국면 반영
 """
 
-from typing import Dict
 import math
+
 from core.logger import setup_logger
-from scheduler.macro_collector import get_cached_macro, MacroData
+from scheduler.macro_collector import MacroData, get_cached_macro
 
 logger = setup_logger("macro")
 
@@ -42,7 +42,7 @@ class MacroFilter:
     def __init__(self):
         self._macro: MacroData = get_cached_macro()
 
-    def check(self, data: Dict) -> Dict:
+    def check(self, data: dict) -> dict:
         """매크로 점수 산출 (0~1)"""
         # 최신 거시 데이터 로드
         self._macro = get_cached_macro()
@@ -68,17 +68,12 @@ class MacroFilter:
             # 0~1 스케일로 클램핑 (Sigmoid 변환)
             # z-score가 0이면 0.5, +2σ면 0.88, -2σ면 0.12
             sigmoid = 1.0 / (1.0 + math.exp(-z_score * 0.8))
-            
+
             # 가중치 적용
             weight = spec["weight"]
             weighted_score += sigmoid * weight
             total_weight += weight
-            indicators[key] = {
-                "raw": current,
-                "z_score": z_score,
-                "score": sigmoid,
-                "weight": weight
-            }
+            indicators[key] = {"raw": current, "z_score": z_score, "score": sigmoid, "weight": weight}
 
         final_score = weighted_score / total_weight if total_weight > 0 else 0.5
         final_score = max(0.0, min(1.0, final_score))

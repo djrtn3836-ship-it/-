@@ -4,13 +4,12 @@ decision/hybrid_decider.py - v7.2.2 (액션 표준화)
 - 한국어 라벨은 별도 필드(action_label)로 분리
 """
 
-from typing import Dict, List
 
 class HybridDecider:
     def __init__(self):
         pass
 
-    def decide(self, data: Dict) -> Dict:
+    def decide(self, data: dict) -> dict:
         """
         점수(score) 기반 의사결정
         Returns:
@@ -25,7 +24,7 @@ class HybridDecider:
             }
         """
         score = data.get("score", 0.5)
-        
+
         # 🔥 영문 액션 + 한국어 라벨 분리
         if score >= 0.75:
             action, label = "BUY", "강력 매수"
@@ -39,13 +38,13 @@ class HybridDecider:
             action, label = "SELL", "부분 매도"
         else:
             action, label = "SELL", "전량 매도"
-        
+
         confidence = min(0.95, 0.5 + score * 0.5)
-        
+
         # 근거 생성 (기존 로직 유지)
         reasons = self._generate_reasons(data, action)
         risks = self._generate_risks(data, action)
-        
+
         return {
             "action": action,
             "action_label": label,
@@ -53,10 +52,10 @@ class HybridDecider:
             "confidence": confidence,
             "reasons": reasons,
             "risks": risks,
-            "counterfactuals": self._generate_counterfactuals(data, action)
+            "counterfactuals": self._generate_counterfactuals(data, action),
         }
-    
-    def _generate_reasons(self, data: Dict, action: str) -> List[str]:
+
+    def _generate_reasons(self, data: dict, action: str) -> list[str]:
         reasons = []
         if action in ["BUY"]:
             if data.get("macro", {}).get("score", 0) > 0.6:
@@ -71,13 +70,13 @@ class HybridDecider:
             if data.get("sector", {}).get("score", 0) < 0.4:
                 reasons.append("섹터 모멘텀 약세")
         return reasons or ["다중 팩터 우위"]
-    
-    def _generate_risks(self, data: Dict, action: str) -> List[str]:
+
+    def _generate_risks(self, data: dict, action: str) -> list[str]:
         risks = []
         if action in ["BUY"]:
             if data.get("stock", {}).get("volatility", 0) > 0.3:
                 risks.append("변동성 높음")
         return risks or ["시장 변동성 주의"]
-    
-    def _generate_counterfactuals(self, data: Dict, action: str) -> List[str]:
+
+    def _generate_counterfactuals(self, data: dict, action: str) -> list[str]:
         return ["대체 시나리오 분석 필요"]

@@ -2,8 +2,8 @@
 core/holiday_utils.py - v3.1 (holidays 패키지 호환성 강화)
 """
 
-from datetime import datetime, date, timedelta
-from typing import Union, Optional
+from datetime import date, datetime, timedelta
+
 from core.logger import setup_logger
 
 logger = setup_logger("holiday_utils")
@@ -15,10 +15,11 @@ _holidays_instance = None
 
 try:
     import holidays
+
     HAS_HOLIDAYS = True
     # 방법 A: country_holidays
     try:
-        _holidays_instance = holidays.country_holidays('KR')
+        _holidays_instance = holidays.country_holidays("KR")
         # 테스트: 2026년에 공휴일이 있는지 확인
         test_2026 = [d for d in _holidays_instance.keys() if d.year == 2026]
         if not test_2026:
@@ -27,7 +28,7 @@ try:
             test_2026 = [d for d in _holidays_instance.keys() if d.year == 2026]
             if not test_2026:
                 # 방법 C: years 매개변수 지정
-                _holidays_instance = holidays.country_holidays('KR', years=2026)
+                _holidays_instance = holidays.country_holidays("KR", years=2026)
         logger.info("✅ holidays 패키지 로드 완료 (한국 공휴일 자동 인식)")
     except Exception as e:
         logger.warning(f"⚠️ holidays 초기화 실패: {e}")
@@ -47,6 +48,7 @@ except ImportError:
 # 2. 공휴일 캐시
 # ============================================================
 _holiday_cache = {}
+
 
 def _get_holidays(year: int) -> set:
     if year in _holiday_cache:
@@ -74,10 +76,11 @@ def _get_holidays(year: int) -> set:
     _holiday_cache[year] = holidays_set
     return holidays_set
 
+
 # ============================================================
 # 3. 거래일 판단
 # ============================================================
-def is_trading_day(dt: Optional[Union[datetime, date]] = None) -> bool:
+def is_trading_day(dt: datetime | date | None = None) -> bool:
     if dt is None:
         dt = datetime.now()
     if isinstance(dt, datetime):
@@ -94,10 +97,11 @@ def is_trading_day(dt: Optional[Union[datetime, date]] = None) -> bool:
 
     return True
 
+
 # ============================================================
 # 4. 기타 함수
 # ============================================================
-def get_next_trading_day(dt: Optional[Union[datetime, date]] = None) -> datetime:
+def get_next_trading_day(dt: datetime | date | None = None) -> datetime:
     if dt is None:
         dt = datetime.now()
     if isinstance(dt, datetime):
@@ -107,6 +111,7 @@ def get_next_trading_day(dt: Optional[Union[datetime, date]] = None) -> datetime
     while not is_trading_day(current):
         current += timedelta(days=1)
     return current
+
 
 def is_market_open() -> bool:
     now = datetime.now()

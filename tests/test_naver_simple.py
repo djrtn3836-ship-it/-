@@ -7,16 +7,18 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import asyncio
-import aiohttp
-import socket
 import os
-from dotenv import load_dotenv
+import socket
+
+import aiohttp
 from aiohttp.resolver import ThreadedResolver  # 🔥 중요!
+from dotenv import load_dotenv
 
 load_dotenv()
 
 CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
 CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
+
 
 async def test_naver_api():
     print("\n🔍 네이버 API HUB 뉴스 검색 테스트 (ThreadedResolver 적용)\n")
@@ -50,7 +52,7 @@ async def test_naver_api():
         resolver=ThreadedResolver(),  # ← 이 줄이 핵심!
         use_dns_cache=False,
         family=socket.AF_INET,
-        ttl_dns_cache=0
+        ttl_dns_cache=0,
     )
 
     try:
@@ -69,12 +71,14 @@ async def test_naver_api():
 
     except aiohttp.ClientConnectorError as e:
         print(f"❌ 네트워크 연결 오류: {e}")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print("❌ 요청 시간 초과 (10초)")
     except Exception as e:
         print(f"❌ 예상치 못한 오류 발생: {e}")
         import traceback
+
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     asyncio.run(test_naver_api())

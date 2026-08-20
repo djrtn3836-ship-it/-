@@ -4,7 +4,8 @@ strategy/trend_strategy.py - v1.2 FINAL (config 기반 가중치)
 - EMA 정배열/역배열, ADX, 20일선 이탈/돌파 기반
 """
 
-from typing import Dict, Any
+from typing import Any
+
 from .base_strategy import BaseStrategy, config
 
 DEFAULT_WEIGHT_KEY = "strategy_default_trend_weight"
@@ -24,34 +25,34 @@ class TrendStrategy(BaseStrategy):
     def weight(self) -> float:
         return self._weight
 
-    def analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        price = self._safe_get(data, 'price', 0.0)
-        tech = data.get('tech_data', {})
-        ema5 = self._safe_get(tech, 'ema5', price)
-        ema20 = self._safe_get(tech, 'ema20', price)
-        ema60 = self._safe_get(tech, 'ema60', price)
-        adx = self._safe_get(data, 'adx', 20.0)
-        volume_ratio = self._safe_get(tech, 'volume_ratio', 1.0)
-        regime = self._safe_get(data, 'regime', 'Sideways')
+    def analyze(self, data: dict[str, Any]) -> dict[str, Any]:
+        price = self._safe_get(data, "price", 0.0)
+        tech = data.get("tech_data", {})
+        ema5 = self._safe_get(tech, "ema5", price)
+        ema20 = self._safe_get(tech, "ema20", price)
+        ema60 = self._safe_get(tech, "ema60", price)
+        adx = self._safe_get(data, "adx", 20.0)
+        volume_ratio = self._safe_get(tech, "volume_ratio", 1.0)
+        regime = self._safe_get(data, "regime", "Sideways")
 
         if price <= 0 or ema20 <= 0:
             return {
-                'score': 0.5,
-                'action': 'HOLD',
-                'confidence': 0.3,
-                'reason': '가격 또는 이평선 데이터 부족',
-                'details': {'ema5': ema5, 'ema20': ema20, 'ema60': ema60}
+                "score": 0.5,
+                "action": "HOLD",
+                "confidence": 0.3,
+                "reason": "가격 또는 이평선 데이터 부족",
+                "details": {"ema5": ema5, "ema20": ema20, "ema60": ema60},
             }
 
         score = 0.5
-        action = 'HOLD'
+        action = "HOLD"
         confidence = 0.5
         reasons = []
 
         if ema5 > ema20 > ema60:
             score += 0.25
             reasons.append("EMA 정배열 (강한 상승 추세)")
-            if regime in ['Bull', 'Recovery']:
+            if regime in ["Bull", "Recovery"]:
                 score += 0.15
                 reasons.append("상승 국면과 추세 동조")
         elif ema5 > ema20:
@@ -86,28 +87,28 @@ class TrendStrategy(BaseStrategy):
             reasons.append("거래량 동반 상승 (추세 지속)")
 
         if score >= 0.70:
-            action = 'BUY'
+            action = "BUY"
             confidence = min(0.95, 0.6 + (score - 0.7) * 1.5)
         elif score <= 0.30:
-            action = 'SELL'
+            action = "SELL"
             confidence = min(0.95, 0.6 + (0.3 - score) * 1.5)
         else:
-            action = 'HOLD'
+            action = "HOLD"
             confidence = 0.5 + abs(score - 0.5)
 
         score = max(0.0, min(1.0, score))
         confidence = max(0.3, min(0.95, confidence))
 
         return {
-            'score': score,
-            'action': action,
-            'confidence': confidence,
-            'reason': ' | '.join(reasons[:4]) if reasons else '추세 중립',
-            'details': {
-                'ema5': ema5,
-                'ema20': ema20,
-                'ema60': ema60,
-                'adx': adx,
-                'volume_ratio': volume_ratio,
-            }
+            "score": score,
+            "action": action,
+            "confidence": confidence,
+            "reason": " | ".join(reasons[:4]) if reasons else "추세 중립",
+            "details": {
+                "ema5": ema5,
+                "ema20": ema20,
+                "ema60": ema60,
+                "adx": adx,
+                "volume_ratio": volume_ratio,
+            },
         }

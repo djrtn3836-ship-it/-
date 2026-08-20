@@ -6,11 +6,11 @@ scheduler/daily_collector.py - v1.1 FINAL (재시도 + CollectorStatus 연동)
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import List
+
+from collector.collector_status import collector_status
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
 from data.kiwoom_connector import KiwoomConnectorV512
-from collector.collector_status import collector_status
 
 logger = setup_logger("daily_collector")
 
@@ -18,7 +18,7 @@ logger = setup_logger("daily_collector")
 collector_status.register("ohlcv_collector", freshness_seconds=86400)  # 1일
 
 
-async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, tickers: List[str]):
+async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, tickers: list[str]):
     """구독 종목들의 전일 OHLCV 데이터를 수집하여 DB에 저장"""
     if not tickers:
         logger.warning("⚠️ 수집할 종목 목록이 비어 있습니다.")
@@ -26,7 +26,7 @@ async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, 
 
     logger.info(f"📊 OHLCV 데이터 수집 시작: {len(tickers)}개 종목")
 
-    yesterday = (datetime.now() - timedelta(days=1))
+    yesterday = datetime.now() - timedelta(days=1)
     date_str = yesterday.strftime("%Y-%m-%d")
     date_param = yesterday.strftime("%Y%m%d")
 
@@ -50,13 +50,13 @@ async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, 
                     resp = await kiwoom.request_tr(ticker, "일봉")
                     if resp and isinstance(resp, dict):
                         ohlcv_data = {
-                            'open': float(resp.get('open', 0)),
-                            'high': float(resp.get('high', 0)),
-                            'low': float(resp.get('low', 0)),
-                            'close': float(resp.get('close', 0)),
-                            'volume': int(resp.get('volume', 0))
+                            "open": float(resp.get("open", 0)),
+                            "high": float(resp.get("high", 0)),
+                            "low": float(resp.get("low", 0)),
+                            "close": float(resp.get("close", 0)),
+                            "volume": int(resp.get("volume", 0)),
                         }
-                        if ohlcv_data['close'] > 0:
+                        if ohlcv_data["close"] > 0:
                             await db.save_ohlcv(ticker, date_str, ohlcv_data)
                             success_count += 1
                             logger.debug(f"✅ {ticker} OHLCV 저장: 종가 {ohlcv_data['close']:,.0f}")

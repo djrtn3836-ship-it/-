@@ -1,19 +1,17 @@
 """
-validation/execution_simulator.py - v3.1 FINAL (시장 충격 튜닝 + Fallback 정밀화)
+validation/execution_simulator.py - v3.2 FINAL (asyncio.sleep() 버그 제거)
 - Almgren-Chriss 파라미터를 한국 시장 데이터 기반으로 튜닝 (ALPHA=0.08, GAMMA=0.005)
 - Fallback 시 시총 + 평균 거래량을 함께 고려하여 슬리피지 추정 정밀도 향상
 - ExecutionResult에 remaining_volume 추가 (부분 체결 잔량 정보)
 - 다중 호가 레벨 순회 + 부분 체결 정밀화 유지
+- 🔥 v3.2: asyncio.sleep(0.3) 호출 제거 (동기 함수 내 await 없이 사용된 버그)
 """
 
-import math
-import asyncio
-from enum import Enum
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List
-from datetime import datetime, time
-
 import logging
+from dataclasses import dataclass
+from datetime import datetime, time
+from enum import Enum
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,43 +26,40 @@ class MarketSession(Enum):
 @dataclass
 class ExecutionResult:
     filled: bool
-    fill_ratio: float              # 0~1 (체결된 비율)
-    execution_price: float         # 평균 체결가
-    slippage_bps: float            # 전체 슬리피지 (bp)
-    market_impact_bps: float       # 시장 충격에 의한 추가 슬리피지
+    fill_ratio: float  # 0~1 (체결된 비율)
+    execution_price: float  # 평균 체결가
+    slippage_bps: float  # 전체 슬리피지 (bp)
+    market_impact_bps: float  # 시장 충격에 의한 추가 슬리피지
     commission: float
     tax: float
     total_cost: float
     reason: str = ""
-    slices: int = 0                # 분할 체결 슬라이스 수
-    remaining_volume: int = 0      # 🔥 v3.1: 미체결 잔량 (부분 체결 시 활용)
+    slices: int = 0  # 분할 체결 슬라이스 수
+    remaining_volume: int = 0  # 미체결 잔량 (부분 체결 시 활용)
 
 
 class RealisticExecutionSimulator:
-    SECURITIES_TAX = 0.0018        # 매도 시 증권거래세 (0.18%)
-    BROKERAGE_FEE = 0.00015        # 수수료 (0.015%)
+    SECURITIES_TAX = 0.0018  # 매도 시 증권거래세 (0.18%)
+    BROKERAGE_FEE = 0.00015  # 수수료 (0.015%)
 
-    # 🔥 v3.1: Almgren-Chriss 파라미터 (한국 시장 튜닝)
-    # ALPHA: 임시 충격 계수 (0.1 -> 0.08로 하향, 한국 시장 유동성 고려)
-    # GAMMA: 영구 충격 계수 (0.01 -> 0.005로 하향)
-    # BETA: 충격 지수 (0.5 유지)
+    # Almgren-Chriss 파라미터 (한국 시장 튜닝)
     ALPHA = 0.08
     GAMMA = 0.005
     BETA = 0.5
 
     # 시총 구간별 기본 슬리피지 (Fallback용)
     SLIPPAGE_BY_CAP = {
-        'mega': {'threshold': 10_000_000_000_000, 'slippage': 0.0004},
-        'large': {'threshold': 1_000_000_000_000, 'slippage': 0.0012},
-        'mid': {'threshold': 100_000_000_000, 'slippage': 0.0025},
-        'small': {'threshold': 0, 'slippage': 0.007},
+        "mega": {"threshold": 10_000_000_000_000, "slippage": 0.0004},
+        "large": {"threshold": 1_000_000_000_000, "slippage": 0.0012},
+        "mid": {"threshold": 100_000_000_000, "slippage": 0.0025},
+        "small": {"threshold": 0, "slippage": 0.007},
     }
 
     def __init__(self, max_slippage_bps: float = 100.0, num_slices: int = 3):
         self.max_slippage_bps = max_slippage_bps
         self.num_slices = max(1, num_slices)
 
-    def get_session(self, timestamp: Optional[datetime] = None) -> MarketSession:
+    def get_session(self, timestamp: datetime | None = None) -> MarketSession:
         if timestamp is None:
             timestamp = datetime.now()
         t = timestamp.time()
@@ -88,8 +83,8 @@ class RealisticExecutionSimulator:
         order_size: int,
         market_cap: float,
         avg_daily_volume: int = 0,
-        current_time: Optional[datetime] = None,
-        orderbook: Optional[Dict] = None
+        current_time: datetime | None = None,
+        orderbook: dict | None = None,
     ) -> ExecutionResult:
         if current_time is None:
             current_time = datetime.now()
@@ -97,17 +92,20 @@ class RealisticExecutionSimulator:
         session = self.get_session(current_time)
         if session not in [MarketSession.REGULAR, MarketSession.CLOSING_AUCTION]:
             return ExecutionResult(
-                filled=False, fill_ratio=0.0, execution_price=price,
-                slippage_bps=0.0, market_impact_bps=0.0,
-                commission=0.0, tax=0.0, total_cost=0.0,
+                filled=False,
+                fill_ratio=0.0,
+                execution_price=price,
+                slippage_bps=0.0,
+                market_impact_bps=0.0,
+                commission=0.0,
+                tax=0.0,
+                total_cost=0.0,
                 reason=f"거래 불가 세션: {session.value}",
-                remaining_volume=order_size
+                remaining_volume=order_size,
             )
 
         # 1. 시장 충격 계산
-        market_impact_bps = self._calculate_market_impact(
-            order_size, avg_daily_volume, price, market_cap
-        )
+        market_impact_bps = self._calculate_market_impact(order_size, avg_daily_volume, price, market_cap)
 
         # 2. 시간 분할 체결 (Slicing)
         slice_size = max(1, order_size // self.num_slices)
@@ -139,19 +137,23 @@ class RealisticExecutionSimulator:
                 total_slippage_bps += result.slippage_bps * (result.fill_ratio)
                 executed_slices += 1
 
-            # 슬라이스 간 0.3초 대기 (실제 체결 시간 차이)
-            if i < self.num_slices - 1:
-                asyncio.sleep(0.3)  # 동기 호출 시 주의 (실제로는 async 컨텍스트)
+            # 🔥 v3.2: asyncio.sleep() 호출 제거 (실제 대기 없이 경고만 유발하던 버그)
+            # 슬라이스 간 시간차는 논리적 순서만으로 충분함
 
         remaining_volume = order_size - total_filled
 
         if total_filled == 0:
             return ExecutionResult(
-                filled=False, fill_ratio=0.0, execution_price=price,
-                slippage_bps=0.0, market_impact_bps=market_impact_bps,
-                commission=0.0, tax=0.0, total_cost=0.0,
+                filled=False,
+                fill_ratio=0.0,
+                execution_price=price,
+                slippage_bps=0.0,
+                market_impact_bps=market_impact_bps,
+                commission=0.0,
+                tax=0.0,
+                total_cost=0.0,
                 reason="모든 슬라이스 체결 실패",
-                remaining_volume=remaining_volume
+                remaining_volume=remaining_volume,
             )
 
         avg_price = total_cost / total_filled
@@ -165,7 +167,7 @@ class RealisticExecutionSimulator:
             avg_price = price * (1 + total_slippage_bps / 10000)
 
         commission = avg_price * self.BROKERAGE_FEE
-        tax = avg_price * self.SECURITIES_TAX if action.upper() == 'SELL' else 0.0
+        tax = avg_price * self.SECURITIES_TAX if action.upper() == "SELL" else 0.0
         total_cost_with_fee = total_cost + commission + tax
 
         return ExecutionResult(
@@ -179,40 +181,41 @@ class RealisticExecutionSimulator:
             total_cost=total_cost_with_fee,
             reason=f"체결 {fill_ratio:.1%} ({executed_slices}슬라이스)",
             slices=executed_slices,
-            remaining_volume=remaining_volume
+            remaining_volume=remaining_volume,
         )
 
     # ============================================================
     # 내부 메서드
     # ============================================================
-    def _calculate_market_impact(self, order_size: int, avg_daily_volume: int, price: float, market_cap: float) -> float:
+    def _calculate_market_impact(
+        self, order_size: int, avg_daily_volume: int, price: float, market_cap: float
+    ) -> float:
         """Almgren-Chriss 시장 충격 모델 (v3.1 튜닝 적용)"""
         if avg_daily_volume <= 0 or price <= 0:
             return 0.0
 
         participation = order_size / avg_daily_volume
-        if participation <= 0.001:  # 0.1% 미만은 충격 없음
+        if participation <= 0.001:
             return 0.0
 
-        # 🔥 v3.1: 튜닝된 파라미터 적용 (ALPHA=0.08, GAMMA=0.005)
-        temp_impact = self.ALPHA * (participation ** self.BETA) * 10000
+        temp_impact = self.ALPHA * (participation**self.BETA) * 10000
         perm_impact = self.GAMMA * participation * 10000
 
         total_impact_bps = temp_impact + perm_impact
         return min(total_impact_bps, self.max_slippage_bps)
 
-    def _has_valid_orderbook(self, orderbook: Dict) -> bool:
-        bids = orderbook.get('bids', [])
-        asks = orderbook.get('asks', [])
-        return (isinstance(bids, list) and len(bids) > 0 and
-                isinstance(asks, list) and len(asks) > 0)
+    def _has_valid_orderbook(self, orderbook: dict) -> bool:
+        bids = orderbook.get("bids", [])
+        asks = orderbook.get("asks", [])
+        return isinstance(bids, list) and len(bids) > 0 and isinstance(asks, list) and len(asks) > 0
 
-    def _execute_slice_with_orderbook(self, action: str, ref_price: float, slice_size: int,
-                                       orderbook: Dict, impact_bps: float, slice_idx: int) -> ExecutionResult:
-        if action.upper() == 'BUY':
-            levels = sorted(orderbook.get('asks', []), key=lambda x: x[0])
+    def _execute_slice_with_orderbook(
+        self, action: str, ref_price: float, slice_size: int, orderbook: dict, impact_bps: float, slice_idx: int
+    ) -> ExecutionResult:
+        if action.upper() == "BUY":
+            levels = sorted(orderbook.get("asks", []), key=lambda x: x[0])
         else:
-            levels = sorted(orderbook.get('bids', []), key=lambda x: x[0], reverse=True)
+            levels = sorted(orderbook.get("bids", []), key=lambda x: x[0], reverse=True)
 
         if not levels:
             return self._empty_result(ref_price, "호가 없음", slice_size)
@@ -225,9 +228,8 @@ class RealisticExecutionSimulator:
             if remaining <= 0:
                 break
             fill = min(remaining, qty)
-            # 시장 충격 반영: 호가를 소진할수록 가격이 불리해짐
             impact_adjustment = (impact_bps / 10000) * (1 + (filled_qty / slice_size) * 0.5)
-            if action.upper() == 'BUY':
+            if action.upper() == "BUY":
                 exec_price = price * (1 + impact_adjustment)
             else:
                 exec_price = price * (1 - impact_adjustment)
@@ -252,28 +254,25 @@ class RealisticExecutionSimulator:
             tax=0,
             total_cost=total_cost,
             reason=f"슬라이스 {slice_idx+1} 체결",
-            remaining_volume=remaining
+            remaining_volume=remaining,
         )
 
-    def _execute_slice_fallback(self, action: str, price: float, slice_size: int,
-                                 market_cap: float, avg_daily_volume: int, impact_bps: float) -> ExecutionResult:
-        """🔥 v3.1: Fallback 정밀화 (시총 + 평균 거래량 고려)"""
-        # 1. 시총 기반 기본 슬리피지
+    def _execute_slice_fallback(
+        self, action: str, price: float, slice_size: int, market_cap: float, avg_daily_volume: int, impact_bps: float
+    ) -> ExecutionResult:
+        """Fallback 정밀화 (시총 + 평균 거래량 고려)"""
         base_slip = self._calculate_base_slippage(market_cap)
 
-        # 2. 거래량 기반 추가 슬리피지 (평균 거래량 대비 주문량 비율)
         volume_factor = 0.0
         if avg_daily_volume > 0:
             participation = slice_size / avg_daily_volume
-            # 참여율이 5%를 넘으면 슬리피지 증가
             if participation > 0.05:
                 volume_factor = min(0.5, (participation - 0.05) * 2.0)
 
-        # 3. 최종 슬리피지 = 기본 + 거래량 추가 + 시장 충격
         total_slip_bps = (base_slip * 10000) + (volume_factor * 10000) + impact_bps
         total_slip_bps = min(total_slip_bps, self.max_slippage_bps)
 
-        if action.upper() == 'BUY':
+        if action.upper() == "BUY":
             exec_price = price * (1 + total_slip_bps / 10000)
         else:
             exec_price = price * (1 - total_slip_bps / 10000)
@@ -287,26 +286,26 @@ class RealisticExecutionSimulator:
             commission=0,
             tax=0,
             total_cost=exec_price * slice_size,
-            reason=f"Fallback (시총+거래량 반영)",
-            remaining_volume=0
+            reason="Fallback (시총+거래량 반영)",
+            remaining_volume=0,
         )
 
     def _calculate_base_slippage(self, market_cap: float) -> float:
-        """시총 구간별 기본 슬리피지"""
-        for tier, config in sorted(
-            self.SLIPPAGE_BY_CAP.items(),
-            key=lambda x: x[1]['threshold'],
-            reverse=True
-        ):
-            if market_cap >= config['threshold']:
-                return config['slippage']
-        return self.SLIPPAGE_BY_CAP['small']['slippage']
+        for tier, config in sorted(self.SLIPPAGE_BY_CAP.items(), key=lambda x: x[1]["threshold"], reverse=True):
+            if market_cap >= config["threshold"]:
+                return config["slippage"]
+        return self.SLIPPAGE_BY_CAP["small"]["slippage"]
 
     def _empty_result(self, ref_price: float, reason: str, remaining: int) -> ExecutionResult:
         return ExecutionResult(
-            filled=False, fill_ratio=0.0, execution_price=ref_price,
-            slippage_bps=0.0, market_impact_bps=0.0,
-            commission=0.0, tax=0.0, total_cost=0.0,
+            filled=False,
+            fill_ratio=0.0,
+            execution_price=ref_price,
+            slippage_bps=0.0,
+            market_impact_bps=0.0,
+            commission=0.0,
+            tax=0.0,
+            total_cost=0.0,
             reason=reason,
-            remaining_volume=remaining
+            remaining_volume=remaining,
         )

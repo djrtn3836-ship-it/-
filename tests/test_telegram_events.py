@@ -6,6 +6,7 @@ v6.2.0 이벤트 기반 Telegram 알림 템플릿 테스트
 각각 더미 데이터로 전송하여 템플릿과 전송 기능을 검증합니다.
 사용법: python test_telegram_events.py
 """
+
 import sys
 from pathlib import Path
 
@@ -16,18 +17,17 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import asyncio
 import sys
-import os
-from pathlib import Path
 from datetime import datetime, timedelta
-import random
+from pathlib import Path
 
 # 프로젝트 루트 추가
 sys.path.insert(0, str(Path(__file__).parent))
 
-from report.telegram_sender import TelegramSender
 from core.logger import setup_logger
+from report.telegram_sender import TelegramSender
 
 logger = setup_logger("test_telegram")
+
 
 # ============================================================
 # 더미 데이터 생성 함수
@@ -46,8 +46,9 @@ def make_dummy_entry(ticker="005930", name="삼성전자"):
         "negatives": ["단기 과열 우려", "환율 변동성"],
         "entry_time": (datetime.now() - timedelta(minutes=5)).isoformat(),
         "current_stop": 79600.0,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 def make_dummy_sl_trail(ticker="005930", name="삼성전자"):
     return {
@@ -60,8 +61,9 @@ def make_dummy_sl_trail(ticker="005930", name="삼성전자"):
         "new_stop": 82300.0,
         "atr": 1200.0,
         "pnl": 1.83,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 def make_dummy_atr_spike(ticker="005930", name="삼성전자"):
     return {
@@ -75,8 +77,9 @@ def make_dummy_atr_spike(ticker="005930", name="삼성전자"):
         "old_stop": 79600.0,
         "new_stop": 78800.0,
         "atr_change_ratio": 0.333,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 def make_dummy_tp_hit(ticker="005930", name="삼성전자", tp_level=1):
     levels = {1: "1차 (50%)", 2: "2차 (30%)", 3: "3차 (20%)"}
@@ -102,8 +105,9 @@ def make_dummy_tp_hit(ticker="005930", name="삼성전자", tp_level=1):
         "entry_price": entry_price,
         "remaining_qty": remaining,
         "atr": atr,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 def make_dummy_exit(ticker="005930", name="삼성전자", pnl=6.3):
     return {
@@ -118,8 +122,9 @@ def make_dummy_exit(ticker="005930", name="삼성전자", pnl=6.3):
         "lowest_price": None,
         "entry_time": (datetime.now() - timedelta(hours=5, minutes=30)).isoformat(),
         "tp_hit_level": 2,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 # ============================================================
 # 메인 테스트
@@ -153,14 +158,14 @@ async def test_all_events():
         # ticker와 name에 (MOCK) 추가하여 구분
         data["ticker"] = data["ticker"] + " (MOCK)"
         data["name"] = data["name"] + " (MOCK)"
-        
+
         try:
             result = await sender.send(data)
             if result:
-                print(f"   ✅ 전송 성공")
+                print("   ✅ 전송 성공")
                 success_count += 1
             else:
-                print(f"   ❌ 전송 실패")
+                print("   ❌ 전송 실패")
         except Exception as e:
             print(f"   ❌ 예외 발생: {e}")
 
@@ -185,4 +190,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"💥 오류 발생: {e}")
         import traceback
+
         traceback.print_exc()

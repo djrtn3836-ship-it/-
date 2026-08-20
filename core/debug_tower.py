@@ -1,28 +1,21 @@
 """
-core/debug_tower.py - v2.1 FINAL (동적 버퍼 + 시스템 상태 스냅샷)
-- config/debug_config.yaml에서 링 버퍼 크기 동적 로드
-- 크래시 스냅샷에 CPU/메모리/스레드 상태 포함 (psutil)
-- 스냅샷 파일명에 ticker + timestamp 포함 (파일 관리 개선)
-- JSONL 형식 로그 유지, 자동 압축 순환 유지
+core/debug_tower.py - v2.2.1 (쓰로틀링 TTL 정리)
+- _last_crash_time에서 1시간 이상 지난 항목 자동 정리
+- 메모리 누수 방지
 """
 
-import json
 import gzip
+import json
 import shutil
+import threading
 import time
 import traceback
 from collections import deque
-from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, List
-import threading
-import os
+from pathlib import Path
 
-# ============================================================
-# 설정 파일 로드 (동적 버퍼 크기)
-# ============================================================
-def _load_debug_config() -> Dict:
-    """config/debug_config.yaml 로드 (없으면 기본값)"""
+
+def _load_debug_config() -> dict:
     config_path = Path(__file__).parent.parent / "config" / "debug_config.yaml"
     default = {
         "ring_buffer_size": 10000,
@@ -33,24 +26,27 @@ def _load_debug_config() -> Dict:
     if config_path.exists():
         try:
             import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
+
+            with open(config_path, encoding="utf-8") as f:
                 config = yaml.safe_load(f)
-                debug_cfg = config.get('debug_tower', {})
+                debug_cfg = config.get("debug_tower", {})
                 return {
                     "ring_buffer_size": debug_cfg.get("ring_buffer_size", default["ring_buffer_size"]),
                     "trace_file_max_mb": debug_cfg.get("trace_file_max_mb", default["trace_file_max_mb"]),
-                    "crash_snapshot_ttl_days": debug_cfg.get("crash_snapshot_ttl_days", default["crash_snapshot_ttl_days"]),
+                    "crash_snapshot_ttl_days": debug_cfg.get(
+                        "crash_snapshot_ttl_days", default["crash_snapshot_ttl_days"]
+                    ),
                     "include_system_state": debug_cfg.get("include_system_state", default["include_system_state"]),
                 }
         except Exception as e:
             print(f"⚠️ debug_config.yaml 로드 실패: {e}, 기본값 사용")
     return default
 
+
 _DEBUG_CONFIG = _load_debug_config()
 
 
 class DebugTower:
-    """싱글톤 디버그 관제탑 (v2.1)"""
     _instance = None
     _lock = threading.Lock()
 
@@ -63,33 +59,30 @@ class DebugTower:
         return cls._instance
 
     def _init(self):
-        # 디렉토리 준비
         self.base_dir = Path(__file__).parent.parent / "logs"
         self.trace_dir = self.base_dir / "debug"
         self.crash_dir = self.base_dir / "crashes"
         self.trace_dir.mkdir(parents=True, exist_ok=True)
         self.crash_dir.mkdir(parents=True, exist_ok=True)
 
-        # 🔥 v2.1: 링 버퍼 크기 동적 설정
         self._ring_buffer_size = _DEBUG_CONFIG.get("ring_buffer_size", 10000)
         self._ring_buffer: deque = deque(maxlen=self._ring_buffer_size)
 
-        # 추적 로그 파일 경로
         self.trace_file = self.trace_dir / "debug_trace.jsonl"
         self.trace_file.touch(exist_ok=True)
 
-        # 오래된 크래시 파일 정리
         self._clean_old_crashes(days=_DEBUG_CONFIG.get("crash_snapshot_ttl_days", 7))
 
-        # 쓰기 버퍼
         self._write_buffer = []
         self._buffer_size = 50
         self._flush_lock = threading.Lock()
 
         self._include_system_state = _DEBUG_CONFIG.get("include_system_state", True)
 
+        self._last_crash_time: dict[str, float] = {}
+        self._crash_throttle_seconds = 300
+
     def _clean_old_crashes(self, days: int = 7):
-        """오래된 크래시 스냅샷 삭제"""
         cutoff = datetime.now() - timedelta(days=days)
         for f in self.crash_dir.glob("crash_*.log"):
             try:
@@ -99,13 +92,20 @@ class DebugTower:
             except Exception:
                 pass
 
+    # 🔥 P1-10: 쓰로틀링 캐시 TTL 정리
+    def _clean_throttle_cache(self):
+        """1시간 이상 지난 쓰로틀링 항목 제거"""
+        now = time.time()
+        expired = [k for k, t in self._last_crash_time.items() if now - t > 3600]
+        for k in expired:
+            del self._last_crash_time[k]
+
     def _flush_buffer(self):
-        """버퍼 내용을 파일에 쓰기"""
         with self._flush_lock:
             if not self._write_buffer:
                 return
             try:
-                with open(self.trace_file, 'a', encoding='utf-8') as f:
+                with open(self.trace_file, "a", encoding="utf-8") as f:
                     for entry in self._write_buffer:
                         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._write_buffer.clear()
@@ -113,52 +113,45 @@ class DebugTower:
                 pass
 
     def _rotate_trace(self):
-        """trace_file_max_mb 초과 시 압축 순환"""
         max_mb = _DEBUG_CONFIG.get("trace_file_max_mb", 50)
         if self.trace_file.stat().st_size > max_mb * 1024 * 1024:
             try:
                 backup_name = f"debug_trace_{int(time.time())}.jsonl.gz"
                 backup_path = self.trace_dir / backup_name
-                with open(self.trace_file, 'rb') as f_in:
-                    with gzip.open(backup_path, 'wb') as f_out:
+                with open(self.trace_file, "rb") as f_in:
+                    with gzip.open(backup_path, "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
                 self.trace_file.unlink()
                 self.trace_file.touch()
-                # 오래된 백업 삭제 (최대 5개 유지)
                 backups = sorted(self.trace_dir.glob("debug_trace_*.jsonl.gz"))
                 for old in backups[:-5]:
                     old.unlink()
             except Exception:
                 pass
 
-    def _get_system_state(self) -> Dict:
-        """시스템 상태 수집 (CPU/메모리/스레드) - v2.1 신규"""
+    def _get_system_state(self) -> dict:
         state = {}
         if not self._include_system_state:
             return state
         try:
             import psutil
+
             state["cpu_percent"] = psutil.cpu_percent(interval=0.1)
             state["memory_percent"] = psutil.virtual_memory().percent
             state["memory_used_mb"] = psutil.virtual_memory().used / (1024 * 1024)
             state["active_threads"] = threading.active_count()
         except ImportError:
-            # psutil 없으면 기본 정보만
             state["active_threads"] = threading.active_count()
         except Exception:
             pass
         return state
 
-    # ============================================================
-    # 코어 메서드
-    # ============================================================
-    def log(self, ticker: str, event: str, details: Dict, trace_id: Optional[str] = None):
-        """디버그 이벤트 기록"""
+    def log(self, ticker: str, event: str, details: dict, trace_id: str | None = None):
         if trace_id is None:
             trace_id = f"{ticker}_{int(time.time()*1000)}"
 
         entry = {
-            "ts": datetime.now().isoformat(timespec='milliseconds'),
+            "ts": datetime.now().isoformat(timespec="milliseconds"),
             "trace_id": trace_id,
             "ticker": ticker,
             "event": event,
@@ -173,55 +166,58 @@ class DebugTower:
         if len(self._write_buffer) % 100 == 0:
             self._rotate_trace()
 
-    def capture_snapshot(self, ticker: str, error: Exception, trace_id: Optional[str] = None):
-        """
-        오류 발생 시 스냅샷 생성 (v2.1: 시스템 상태 포함)
-        """
-        if trace_id is None:
-            trace_id = f"{ticker}_{int(time.time()*1000)}"
+    def capture_snapshot(self, ticker: str, error: Exception, trace_id: str | None = None):
+        # 🔥 P1-10: 쓰로틀링 캐시 정리 (1시간 초과 항목 제거)
+        self._clean_throttle_cache()
 
-        # 관련 로그 필터링
+        now = time.time()
+        last_time = self._last_crash_time.get(ticker, 0)
+        if now - last_time < self._crash_throttle_seconds:
+            # logger가 없을 수 있으므로 print로 대체
+            print(f"⏳ {ticker} 크래시 스냅샷 쓰로틀링 (5분 내 중복 방지)")
+            return None
+
+        self._last_crash_time[ticker] = now
+
+        if trace_id is None:
+            trace_id = f"{ticker}_{int(now*1000)}"
+
         related = []
         for e in self._ring_buffer:
             if e.get("ticker") == ticker or e.get("trace_id") == trace_id:
                 related.append(e)
 
-        # 시스템 상태 수집 (v2.1)
         system_state = self._get_system_state()
         system_state["ring_buffer_size"] = len(self._ring_buffer)
         system_state["trace_file_size"] = self.trace_file.stat().st_size if self.trace_file.exists() else 0
 
         snapshot = {
-            "timestamp": datetime.now().isoformat(timespec='milliseconds'),
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
             "ticker": ticker,
             "trace_id": trace_id,
             "error_type": type(error).__name__,
             "error_msg": str(error),
             "traceback": traceback.format_exc(),
             "system_state": system_state,
-            "recent_events": related[-50:]
+            "recent_events": related[-50:],
         }
 
-        # 🔥 v2.1: 파일명에 ticker + timestamp 포함
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = self.crash_dir / f"crash_{ticker}_{timestamp_str}.log"
         try:
-            with open(filename, 'w', encoding='utf-8') as f:
+            with open(filename, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
             return str(filename)
         except Exception:
             return None
 
-    def get_trace(self, trace_id: str) -> List[Dict]:
-        """특정 trace_id의 전체 이벤트 조회"""
+    def get_trace(self, trace_id: str) -> list[dict]:
         return [e for e in self._ring_buffer if e.get("trace_id") == trace_id]
 
     def flush(self):
-        """버퍼 강제 플러시"""
         self._flush_buffer()
 
-    def get_stats(self) -> Dict:
-        """관제탑 상태 정보"""
+    def get_stats(self) -> dict:
         return {
             "ring_buffer_size": len(self._ring_buffer),
             "ring_buffer_max": self._ring_buffer_size,
@@ -231,5 +227,5 @@ class DebugTower:
             "include_system_state": self._include_system_state,
         }
 
-# 전역 인스턴스
+
 debug_tower = DebugTower()

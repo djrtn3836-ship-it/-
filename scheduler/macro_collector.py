@@ -1,27 +1,37 @@
 """
-scheduler/macro_collector.py - v2.1 FINAL (Fallback 소스 + 이상치 탐지)
-- Yahoo Finance 실패 시 FRED API 또는 Investing.com Fallback
-- 수집된 데이터에 이상치 탐지 (Z-score 기반)
-- CollectorStatusManager 연동
+scheduler/macro_collector.py - v2.2 (순환 참조 제거)
+- _send_alert()에서 scanner_main 동적 import 제거 → 콜백 패턴으로 변경
+- set_alert_callback() 함수 추가
+- 기존 데이터 수집 로직 100% 유지
 """
 
 import asyncio
-import time
 import re
-import requests
-from datetime import datetime
-from typing import Optional, Dict
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
-from core.logger import setup_logger
-from core.debug_tower import debug_tower
+import requests
+
 from collector.collector_status import collector_status
+from core.debug_tower import debug_tower
+from core.logger import setup_logger
 
 logger = setup_logger("macro_collector")
 
 # ============================================================
-# 데이터 클래스 (확장)
+# 콜백 패턴 (순환 참조 제거)
 # ============================================================
+_alert_callback: Callable[[str, str], None] | None = None
+
+
+def set_alert_callback(func: Callable[[str, str], None]) -> None:
+    """scanner_main에서 알림 함수를 등록"""
+    global _alert_callback
+    _alert_callback = func
+
+
 @dataclass
 class MacroData:
     kospi_trend: float = 0.0
@@ -37,7 +47,7 @@ class MacroData:
     ktb_3y: float = 3.0
     last_update: str = ""
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "kospi_trend": self.kospi_trend,
             "usdkrw": self.usdkrw,
@@ -54,45 +64,39 @@ class MacroData:
         }
 
 
-# ============================================================
-# 전역 변수
-# ============================================================
-_cached_macro: Optional[MacroData] = None
+_cached_macro: MacroData | None = None
 _last_fetch_time: float = 0
 _consecutive_failures: int = 0
 _LAST_ALERT_TIME: float = 0
 _ALERT_COOLDOWN = 1800
 
 
-# ============================================================
-# 내부 수집 함수 (동기)
-# ============================================================
-def _fetch_yahoo(symbol: str, period: str = "5d") -> Optional[float]:
+def _fetch_yahoo(symbol: str, period: str = "5d") -> float | None:
     try:
         import yfinance as yf
+
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period=period)
         if hist.empty:
             return None
         if period == "5d" and len(hist) >= 2:
-            old = hist['Close'].iloc[0]
-            latest = hist['Close'].iloc[-1]
+            old = hist["Close"].iloc[0]
+            latest = hist["Close"].iloc[-1]
             return (latest - old) / old * 100
-        return float(hist['Close'].iloc[-1])
+        return float(hist["Close"].iloc[-1])
     except Exception as e:
         logger.debug(f"Yahoo Finance 오류 ({symbol}): {e}")
         return None
 
 
-def _fetch_fred(series_id: str) -> Optional[float]:
-    """FRED API Fallback (미국 금리 등)"""
+def _fetch_fred(series_id: str) -> float | None:
     try:
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            lines = resp.text.strip().split('\n')
+            lines = resp.text.strip().split("\n")
             if len(lines) >= 2:
-                last_line = lines[-1].split(',')
+                last_line = lines[-1].split(",")
                 if len(last_line) >= 2:
                     return float(last_line[1])
     except Exception as e:
@@ -100,8 +104,7 @@ def _fetch_fred(series_id: str) -> Optional[float]:
     return None
 
 
-def _fetch_ktb_yield() -> Optional[float]:
-    """Naver Finance에서 KTB 3년물 금리 수집"""
+def _fetch_ktb_yield() -> float | None:
     try:
         url = "https://finance.naver.com/marketindex/interestDailyQuote.nhn?marketindexCd=IRR_KTB3Y"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -116,35 +119,25 @@ def _fetch_ktb_yield() -> Optional[float]:
 
 
 async def _send_alert(error_msg: str) -> None:
+    """콜백을 통해 알림 전송 (순환 참조 제거)"""
     global _LAST_ALERT_TIME
     now = time.time()
     if now - _LAST_ALERT_TIME < _ALERT_COOLDOWN:
         return
     _LAST_ALERT_TIME = now
-    try:
-        from scanner_main import send_error_alert
-        await send_error_alert(f"📊 거시 데이터 수집 위기", error_msg)
-    except Exception:
-        pass
+    if _alert_callback:
+        await _alert_callback("📊 거시 데이터 수집 위기", error_msg)
 
 
-# ============================================================
-# 🔥 v2.1: 이상치 탐지
-# ============================================================
 def _is_anomaly(value: float, mean: float, std: float, z_threshold: float = 3.0) -> bool:
-    """Z-score 기반 이상치 탐지"""
     if std == 0:
         return False
     return abs((value - mean) / std) > z_threshold
 
 
-# ============================================================
-# 메인 수집기 (비동기)
-# ============================================================
 async def fetch_macro_data(force: bool = False) -> MacroData:
     global _cached_macro, _last_fetch_time, _consecutive_failures
 
-    # CollectorStatus 등록
     collector_status.register("macro_collector", freshness_seconds=600)
 
     now = time.time()
@@ -160,13 +153,11 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
     loop = asyncio.get_running_loop()
 
     try:
-        # 1~9. Yahoo Finance 수집 (기존 v2.0과 동일)
         kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d")
         if kospi is not None:
             data.kospi_trend = kospi
             logger.info(f"   ✅ KOSPI: {kospi:.2f}%")
         else:
-            # Fallback: FRED에서 대체 (KOSPI는 FRED에 없으므로 패스)
             logger.warning("   ⚠️ KOSPI 수집 실패, 이전값 유지")
 
         usd = await loop.run_in_executor(None, _fetch_yahoo, "KRW=X", "1d")
@@ -180,7 +171,6 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
             data.vkospi = vix * 0.8
             logger.info(f"   ✅ VIX: {vix:.2f}")
         else:
-            # Fallback: FRED VIXCLS
             vix_fallback = await loop.run_in_executor(None, _fetch_fred, "VIXCLS")
             if vix_fallback and vix_fallback > 0:
                 data.vix = vix_fallback
@@ -192,43 +182,36 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
             data.bond_3y = bond
             logger.info(f"   ✅ US 10Y: {bond:.2f}%")
         else:
-            # Fallback: FRED DGS10
             bond_fallback = await loop.run_in_executor(None, _fetch_fred, "DGS10")
             if bond_fallback and bond_fallback > 0:
                 data.bond_3y = bond_fallback
                 logger.info(f"   ✅ US 10Y (FRED Fallback): {bond_fallback:.2f}%")
 
-        # S&P 500
         spx = await loop.run_in_executor(None, _fetch_yahoo, "^GSPC", "5d")
         if spx is not None:
             data.spx_trend = spx
             logger.info(f"   ✅ S&P 500: {spx:.2f}%")
 
-        # 나스닥
         ndx = await loop.run_in_executor(None, _fetch_yahoo, "^NDX", "5d")
         if ndx is not None:
             data.ndx_trend = ndx
             logger.info(f"   ✅ 나스닥: {ndx:.2f}%")
 
-        # SOX
         sox = await loop.run_in_executor(None, _fetch_yahoo, "^SOX", "5d")
         if sox is not None:
             data.sox_trend = sox
             logger.info(f"   ✅ SOX: {sox:.2f}%")
 
-        # WTI
         oil = await loop.run_in_executor(None, _fetch_yahoo, "CL=F", "1d")
         if oil and oil > 0:
             data.oil_price = oil
             logger.info(f"   ✅ WTI: ${oil:.2f}")
 
-        # KTB 3년물
         ktb = await loop.run_in_executor(None, _fetch_ktb_yield)
         if ktb and ktb > 0:
             data.ktb_3y = ktb
             logger.info(f"   ✅ KTB 3Y: {ktb:.2f}%")
 
-        # 🔥 v2.1: 이상치 탐지 (예: VIX가 0~100 범위 이탈)
         if data.vix < 0 or data.vix > 100:
             logger.warning(f"⚠️ VIX 이상치 감지: {data.vix:.2f} → 20.0으로 대체")
             data.vix = 20.0
@@ -250,7 +233,7 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
         logger.error(f"❌ 거시 수집 실패 ({_consecutive_failures}회): {e}")
         debug_tower.capture_snapshot("SYSTEM", e, "MACRO_FETCH")
         if _consecutive_failures >= 3:
-            await _send_alert(f"{_consecutive_failures}회 연속 실패: {str(e)}")
+            await _send_alert(f"{_consecutive_failures}회 연속 실패: {e!s}")
 
     return _cached_macro if _cached_macro else MacroData()
 

@@ -1,35 +1,29 @@
 """
-data/kiwoom_connector.py - v6.1.5 FINAL (REG 재시도 3회, 간격 2초)
-- ThreadedResolver 적용 (DNS 오류 완전 차단)
-- connect() 호출 시 TCPConnector + ClientSession 완전 재생성
-- 외국인수급(ka10008) / 기관수급(ka10009) TR 완전 구현
-- _connect_lock으로 동시 연결/재연결 경쟁 조건 차단
-- REAL 메시지 배열 처리 추가 (파싱에러 해결)
-- WebSocket 재연결 시 _next_group_no 초기화 (그룹 번호 무한 증가 방지)
-- 토큰 갱신 실패 시 access_token=None으로 초기화하고 예외 발생
-- LOGIN 실패/WebSocket 종료 시 access_token 무효화
-- 디버그 관제탑 추가
-- _register_with_retry 재시도 3회, 간격 2초 (105110 대응)
+data/kiwoom_connector.py - v6.1.6 (재연결 예외 처리 통일)
+- _reconnect_websocket_impl()의 session close에 try/except/finally 적용
+- _connect_impl()과 동일한 패턴으로 통일
+- 기존 모든 기능 100% 유지
 """
 
 import asyncio
-import os
 import json
-import time
+import os
 import socket
-from typing import Dict, Optional, Callable, Any, List
-from datetime import datetime, timedelta
+import time
 from collections import defaultdict
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import aiohttp
 import websockets
-from dotenv import load_dotenv
-from pathlib import Path
 from aiohttp.resolver import ThreadedResolver
+from dotenv import load_dotenv
 
-from core.logger import setup_logger
+from core.blackbox_logger import log_error, log_event, log_raw_data
 from core.config import get_config
-from core.blackbox_logger import log_raw_data, log_event, log_error
 from core.debug_tower import debug_tower
+from core.logger import setup_logger
 
 logger = setup_logger("kiwoom_rest")
 config = get_config()
@@ -75,20 +69,22 @@ class KiwoomConnectorV512:
         self.access_token = None
         self.token_expires_at = 0
 
-        self._rate_limiters: Dict[str, AsyncRateLimiter] = defaultdict(lambda: AsyncRateLimiter(rate=rate_limit, per=1.0))
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._connector: Optional[aiohttp.TCPConnector] = None
+        self._rate_limiters: dict[str, AsyncRateLimiter] = defaultdict(
+            lambda: AsyncRateLimiter(rate=rate_limit, per=1.0)
+        )
+        self._session: aiohttp.ClientSession | None = None
+        self._connector: aiohttp.TCPConnector | None = None
 
         self._connect_lock = asyncio.Lock()
 
-        self._ws: Optional[websockets.WebSocketClientProtocol] = None
-        self._ws_task: Optional[asyncio.Task] = None
-        self._realtime_handlers: Dict[str, Callable] = {}
+        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws_task: asyncio.Task | None = None
+        self._realtime_handlers: dict[str, Callable] = {}
         self._shutdown_event = asyncio.Event()
         self._reconnecting = False
 
-        self._subscribed_items: Dict[str, List[str]] = {}
-        self._group_allocator: Dict[str, str] = {}
+        self._subscribed_items: dict[str, list[str]] = {}
+        self._group_allocator: dict[str, str] = {}
         self._next_group_no = 1
         self._group_max_size = 100
 
@@ -97,20 +93,17 @@ class KiwoomConnectorV512:
         self._ws_logged_in = False
         self._silence_timeout = config.get_int("ws_silence_timeout", 60)
 
-        self._priority_keys = ['ticker', 'symbol', 'item', 'stk_cd', 'code', 'item_cd']
+        self._priority_keys = ["ticker", "symbol", "item", "stk_cd", "code", "item_cd"]
         self._discovered_keys = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.1.5", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.1.6", "rate_limit": rate_limit})
 
-    # ============================================================
-    # 자가 적응 파서 (Dynamic Key Learning)
-    # ============================================================
-    def _load_discovered_keys(self) -> List[str]:
+    def _load_discovered_keys(self) -> list[str]:
         if DISCOVERED_KEYS_FILE.exists():
             try:
-                with open(DISCOVERED_KEYS_FILE, 'r') as f:
+                with open(DISCOVERED_KEYS_FILE) as f:
                     data = json.load(f)
-                    return data.get('keys', [])
+                    return data.get("keys", [])
             except:
                 return []
         return []
@@ -118,12 +111,12 @@ class KiwoomConnectorV512:
     def _save_discovered_keys(self):
         try:
             DISCOVERED_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(DISCOVERED_KEYS_FILE, 'w') as f:
-                json.dump({'keys': self._discovered_keys}, f, indent=2)
+            with open(DISCOVERED_KEYS_FILE, "w") as f:
+                json.dump({"keys": self._discovered_keys}, f, indent=2)
         except Exception as e:
             log_error("키 저장 실패", e)
 
-    def _extract_ticker(self, data: dict) -> Optional[str]:
+    def _extract_ticker(self, data: dict) -> str | None:
         for key in self._priority_keys:
             if key in data:
                 return str(data[key])
@@ -133,7 +126,7 @@ class KiwoomConnectorV512:
         for key, value in data.items():
             if isinstance(value, str) and len(value) >= 6 and value.isdigit():
                 lower_key = key.lower()
-                if 'cd' in lower_key or 'code' in lower_key or 'ticker' in lower_key or 'sym' in lower_key:
+                if "cd" in lower_key or "code" in lower_key or "ticker" in lower_key or "sym" in lower_key:
                     if key not in self._priority_keys and key not in self._discovered_keys:
                         self._discovered_keys.append(key)
                         self._save_discovered_keys()
@@ -145,17 +138,17 @@ class KiwoomConnectorV512:
         ticker = self._extract_ticker(data)
         if not ticker:
             keys = list(data.keys())
-            if not (set(keys) - {'price', 'timestamp', 'time'}):
+            if not (set(keys) - {"price", "timestamp", "time"}):
                 return
-            log_error(f"파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
+            log_error("파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
             return
 
-        data['ticker'] = ticker
+        data["ticker"] = ticker
         debug_tower.log(
             ticker,
             "WS_RECV",
-            {"price": data.get('price'), "keys": list(data.keys())},
-            trace_id=f"T-{ticker}-{int(time.time()*1000)}"
+            {"price": data.get("price"), "keys": list(data.keys())},
+            trace_id=f"T-{ticker}-{int(time.time()*1000)}",
         )
 
         if ticker in self._realtime_handlers:
@@ -167,9 +160,6 @@ class KiwoomConnectorV512:
         else:
             logger.debug(f"📩 미등록 종목 데이터: {ticker}")
 
-    # ============================================================
-    # WebSocket 수신 루프
-    # ============================================================
     async def _ws_receiver(self):
         logger.info(f"📡 WebSocket 수신 시작 (침묵 감지: {self._silence_timeout}초)")
         log_event("WS_RECEIVER_START", {"timeout": self._silence_timeout})
@@ -207,7 +197,7 @@ class KiwoomConnectorV512:
                     except Exception as e:
                         log_error("메시지 처리 중 오류", e)
                         debug_tower.capture_snapshot("SYSTEM", e, "WS_PROCESS")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if self._subscribed_items and not self._shutdown_event.is_set():
                         log_event("SILENCE_DETECTED", {"seconds": self._silence_timeout})
                         await self._backfill_missing_data()
@@ -230,12 +220,12 @@ class KiwoomConnectorV512:
         for ticker in top_tickers:
             try:
                 result = await self.request_tr(ticker, "현재가")
-                if result and 'close' in result:
+                if result and "close" in result:
                     mock_data = {
                         "ticker": ticker,
-                        "price": result['close'],
+                        "price": result["close"],
                         "change_rate": 0.0,
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": datetime.now().isoformat(),
                     }
                     await self._handle_ws_message(mock_data)
                     logger.info(f"📡 [백필] {ticker} 현재가 복구: {result['close']}")
@@ -244,9 +234,6 @@ class KiwoomConnectorV512:
                 log_error(f"백필 실패 ({ticker})", e)
                 debug_tower.capture_snapshot(ticker, e, "BACKFILL")
 
-    # ============================================================
-    # 재연결 로직 (락 적용)
-    # ============================================================
     async def _reconnect_websocket(self):
         if self._reconnecting:
             return
@@ -270,22 +257,30 @@ class KiwoomConnectorV512:
             for attempt in range(1, 6):
                 if self._shutdown_event.is_set():
                     break
-                delay = 2 ** attempt
+                delay = 2**attempt
                 logger.info(f"🔄 재연결 시도 {attempt}/5 (대기 {delay}초)")
                 log_event("RECONNECT_ATTEMPT", {"attempt": attempt, "delay": delay})
                 await asyncio.sleep(delay)
                 try:
+                    # 🔥 try/except/finally로 통일 (기존 세션 안전 종료)
                     if self._session is not None:
-                        await self._session.close()
-                        self._session = None
+                        try:
+                            await self._session.close()
+                        except Exception:
+                            pass
+                        finally:
+                            self._session = None
+
                     if self._connector is not None:
-                        await self._connector.close()
-                        self._connector = None
+                        try:
+                            await self._connector.close()
+                        except Exception:
+                            pass
+                        finally:
+                            self._connector = None
+
                     self._connector = aiohttp.TCPConnector(
-                        resolver=ThreadedResolver(),
-                        use_dns_cache=False,
-                        family=socket.AF_INET,
-                        ttl_dns_cache=0
+                        resolver=ThreadedResolver(), use_dns_cache=False, family=socket.AF_INET, ttl_dns_cache=0
                     )
                     self._session = aiohttp.ClientSession(connector=self._connector)
 
@@ -320,10 +315,7 @@ class KiwoomConnectorV512:
         finally:
             self._reconnecting = False
 
-    # ============================================================
-    # request_tr
-    # ============================================================
-    async def request_tr(self, ticker: str, tr_type: str, callback: Optional[Callable] = None) -> Dict:
+    async def request_tr(self, ticker: str, tr_type: str, callback: Callable | None = None) -> dict:
         debug_tower.log(ticker, "TR_REQUEST", {"tr_type": tr_type})
         if tr_type == "일봉":
             api_id = "ka10060"
@@ -342,21 +334,21 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        chart_list = data.get('stk_invsr_orgn_chart', [])
+                        chart_list = data.get("stk_invsr_orgn_chart", [])
                         if chart_list:
                             record = chart_list[0]
                             result = {
                                 "symbol": ticker,
-                                "open": float(record.get('open', 0)),
-                                "high": float(record.get('high', 0)),
-                                "low": float(record.get('low', 0)),
-                                "close": float(record.get('cur_prc', 0)),
-                                "volume": int(record.get('vol', 0)),
-                                "raw": data
+                                "open": float(record.get("open", 0)),
+                                "high": float(record.get("high", 0)),
+                                "low": float(record.get("low", 0)),
+                                "close": float(record.get("cur_prc", 0)),
+                                "volume": int(record.get("vol", 0)),
+                                "raw": data,
                             }
                             if callback:
                                 callback(result)
-                            debug_tower.log(ticker, "TR_SUCCESS", {"tr_type": tr_type, "close": result['close']})
+                            debug_tower.log(ticker, "TR_SUCCESS", {"tr_type": tr_type, "close": result["close"]})
                             return result
                         return {"error": "no_data"}
                     return {"error": resp.status}
@@ -380,11 +372,11 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        net_buy = data.get('net_buy')
+                        net_buy = data.get("net_buy")
                         if net_buy is None:
-                            output = data.get('output', [])
+                            output = data.get("output", [])
                             if output and isinstance(output, list) and len(output) > 0:
-                                net_buy = output[0].get('net_buy', 0)
+                                net_buy = output[0].get("net_buy", 0)
                             else:
                                 net_buy = 0
                                 logger.warning(f"⚠️ 외국인 수급 응답 구조 예상과 다름: {list(data.keys())}")
@@ -414,11 +406,11 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        net_buy = data.get('net_buy')
+                        net_buy = data.get("net_buy")
                         if net_buy is None:
-                            output = data.get('output', [])
+                            output = data.get("output", [])
                             if output and isinstance(output, list) and len(output) > 0:
-                                net_buy = output[0].get('net_buy', 0)
+                                net_buy = output[0].get("net_buy", 0)
                             else:
                                 net_buy = 0
                                 logger.warning(f"⚠️ 기관 수급 응답 구조 예상과 다름: {list(data.keys())}")
@@ -450,7 +442,7 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        price = float(data.get('buy_fpr_bid', 0) or data.get('sel_fpr_bid', 0))
+                        price = float(data.get("buy_fpr_bid", 0) or data.get("sel_fpr_bid", 0))
                         result = {"symbol": ticker, "close": price, "raw": data}
                         if callback:
                             callback(result)
@@ -461,9 +453,6 @@ class KiwoomConnectorV512:
                 debug_tower.capture_snapshot(ticker, e, f"TR_{tr_type}")
                 return {"error": str(e)}
 
-    # ============================================================
-    # connect()
-    # ============================================================
     async def connect(self) -> bool:
         debug_tower.log("SYSTEM", "KIWOOM_CONNECT_START", {})
         async with self._connect_lock:
@@ -491,10 +480,7 @@ class KiwoomConnectorV512:
             self._connector = None
 
         self._connector = aiohttp.TCPConnector(
-            resolver=ThreadedResolver(),
-            use_dns_cache=False,
-            family=socket.AF_INET,
-            ttl_dns_cache=0
+            resolver=ThreadedResolver(), use_dns_cache=False, family=socket.AF_INET, ttl_dns_cache=0
         )
         self._session = aiohttp.ClientSession(connector=self._connector)
 
@@ -522,9 +508,6 @@ class KiwoomConnectorV512:
         debug_tower.log("SYSTEM", "KIWOOM_CONNECT_SUCCESS", {"token": bool(self.access_token)})
         return True
 
-    # ============================================================
-    # _connect_websocket()
-    # ============================================================
     async def _connect_websocket(self):
         if not self.access_token or time.time() > self.token_expires_at:
             await self._refresh_token(raise_on_fail=True)
@@ -557,7 +540,7 @@ class KiwoomConnectorV512:
                 debug_tower.log("SYSTEM", "WS_LOGIN_FAIL", {"msg": error_msg})
                 self.access_token = None
                 raise Exception(f"LOGIN failed: {error_msg}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log_error("LOGIN 타임아웃", {})
             logger.error("❌ LOGIN 응답 타임아웃 (20초)")
             debug_tower.capture_snapshot("SYSTEM", TimeoutError("LOGIN timeout"), "WS_LOGIN")
@@ -572,13 +555,7 @@ class KiwoomConnectorV512:
         self._ws_task = asyncio.create_task(self._ws_receiver())
         logger.info("📡 WebSocket 연결 및 인증 완료")
 
-    # ============================================================
-    # register_realtime (재시도 로직 포함)
-    # ============================================================
-    async def _register_with_retry(self, ticker: str, handler: Callable, types: List[str]) -> bool:
-        """
-        REG 요청 재시도 (최대 3회, 간격 2초)
-        """
+    async def _register_with_retry(self, ticker: str, handler: Callable, types: list[str]) -> bool:
         for attempt in range(3):
             try:
                 await self.register_realtime(ticker, handler, types)
@@ -592,7 +569,7 @@ class KiwoomConnectorV512:
                     debug_tower.capture_snapshot(ticker, e, "REG")
         return False
 
-    async def register_realtime(self, ticker: str, handler: Callable, types: List[str] = None):
+    async def register_realtime(self, ticker: str, handler: Callable, types: list[str] = None):
         if types is None:
             types = ["0B"]
         if not self._ws or not self._ws_running:
@@ -620,7 +597,7 @@ class KiwoomConnectorV512:
                 "trnm": "REG",
                 "grp_no": grp_no,
                 "refresh": "1",
-                "data": [{"item": [ticker], "type": types}]
+                "data": [{"item": [ticker], "type": types}],
             }
             await self._ws.send(json.dumps(subscribe_msg))
             log_event("REG_SENT", {"ticker": ticker, "group": grp_no})
@@ -634,9 +611,6 @@ class KiwoomConnectorV512:
     async def _acquire_rate_limit(self, api_id: str):
         await self._rate_limiters[api_id].acquire()
 
-    # ============================================================
-    # _refresh_token()
-    # ============================================================
     async def _refresh_token(self, raise_on_fail: bool = False):
         if self._session is None:
             logger.error("❌ 세션이 없어 토큰 갱신 불가")
@@ -651,7 +625,7 @@ class KiwoomConnectorV512:
             async with self._session.post(
                 f"{self.REST_BASE_URL}/oauth2/token",
                 json={"grant_type": "client_credentials", "appkey": self.api_key, "secretkey": self.api_secret},
-                timeout=10
+                timeout=10,
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -688,21 +662,22 @@ class KiwoomConnectorV512:
             ws_ok = False
             if self._ws is not None:
                 try:
-                    if hasattr(self._ws, 'closed'):
+                    if hasattr(self._ws, "closed"):
                         ws_ok = not self._ws.closed
-                    elif hasattr(self._ws, 'open'):
+                    elif hasattr(self._ws, "open"):
                         ws_ok = self._ws.open
-                    elif hasattr(self._ws, 'state'):
+                    elif hasattr(self._ws, "state"):
                         try:
                             from websockets.protocol import State
-                            ws_ok = (self._ws.state == State.OPEN)
+
+                            ws_ok = self._ws.state == State.OPEN
                         except:
                             ws_ok = True
                     else:
                         ws_ok = True
                 except:
                     ws_ok = False
-            if (self._ws is not None and self._ws_running and self._ws_logged_in and ws_ok):
+            if self._ws is not None and self._ws_running and self._ws_logged_in and ws_ok:
                 logger.info("✅ WebSocket 완전 준비 완료")
                 log_event("WS_READY", {"elapsed": time.perf_counter() - start})
                 debug_tower.log("SYSTEM", "WS_READY", {"elapsed": time.perf_counter() - start})
@@ -713,9 +688,6 @@ class KiwoomConnectorV512:
         debug_tower.log("SYSTEM", "WS_READY_TIMEOUT", {"timeout": timeout})
         return False
 
-    # ============================================================
-    # disconnect()
-    # ============================================================
     async def disconnect(self):
         self._shutdown_event.set()
         async with self._connect_lock:

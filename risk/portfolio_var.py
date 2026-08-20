@@ -6,11 +6,10 @@ risk/portfolio_var.py - v1.0 FINAL (포트폴리오 VaR + Monte Carlo 시뮬레�
 - 데이터 부족 시 개별 VaR 합산으로 Fallback
 """
 
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +17,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PortfolioRiskMetrics:
     """포트폴리오 리스크 지표"""
-    var_95: float               # 95% VaR (단일일 손실)
-    var_99: float               # 99% VaR
-    cvar_95: float              # 95% CVaR (Expected Shortfall)
-    std_dev: float              # 포트폴리오 표준편차
-    expected_return: float      # 기대 수익률
-    risk_adj_factor: float      # 글로벌 리스크 조정 계수 (0.5~1.0)
-    simulation_count: int       # 실제 시뮬레이션 횟수
-    status: str                 # 'OK', 'DATA_INSUFFICIENT', 'SINGLE_ASSET'
+
+    var_95: float  # 95% VaR (단일일 손실)
+    var_99: float  # 99% VaR
+    cvar_95: float  # 95% CVaR (Expected Shortfall)
+    std_dev: float  # 포트폴리오 표준편차
+    expected_return: float  # 기대 수익률
+    risk_adj_factor: float  # 글로벌 리스크 조정 계수 (0.5~1.0)
+    simulation_count: int  # 실제 시뮬레이션 횟수
+    status: str  # 'OK', 'DATA_INSUFFICIENT', 'SINGLE_ASSET'
 
 
 class PortfolioVaR:
@@ -43,10 +43,7 @@ class PortfolioVaR:
         self.lookback_days = lookback_days
 
     def calculate(
-        self,
-        tickers: List[str],
-        returns_dict: Dict[str, List[float]],
-        weights: Dict[str, float]
+        self, tickers: list[str], returns_dict: dict[str, list[float]], weights: dict[str, float]
     ) -> PortfolioRiskMetrics:
         """
         포트폴리오 VaR 계산
@@ -61,22 +58,28 @@ class PortfolioVaR:
         # 1. 입력 검증
         if not tickers or len(tickers) == 0:
             return PortfolioRiskMetrics(
-                var_95=0.0, var_99=0.0, cvar_95=0.0,
-                std_dev=0.0, expected_return=0.0,
+                var_95=0.0,
+                var_99=0.0,
+                cvar_95=0.0,
+                std_dev=0.0,
+                expected_return=0.0,
                 risk_adj_factor=1.0,
                 simulation_count=0,
-                status='NO_ASSETS'
+                status="NO_ASSETS",
             )
 
         # 2. 가중치 정규화
         total_weight = sum(weights.values())
         if total_weight == 0:
             return PortfolioRiskMetrics(
-                var_95=0.0, var_99=0.0, cvar_95=0.0,
-                std_dev=0.0, expected_return=0.0,
+                var_95=0.0,
+                var_99=0.0,
+                cvar_95=0.0,
+                std_dev=0.0,
+                expected_return=0.0,
                 risk_adj_factor=1.0,
                 simulation_count=0,
-                status='NO_WEIGHT'
+                status="NO_WEIGHT",
             )
         normalized_weights = {t: w / total_weight for t, w in weights.items()}
 
@@ -110,11 +113,7 @@ class PortfolioVaR:
         # 5. Monte Carlo 시뮬레이션 (Cholesky 분해로 상관관계 반영)
         if len(tickers) == 1:
             # 단일 종목: 정규분포 가정
-            simulated_returns = np.random.normal(
-                mean_returns[0],
-                portfolio_std,
-                self.num_simulations
-            )
+            simulated_returns = np.random.normal(mean_returns[0], portfolio_std, self.num_simulations)
         else:
             # 다중 종목: Cholesky 분해
             try:
@@ -134,11 +133,7 @@ class PortfolioVaR:
                 except:
                     # 최종 Fallback: 독립 가정
                     logger.warning("⚠️ 상관관계 행렬 처리 실패, 독립 가정으로 전환")
-                    simulated_returns = np.random.normal(
-                        portfolio_mean,
-                        portfolio_std,
-                        self.num_simulations
-                    )
+                    simulated_returns = np.random.normal(portfolio_mean, portfolio_std, self.num_simulations)
 
         # 6. VaR 및 CVaR 계산
         sorted_returns = np.sort(simulated_returns)
@@ -172,13 +167,11 @@ class PortfolioVaR:
             expected_return=portfolio_mean,
             risk_adj_factor=risk_adj,
             simulation_count=self.num_simulations,
-            status='OK'
+            status="OK",
         )
 
     def _fallback_individual_var(
-        self,
-        returns_dict: Dict[str, List[float]],
-        weights: Dict[str, float]
+        self, returns_dict: dict[str, list[float]], weights: dict[str, float]
     ) -> PortfolioRiskMetrics:
         """데이터 부족 시 개별 VaR의 가중 합산으로 포트폴리오 VaR 추정"""
         total_var = 0.0
@@ -206,11 +199,14 @@ class PortfolioVaR:
 
         if valid_count == 0:
             return PortfolioRiskMetrics(
-                var_95=0.0, var_99=0.0, cvar_95=0.0,
-                std_dev=0.0, expected_return=0.0,
+                var_95=0.0,
+                var_99=0.0,
+                cvar_95=0.0,
+                std_dev=0.0,
+                expected_return=0.0,
                 risk_adj_factor=1.0,
                 simulation_count=0,
-                status='DATA_INSUFFICIENT'
+                status="DATA_INSUFFICIENT",
             )
 
         var_pct = total_var * 100
@@ -231,5 +227,5 @@ class PortfolioVaR:
             expected_return=total_return,
             risk_adj_factor=risk_adj,
             simulation_count=0,
-            status='DATA_INSUFFICIENT'
+            status="DATA_INSUFFICIENT",
         )

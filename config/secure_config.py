@@ -1,19 +1,24 @@
 """
 config/secure_config.py - 환경 변수 암호화 로더 (D)
 """
+
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 from core.logger import setup_logger
 
 logger = setup_logger("secure_config")
 
 try:
     from cryptography.fernet import Fernet
+
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
     logger.warning("⚠️ cryptography 패키지 미설치 → 암호화 비활성화 (pip install cryptography)")
+
 
 def load_encrypted_env(env_file=".env.encrypted", key_env_var="ENCRYPTION_KEY"):
     project_root = Path(__file__).parent.parent
@@ -37,9 +42,9 @@ def load_encrypted_env(env_file=".env.encrypted", key_env_var="ENCRYPTION_KEY"):
                 decrypted_data = f.decrypt(encrypted_data).decode()
                 for line in decrypted_data.splitlines():
                     line = line.strip()
-                    if not line or line.startswith('#'):
+                    if not line or line.startswith("#"):
                         continue
-                    key, value = line.split('=', 1)
+                    key, value = line.split("=", 1)
                     os.environ[key] = value
                 logger.info(f"✅ 암호화된 환경 변수 로드 완료 ({env_file})")
                 return
@@ -48,6 +53,6 @@ def load_encrypted_env(env_file=".env.encrypted", key_env_var="ENCRYPTION_KEY"):
 
     if env_path.exists():
         load_dotenv(env_path)
-        logger.info(f"✅ 일반 환경 변수 로드 완료 (.env)")
+        logger.info("✅ 일반 환경 변수 로드 완료 (.env)")
     else:
         logger.warning("⚠️ .env 파일을 찾을 수 없습니다.")

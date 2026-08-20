@@ -1,15 +1,13 @@
 """
-validation/var_calculator.py - v7.4.0 FINAL (Modified VaR + 리스크 조정 팩터)
-- 기존 Modified VaR (Cornish-Fisher) 유지
-- 🔥 신규: calculate() 결과에 risk_adjustment_factor (0.5~1.0) 추가
-  (VaR가 높을수록 팩터 감소 → 포지션 비중 축소)
-- 경로: validation/var_calculator.py (portfolio_allocator.py에서 import)
+risk/var_calculator.py - v7.4.1 (데이터 부족 시 보수적 기본값)
+- len(returns) < window 시 risk_adjustment_factor: 0.7로 변경 (기존 1.0)
+- 신규 상장 종목 과도한 포지션 진입 방지
 """
+
+import logging
 
 import numpy as np
 from scipy.stats import norm
-from typing import Dict, List, Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -19,47 +17,38 @@ class VaRCalculator:
         self.confidence = confidence
         self.window = window
 
-    def calculate(self, returns: List[float]) -> Dict:
+    def calculate(self, returns: list[float]) -> dict:
         if len(returns) < self.window:
             return {
-                'normal_var': 0.0,
-                'modified_var': 0.0,
-                'historical_var': 0.0,
-                'skewness': 0.0,
-                'kurtosis': 0.0,
-                'tail_risk_adjusted': False,
-                'risk_adjustment_factor': 1.0,
-                'warning': f'데이터 부족 (필요: {self.window}, 현재: {len(returns)})'
+                "normal_var": 0.0,
+                "modified_var": 0.0,
+                "historical_var": 0.0,
+                "skewness": 0.0,
+                "kurtosis": 0.0,
+                "tail_risk_adjusted": False,
+                # 🔥 P1-4: 데이터 부족 시 보수적 패널티 0.7 적용
+                "risk_adjustment_factor": 0.7,
+                "warning": f"데이터 부족 (필요: {self.window}, 현재: {len(returns)})",
             }
 
         mu = np.mean(returns)
         sigma = np.std(returns)
         z_score = norm.ppf(1 - self.confidence)
 
-        # 정규 VaR
         normal_var = -(mu + z_score * sigma)
 
-        # Modified VaR (Cornish-Fisher)
         skewness = self._calculate_skewness(returns)
         kurtosis = self._calculate_kurtosis(returns)
 
-        z_mod = (z_score +
-                 (z_score**2 - 1) * skewness / 6 +
-                 (z_score**3 - 3 * z_score) * (kurtosis - 3) / 24)
+        z_mod = z_score + (z_score**2 - 1) * skewness / 6 + (z_score**3 - 3 * z_score) * (kurtosis - 3) / 24
         modified_var = -(mu + z_mod * sigma)
 
-        # Historical VaR
         sorted_returns = np.sort(returns)
         var_index = int((1 - self.confidence) * len(sorted_returns))
         historical_var = -sorted_returns[var_index] if var_index < len(sorted_returns) else 0.0
 
         tail_risk_adjusted = kurtosis > 3.0
 
-        # ============================================================
-        # 🔥 v7.4.0: VaR 기반 리스크 조정 팩터 (0.5 ~ 1.0)
-        # - modified_var가 5% 이상이면 팩터 0.5로 하락
-        # - modified_var가 2% 미만이면 팩터 1.0 (안전)
-        # ============================================================
         var_pct = modified_var * 100
         if var_pct >= 5.0:
             risk_adj = 0.5
@@ -71,18 +60,18 @@ class VaRCalculator:
             risk_adj = 1.0
 
         return {
-            'normal_var': normal_var,
-            'modified_var': modified_var,
-            'historical_var': historical_var,
-            'skewness': skewness,
-            'kurtosis': kurtosis,
-            'tail_risk_adjusted': tail_risk_adjusted,
-            'risk_adjustment_factor': risk_adj,
-            'recommendation': self._get_recommendation(modified_var, normal_var, tail_risk_adjusted),
-            'method': 'cornish_fisher' if tail_risk_adjusted else 'normal'
+            "normal_var": normal_var,
+            "modified_var": modified_var,
+            "historical_var": historical_var,
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "tail_risk_adjusted": tail_risk_adjusted,
+            "risk_adjustment_factor": risk_adj,
+            "recommendation": self._get_recommendation(modified_var, normal_var, tail_risk_adjusted),
+            "method": "cornish_fisher" if tail_risk_adjusted else "normal",
         }
 
-    def _calculate_skewness(self, returns: List[float]) -> float:
+    def _calculate_skewness(self, returns: list[float]) -> float:
         n = len(returns)
         mean = np.mean(returns)
         std = np.std(returns)
@@ -90,7 +79,7 @@ class VaRCalculator:
             return 0.0
         return np.mean(((returns - mean) / std) ** 3)
 
-    def _calculate_kurtosis(self, returns: List[float]) -> float:
+    def _calculate_kurtosis(self, returns: list[float]) -> float:
         n = len(returns)
         mean = np.mean(returns)
         std = np.std(returns)

@@ -6,9 +6,8 @@ core/regime_manager.py - 중앙 국면 관리자 v1.1 (import 경로 수정)
 """
 
 import asyncio
-import time
 import logging
-from typing import Optional
+import time
 from datetime import datetime
 
 # 🔥 import 경로 수정 (regime 폴더에서 가져옴)
@@ -20,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class RegimeManager:
     """싱글톤 국면 관리자"""
+
     _instance = None
     _lock = asyncio.Lock()
 
@@ -38,7 +38,7 @@ class RegimeManager:
         self._current_regime = "Sideways"
         self._last_update_time = 0.0
         self._update_interval = 60
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._running = False
 
     async def start(self):
@@ -84,7 +84,7 @@ class RegimeManager:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self._detector.detect, data)
 
-            new_regime = result.get('regime', 'Sideways')
+            new_regime = result.get("regime", "Sideways")
             if new_regime != self._current_regime:
                 logger.info(f"🔄 시장 국면 변경: {self._current_regime} → {new_regime}")
             self._current_regime = new_regime

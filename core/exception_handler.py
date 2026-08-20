@@ -5,17 +5,17 @@ core/exception_handler.py - v1.0 FINAL (전역 예외 핸들러)
 - sys.excepthook과 asyncio.get_event_loop().set_exception_handler() 연동
 """
 
-import sys
 import asyncio
+import sys
 import traceback
-from typing import Optional, Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 from core.logger import setup_logger
 
 logger = setup_logger("exception_handler")
 
 # 전역 알림 함수 (scanner_main에서 설정)
-_send_alert_func: Optional[Callable[[str, str], Awaitable[None]]] = None
+_send_alert_func: Callable[[str, str], Awaitable[None]] | None = None
 
 
 def set_alert_handler(func: Callable[[str, str], Awaitable[None]]):
@@ -48,9 +48,9 @@ def global_exception_handler(loop, context):
     """
     asyncio 이벤트 루프의 전역 예외 핸들러
     """
-    exception = context.get('exception')
-    message = context.get('message', '알 수 없는 오류')
-    future = context.get('future')
+    exception = context.get("exception")
+    message = context.get("message", "알 수 없는 오류")
+    future = context.get("future")
 
     # 로깅
     logger.error(f"🚨 [ASYNCIO] {message}")
@@ -60,10 +60,7 @@ def global_exception_handler(loop, context):
 
     # Telegram 알림
     if exception:
-        _send_alert_sync(
-            f"🚨 [ASYNCIO] {message}",
-            f"{type(exception).__name__}: {str(exception)[:200]}"
-        )
+        _send_alert_sync(f"🚨 [ASYNCIO] {message}", f"{type(exception).__name__}: {str(exception)[:200]}")
     else:
         _send_alert_sync(f"🚨 [ASYNCIO] {message}", "")
 
@@ -81,21 +78,15 @@ def setup_global_exception_handler():
     # 2. sys.excepthook (동기 예외 처리)
     def sys_excepthook(exc_type, exc_value, exc_traceback):
         logger.error(f"🚨 [SYSTEM] {exc_type.__name__}: {exc_value}")
-        logger.error(''.join(traceback.format_tb(exc_traceback)))
-        _send_alert_sync(
-            f"🚨 [SYSTEM] {exc_type.__name__}",
-            str(exc_value)[:200]
-        )
+        logger.error("".join(traceback.format_tb(exc_traceback)))
+        _send_alert_sync(f"🚨 [SYSTEM] {exc_type.__name__}", str(exc_value)[:200])
 
     sys.excepthook = sys_excepthook
 
     logger.info("✅ 전역 예외 핸들러 설정 완료 (asyncio + sys)")
 
     # 기존 핸들러 반환 (복원용)
-    return {
-        "original_excepthook": sys.excepthook,
-        "original_loop_handler": loop.get_exception_handler()
-    }
+    return {"original_excepthook": sys.excepthook, "original_loop_handler": loop.get_exception_handler()}
 
 
 def restore_exception_handler(original_handlers: dict):

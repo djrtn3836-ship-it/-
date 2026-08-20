@@ -2,22 +2,61 @@
 core/sentiment_analyzer.py - v1.1 (지연 로딩 적용)
 """
 
-import re
-from typing import List, Optional
 from core.logger import setup_logger
 
 logger = setup_logger("sentiment")
 
 POSITIVE_KEYWORDS = [
-    '상승', '급등', '강세', '호재', '돌파', '신고가', '목표가 상향', '매수',
-    '수익', '성장', '기대', '호조', '개선', '확대', '증가', '선전', '희망',
-    '긍정', '협력', '계약', '수주', '실적호조', '어닝서프라이즈'
+    "상승",
+    "급등",
+    "강세",
+    "호재",
+    "돌파",
+    "신고가",
+    "목표가 상향",
+    "매수",
+    "수익",
+    "성장",
+    "기대",
+    "호조",
+    "개선",
+    "확대",
+    "증가",
+    "선전",
+    "희망",
+    "긍정",
+    "협력",
+    "계약",
+    "수주",
+    "실적호조",
+    "어닝서프라이즈",
 ]
 NEGATIVE_KEYWORDS = [
-    '하락', '급락', '약세', '악재', '이탈', '신저가', '목표가 하향', '매도',
-    '손실', '둔화', '우려', '부진', '악화', '축소', '감소', '부정',
-    '불확실', '리스크', '경고', '조정', '하향', '적자', '어닝쇼크'
+    "하락",
+    "급락",
+    "약세",
+    "악재",
+    "이탈",
+    "신저가",
+    "목표가 하향",
+    "매도",
+    "손실",
+    "둔화",
+    "우려",
+    "부진",
+    "악화",
+    "축소",
+    "감소",
+    "부정",
+    "불확실",
+    "리스크",
+    "경고",
+    "조정",
+    "하향",
+    "적자",
+    "어닝쇼크",
 ]
+
 
 class SentimentAnalyzer:
     def __init__(self):
@@ -31,8 +70,9 @@ class SentimentAnalyzer:
         if self._model_loaded:
             return
         try:
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
             import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
             model_name = "nlptown/bert-base-multilingual-uncased-sentiment"
             logger.info("🧠 감성 분석 모델 로딩 중 (최초 1회, 이후 캐시됨)...")
             self._tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -48,7 +88,7 @@ class SentimentAnalyzer:
         finally:
             self._model_loaded = True
 
-    async def analyze(self, texts: List[str]) -> float:
+    async def analyze(self, texts: list[str]) -> float:
         if not texts:
             return 0.0
         self._ensure_model_loaded()  # 🔥 최초 호출 시점에 로드
@@ -58,10 +98,13 @@ class SentimentAnalyzer:
         else:
             return self._analyze_keyword(texts)
 
-    async def _analyze_transformers(self, texts: List[str]) -> float:
+    async def _analyze_transformers(self, texts: list[str]) -> float:
         try:
             import torch
-            inputs = self._tokenizer([t[:500] for t in texts], return_tensors="pt", padding=True, truncation=True, max_length=512)
+
+            inputs = self._tokenizer(
+                [t[:500] for t in texts], return_tensors="pt", padding=True, truncation=True, max_length=512
+            )
             with torch.no_grad():
                 outputs = self._model(**inputs)
                 probs = torch.softmax(outputs.logits, dim=-1)
@@ -72,7 +115,7 @@ class SentimentAnalyzer:
             logger.warning(f"⚠️ Transformers 분석 실패: {e}")
             return self._analyze_keyword(texts)
 
-    def _analyze_keyword(self, texts: List[str]) -> float:
+    def _analyze_keyword(self, texts: list[str]) -> float:
         total_score = 0.0
         count = 0
         for text in texts:
@@ -86,6 +129,7 @@ class SentimentAnalyzer:
 
     async def analyze_single(self, text: str) -> float:
         return await self.analyze([text])
+
 
 # 전역 인스턴스 (이제 시작 시 블로킹 없음)
 sentiment_analyzer = SentimentAnalyzer()

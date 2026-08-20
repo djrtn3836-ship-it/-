@@ -18,14 +18,11 @@ Pipeline Manager v5.1.3 — Claude 버그 수정
 
 import asyncio
 import multiprocessing as mp
-from typing import Dict, Any, Optional
-from datetime import datetime
 
+from core.circuit_breaker import DART_API_CB, KIWOOM_TR_CB
 from core.logger import setup_logger
-from core.circuit_breaker import KIWOOM_TR_CB, DART_API_CB
-from core.exceptions import KiwoomError
-from data.kiwoom_connector import KiwoomConnectorV512
 from data.dart_connector import DartConnector
+from data.kiwoom_connector import KiwoomConnectorV512
 from orchestrator.event_bus import EventBus
 from orchestrator.feature_store import FeatureStore
 
@@ -34,6 +31,7 @@ logger = setup_logger("pipeline")
 
 class PipelineConnectionError(Exception):
     """파이프라인 초기 연결 실패 (Circuit Breaker가 요청을 차단한 경우 포함)"""
+
     pass
 
 
@@ -46,8 +44,8 @@ class PipelineManager:
         self.kiwoom = KiwoomConnectorV512()
         self.dart = DartConnector(api_key="YOUR_DART_KEY")
 
-        self._processes: Dict[str, mp.Process] = {}
-        self._tasks: Dict[str, asyncio.Task] = {}
+        self._processes: dict[str, mp.Process] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
         self._is_running = False
 
     async def start(self):
@@ -133,26 +131,23 @@ class PipelineManager:
         아래는 "프로세스가 최소한 실행되고 통신 채널이 연결된다"는 것만 보장하는
         골격입니다. 이 부분은 kiwoom_connector.py 리뷰 후 반드시 재검증 필요.
         """
-        if 'scanner' in self._processes and self._processes['scanner'].is_alive():
+        if "scanner" in self._processes and self._processes["scanner"].is_alive():
             logger.warning("스캐너 프로세스가 이미 실행 중입니다.")
             return
 
-        ctx = mp.get_context('spawn')
+        ctx = mp.get_context("spawn")
         result_queue: mp.Queue = ctx.Queue()
 
         process = ctx.Process(
-            target=_scanner_process_entrypoint,
-            args=(result_queue,),
-            name="scanner_process",
-            daemon=True
+            target=_scanner_process_entrypoint, args=(result_queue,), name="scanner_process", daemon=True
         )
         process.start()
-        self._processes['scanner'] = process
+        self._processes["scanner"] = process
         logger.warning(
             "스캐너 프로세스를 spawn했습니다 (PID=%s). "
             "⚠️ kiwoom_connector.py 내부에 COM 메시지 펌프 스레드가 없다면 "
             "실시간 이벤트가 누락될 수 있습니다 — 별도 검증 필요.",
-            process.pid
+            process.pid,
         )
 
 
@@ -166,6 +161,7 @@ def _scanner_process_entrypoint(result_queue: "mp.Queue"):
     로직을 이 함수 내부로 옮기는 작업이 필요합니다.
     """
     import logging
+
     logging.basicConfig(level=logging.INFO)
     logging.info("[scanner_process] 프로세스 시작됨 — 실제 스캐너 로직 연결 필요")
     result_queue.put({"status": "started"})

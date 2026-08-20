@@ -5,10 +5,10 @@ data/stock_universe.py - v5.8.0 FINAL (하드코딩 500종목 + CSV 우선)
 - 더 이상 CSV 파싱으로 시간 낭비하지 않음
 """
 
-import pandas as pd
-from pathlib import Path
-from typing import Dict, List, Optional
 from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
 
 from core.logger import setup_logger
 
@@ -23,7 +23,7 @@ class StockInfo:
     name: str
     market: str
     listed_date: str
-    delisted_date: Optional[str] = None
+    delisted_date: str | None = None
     is_active: bool = True
 
 
@@ -270,52 +270,52 @@ FALLBACK_500 = {
 }
 
 
-def validate_universe(stock_dict: Dict[str, str]) -> Dict[str, str]:
+def validate_universe(stock_dict: dict[str, str]) -> dict[str, str]:
     if not stock_dict:
         raise ValueError("❌ 데이터가 비어있습니다.")
-    
+
     valid = {}
     for code, name in stock_dict.items():
         if not (isinstance(code, str) and len(code) == 6 and code.isdigit()):
             continue
-        if '<' in name or '>' in name:
+        if "<" in name or ">" in name:
             continue
         if not name or not name.strip():
             continue
         valid[code] = name.strip()
-    
+
     if len(valid) < 100:
         raise ValueError(f"❌ 유효 종목이 너무 적습니다 ({len(valid)}개, 최소 100개 필요)")
-    
+
     logger.info(f"✅ 검증 완료: {len(valid)}개 종목")
     return valid
 
 
-def get_universe() -> Dict[str, str]:
+def get_universe() -> dict[str, str]:
     # 1순위: CSV 파일 (있으면 읽기)
     if CSV_PATH.exists():
         try:
             logger.info(f"📂 CSV 파일 읽는 중: {CSV_PATH}")
             # 여러 인코딩 시도
-            for enc in ['utf-8-sig', 'cp949', 'utf-8']:
+            for enc in ["utf-8-sig", "cp949", "utf-8"]:
                 try:
-                    df = pd.read_csv(CSV_PATH, encoding=enc, engine='python', on_bad_lines='skip')
+                    df = pd.read_csv(CSV_PATH, encoding=enc, engine="python", on_bad_lines="skip")
                     if len(df.columns) >= 2:
                         # 첫 두 열 사용
                         code_col = df.columns[0]
                         name_col = df.columns[1]
                         # '종목코드'나 'code'가 있는지 확인
                         for col in df.columns:
-                            if '종목코드' in col or 'code' in col.lower():
+                            if "종목코드" in col or "code" in col.lower():
                                 code_col = col
-                            if '회사명' in col or 'name' in col.lower() or '종목명' in col:
+                            if "회사명" in col or "name" in col.lower() or "종목명" in col:
                                 name_col = col
-                        df['code'] = df[code_col].astype(str).str.strip()
-                        df['name'] = df[name_col].astype(str).str.strip()
+                        df["code"] = df[code_col].astype(str).str.strip()
+                        df["name"] = df[name_col].astype(str).str.strip()
                         universe = {}
                         for _, row in df.iterrows():
-                            code = row['code']
-                            name = row['name']
+                            code = row["code"]
+                            name = row["name"]
                             if code and name and code.isdigit() and len(code) == 6:
                                 universe[code] = name
                         if universe:
@@ -325,35 +325,35 @@ def get_universe() -> Dict[str, str]:
                     continue
         except Exception as e:
             logger.warning(f"⚠️ CSV 읽기 실패: {e}")
-    
+
     # 2순위: 하드코딩 500종목 (CSV 없거나 실패 시)
-    logger.info(f"📦 하드코딩 500종목 사용 (CSV 없음 또는 읽기 실패)")
+    logger.info("📦 하드코딩 500종목 사용 (CSV 없음 또는 읽기 실패)")
     return validate_universe(FALLBACK_500)
 
 
 class StockUniverse:
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
-    
+
     def _init(self):
-        self._stocks: Dict[str, StockInfo] = {}
+        self._stocks: dict[str, StockInfo] = {}
         universe = get_universe()
         for code, name in universe.items():
             self._stocks[code] = StockInfo(code, name, "KOSPI", "2000-01-01")
         logger.info(f"StockUniverse 로드 완료: {len(self._stocks)}개 종목")
-    
-    def get_all(self) -> List[StockInfo]:
+
+    def get_all(self) -> list[StockInfo]:
         return list(self._stocks.values())
-    
-    def get_active(self) -> List[StockInfo]:
+
+    def get_active(self) -> list[StockInfo]:
         return [s for s in self._stocks.values() if s.is_active]
-    
-    def get_tier1(self, count: int = 500) -> List[StockInfo]:
+
+    def get_tier1(self, count: int = 500) -> list[StockInfo]:
         return self.get_active()[:count]
 
 

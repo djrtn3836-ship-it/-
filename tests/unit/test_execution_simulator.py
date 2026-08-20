@@ -4,12 +4,12 @@ tests/unit/test_execution_simulator.py - Execution Simulator 단위 테스트
 
 import sys
 from pathlib import Path
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import pytest
-from validation.execution_simulator import RealisticExecutionSimulator, ExecutionResult
+from validation.execution_simulator import RealisticExecutionSimulator
 
 
 class TestExecutionSimulator:
@@ -25,7 +25,7 @@ class TestExecutionSimulator:
             order_size=75000,  # 평균 1,500,000주의 5%
             avg_daily_volume=1500000,
             price=83000.0,
-            market_cap=1_000_000_000_000
+            market_cap=1_000_000_000_000,
         )
         # 영향이 0보다 크고, 최대 슬리피지(100bp)보다 작아야 함
         assert 0 < impact <= 100.0
@@ -34,12 +34,7 @@ class TestExecutionSimulator:
     def test_orderbook_execution_buy(self, sample_orderbook):
         """호가 기반 매수 체결 테스트"""
         result = self.sim._execute_slice_with_orderbook(
-            action='BUY',
-            ref_price=83000.0,
-            slice_size=500,
-            orderbook=sample_orderbook,
-            impact_bps=10.0,
-            slice_idx=0
+            action="BUY", ref_price=83000.0, slice_size=500, orderbook=sample_orderbook, impact_bps=10.0, slice_idx=0
         )
         assert result.filled is True
         assert result.fill_ratio > 0
@@ -50,12 +45,7 @@ class TestExecutionSimulator:
     def test_orderbook_execution_sell(self, sample_orderbook):
         """호가 기반 매도 체결 테스트"""
         result = self.sim._execute_slice_with_orderbook(
-            action='SELL',
-            ref_price=83000.0,
-            slice_size=300,
-            orderbook=sample_orderbook,
-            impact_bps=10.0,
-            slice_idx=0
+            action="SELL", ref_price=83000.0, slice_size=300, orderbook=sample_orderbook, impact_bps=10.0, slice_idx=0
         )
         assert result.filled is True
         assert result.fill_ratio > 0
@@ -65,12 +55,12 @@ class TestExecutionSimulator:
     def test_fallback_execution(self):
         """Fallback 체결 테스트 (호가 없을 때)"""
         result = self.sim._execute_slice_fallback(
-            action='BUY',
+            action="BUY",
             price=83000.0,
             slice_size=1000,
             market_cap=500_000_000_000,  # 중형주
             avg_daily_volume=500000,
-            impact_bps=5.0
+            impact_bps=5.0,
         )
         assert result.filled is True
         assert result.fill_ratio == 1.0
@@ -81,12 +71,12 @@ class TestExecutionSimulator:
         """부분 체결 테스트 (잔량 부족)"""
         # 주문량이 호가보다 많을 때 (bids/asks 합계: 800+600+300=1700)
         result = self.sim._execute_slice_with_orderbook(
-            action='BUY',
+            action="BUY",
             ref_price=83000.0,
             slice_size=2000,  # 1700보다 많음
             orderbook=sample_orderbook,
             impact_bps=10.0,
-            slice_idx=0
+            slice_idx=0,
         )
         # 체결은 되지만, fill_ratio는 1.0 미만이어야 함
         assert result.filled is True
@@ -97,15 +87,15 @@ class TestExecutionSimulator:
     def test_full_execution_with_slicing(self, sample_orderbook):
         """3분할 체결 통합 테스트"""
         result = self.sim.execute(
-            ticker='005930',
-            action='BUY',
+            ticker="005930",
+            action="BUY",
             price=83000.0,
             volume=1500,
             order_size=1500,
             market_cap=1_000_000_000_000,
             avg_daily_volume=1500000,
             current_time=None,
-            orderbook=sample_orderbook
+            orderbook=sample_orderbook,
         )
         assert result.filled is True
         assert result.fill_ratio > 0.8  # 대부분 체결

@@ -8,13 +8,12 @@ scanner/realtime_monitor.py - v5.7.0 FINAL (REG 요청 최적화 + 재시도 강
 import asyncio
 import time
 from collections import deque
-from typing import Dict, List, Optional, Any, Tuple
 
-from core.logger import setup_logger
 from core.config import get_config
-from data.stock_universe import get_universe
 from core.debug_tower import debug_tower
+from core.logger import setup_logger
 from core.regime_manager import regime_manager
+from data.stock_universe import get_universe
 
 logger = setup_logger("monitor")
 config = get_config()
@@ -26,20 +25,20 @@ class RealtimeMonitor:
     def __init__(self, kiwoom_connector, message_queue: asyncio.Queue = None):
         self.kiwoom = kiwoom_connector
         self._handler = self._on_data
-        self._subscribed_tickers: List[str] = []
-        self._latest_data: Dict[str, Dict] = {}
-        self._history: Dict[str, deque] = {}
-        self._orderbook_history: Dict[str, deque] = {}
+        self._subscribed_tickers: list[str] = []
+        self._latest_data: dict[str, dict] = {}
+        self._history: dict[str, deque] = {}
+        self._orderbook_history: dict[str, deque] = {}
         self._history_limit = 100
         self._orderbook_limit = 50
         self._is_running = False
         self._last_scan_time = 0.0
-        self.tickers: List[str] = []
+        self.tickers: list[str] = []
 
-        self._name_cache: Dict[str, str] = {}
+        self._name_cache: dict[str, str] = {}
 
-        self._last_signal_time: Dict[str, float] = {}
-        self._last_signal_action: Dict[str, str] = {}
+        self._last_signal_time: dict[str, float] = {}
+        self._last_signal_action: dict[str, str] = {}
 
         self._message_queue = message_queue or asyncio.Queue(maxsize=100000)
 
@@ -60,7 +59,7 @@ class RealtimeMonitor:
 
         try:
             universe = get_universe()
-            self.tickers = list(universe.keys())[:self.max_subscriptions]
+            self.tickers = list(universe.keys())[: self.max_subscriptions]
             if not self.tickers:
                 raise ValueError("Universe is empty")
             self._name_cache = universe
@@ -80,7 +79,7 @@ class RealtimeMonitor:
         RETRY_DELAY = 3.0  # 1차 완료 후 재시도 전 대기 시간
 
         self._subscribed_tickers.clear()
-        failed_tickers: List[str] = []
+        failed_tickers: list[str] = []
 
         # 1차 등록
         for idx, ticker in enumerate(self.tickers):
@@ -119,24 +118,26 @@ class RealtimeMonitor:
                     logger.warning(f"⚠️ {ticker} 재등록 실패 (최종): {e}")
                 await asyncio.sleep(RETRY_INTERVAL)
 
-            logger.info(f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개")
+            logger.info(
+                f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개"
+            )
 
         self._is_running = True
         self._last_scan_time = time.time()
         logger.info(f"✅ RealtimeMonitor 시작 완료 (구독 종목: {len(self._subscribed_tickers)}개)")
         debug_tower.log("SYSTEM", "MONITOR_STARTED", {"count": len(self._subscribed_tickers)})
 
-    def _on_data(self, data: Dict):
+    def _on_data(self, data: dict):
         try:
-            ticker = data.get('ticker') or data.get('symbol') or data.get('item')
+            ticker = data.get("ticker") or data.get("symbol") or data.get("item")
             if not ticker:
                 return
 
-            data_type = data.get('type')
-            parsed = {'ticker': ticker, 'timestamp': data.get('timestamp', time.time()), 'raw': data}
+            data_type = data.get("type")
+            parsed = {"ticker": ticker, "timestamp": data.get("timestamp", time.time()), "raw": data}
 
-            if data_type == '0B' or 'price' in data or 'cur_prc' in data:
-                price = data.get('price') or data.get('cur_prc') or data.get('last')
+            if data_type == "0B" or "price" in data or "cur_prc" in data:
+                price = data.get("price") or data.get("cur_prc") or data.get("last")
                 if price is None:
                     price = 0.0
                 else:
@@ -144,52 +145,56 @@ class RealtimeMonitor:
                         price = float(price)
                     except:
                         price = 0.0
-                volume = data.get('volume') or data.get('acc_vol') or 0
+                volume = data.get("volume") or data.get("acc_vol") or 0
                 try:
                     volume = int(volume)
                 except:
                     volume = 0
 
-                parsed['price'] = price
-                parsed['volume'] = volume
+                parsed["price"] = price
+                parsed["volume"] = volume
                 if ticker not in self._history:
                     self._history[ticker] = deque(maxlen=self._history_limit)
                 self._history[ticker].append(parsed)
 
                 debug_tower.log(ticker, "MONITOR_RECV", {"price": price, "volume": volume})
 
-            elif data_type == '0A' or 'buy_fpr_bid' in data or 'sel_fpr_bid' in data:
-                orderbook = {'bids': [], 'asks': []}
+            elif data_type == "0A" or "buy_fpr_bid" in data or "sel_fpr_bid" in data:
+                orderbook = {"bids": [], "asks": []}
                 for i in range(1, 11):
                     if i == 1:
-                        price_key, qty_key = 'buy_fpr_bid', 'buy_fpr_req'
+                        price_key, qty_key = "buy_fpr_bid", "buy_fpr_req"
                     else:
-                        price_key, qty_key = f'buy_{i-1}th_pre_bid', f'buy_{i-1}th_pre_req'
-                    price = data.get(price_key); qty = data.get(qty_key)
+                        price_key, qty_key = f"buy_{i-1}th_pre_bid", f"buy_{i-1}th_pre_req"
+                    price = data.get(price_key)
+                    qty = data.get(qty_key)
                     if price is not None and qty is not None:
                         try:
-                            orderbook['bids'].append((float(price), int(qty)))
+                            orderbook["bids"].append((float(price), int(qty)))
                         except:
                             pass
                 for i in range(1, 11):
                     if i == 1:
-                        price_key, qty_key = 'sel_fpr_bid', 'sel_fpr_req'
+                        price_key, qty_key = "sel_fpr_bid", "sel_fpr_req"
                     else:
-                        price_key, qty_key = f'sel_{i-1}th_pre_bid', f'sel_{i-1}th_pre_req'
-                    price = data.get(price_key); qty = data.get(qty_key)
+                        price_key, qty_key = f"sel_{i-1}th_pre_bid", f"sel_{i-1}th_pre_req"
+                    price = data.get(price_key)
+                    qty = data.get(qty_key)
                     if price is not None and qty is not None:
                         try:
-                            orderbook['asks'].append((float(price), int(qty)))
+                            orderbook["asks"].append((float(price), int(qty)))
                         except:
                             pass
-                parsed['orderbook'] = orderbook
+                parsed["orderbook"] = orderbook
                 if ticker not in self._orderbook_history:
                     self._orderbook_history[ticker] = deque(maxlen=self._orderbook_limit)
                 self._orderbook_history[ticker].append(parsed)
-                debug_tower.log(ticker, "ORDERBOOK_RECV", {"bids": len(orderbook['bids']), "asks": len(orderbook['asks'])})
+                debug_tower.log(
+                    ticker, "ORDERBOOK_RECV", {"bids": len(orderbook["bids"]), "asks": len(orderbook["asks"])}
+                )
 
             else:
-                parsed['raw_data'] = data
+                parsed["raw_data"] = data
 
             if ticker in self._latest_data:
                 self._latest_data[ticker].update(parsed)
@@ -206,7 +211,7 @@ class RealtimeMonitor:
             logger.error(f"❌ 데이터 핸들링 오류: {e}", exc_info=True)
             debug_tower.capture_snapshot(ticker, e, "MONITOR_HANDLER")
 
-    def _calculate_imbalance(self, bids: List, asks: List) -> tuple:
+    def _calculate_imbalance(self, bids: list, asks: list) -> tuple:
         total_bid = sum(qty for _, qty in bids) if bids else 0
         total_ask = sum(qty for _, qty in asks) if asks else 0
         if total_bid + total_ask == 0:
@@ -220,15 +225,14 @@ class RealtimeMonitor:
             pressure = f"⚖️ 중립 ({imbalance:.1%})"
         return imbalance, pressure
 
-    async def scan(self) -> List[Dict]:
+    async def scan(self) -> list[dict]:
         if not self._is_running:
             return []
 
         detected = []
         current_time = time.time()
         changed_tickers = [
-            ticker for ticker, data in self._latest_data.items()
-            if data.get('timestamp', 0) > self._last_scan_time
+            ticker for ticker, data in self._latest_data.items() if data.get("timestamp", 0) > self._last_scan_time
         ]
 
         if not changed_tickers:
@@ -238,7 +242,7 @@ class RealtimeMonitor:
 
         for ticker in changed_tickers:
             data = self._latest_data.get(ticker, {})
-            price = data.get('price', 0)
+            price = data.get("price", 0)
             if price <= 0:
                 continue
 
@@ -247,15 +251,15 @@ class RealtimeMonitor:
                 continue
 
             prev_data = history[-2]
-            prev_price = prev_data.get('price', price)
+            prev_price = prev_data.get("price", price)
             if prev_price <= 0:
                 continue
 
             change_ratio = (price - prev_price) / prev_price
 
-            orderbook = data.get('orderbook', {})
-            bids = orderbook.get('bids', [])
-            asks = orderbook.get('asks', [])
+            orderbook = data.get("orderbook", {})
+            bids = orderbook.get("bids", [])
+            asks = orderbook.get("asks", [])
 
             support_level = None
             resistance_level = None
@@ -278,7 +282,7 @@ class RealtimeMonitor:
                     insight += f" | 📉 저항선 {resistance_level:,.0f}원 하향 이탈"
 
                 last_time = self._last_signal_time.get(ticker, 0)
-                last_action = self._last_signal_action.get(ticker, '')
+                last_action = self._last_signal_action.get(ticker, "")
                 is_emergency = abs(change_ratio) > self.emergency_threshold
 
                 if not is_emergency and last_action == action and (current_time - last_time) < self.cooldown_seconds:
@@ -292,27 +296,33 @@ class RealtimeMonitor:
                 score = min(0.95, 0.4 + abs(change_ratio) * 12.5)
                 confidence = min(0.9, 0.5 + abs(change_ratio) * 5)
 
-                detected.append({
-                    "ticker": ticker,
-                    "name": stock_name,
-                    "price": price,
-                    "entry_price": price,
-                    "action": action,
-                    "score": score,
-                    "confidence": confidence,
-                    "positives": positives + [f"변동률: {change_ratio:+.2%}{insight}"],
-                    "negatives": ["시장 변동성 주의"],
-                    "timestamp": current_time,
-                    "momentum": change_ratio,
-                    "volume": data.get('volume', 0),
-                    "regime": regime,
-                    "flow": {},
-                    "support_level": support_level,
-                    "resistance_level": resistance_level,
-                    "imbalance": imbalance,
-                    "pressure": pressure,
-                })
-                debug_tower.log(ticker, "SIGNAL_DETECTED", {"action": action, "change": change_ratio, "score": score, "regime": regime})
+                detected.append(
+                    {
+                        "ticker": ticker,
+                        "name": stock_name,
+                        "price": price,
+                        "entry_price": price,
+                        "action": action,
+                        "score": score,
+                        "confidence": confidence,
+                        "positives": positives + [f"변동률: {change_ratio:+.2%}{insight}"],
+                        "negatives": ["시장 변동성 주의"],
+                        "timestamp": current_time,
+                        "momentum": change_ratio,
+                        "volume": data.get("volume", 0),
+                        "regime": regime,
+                        "flow": {},
+                        "support_level": support_level,
+                        "resistance_level": resistance_level,
+                        "imbalance": imbalance,
+                        "pressure": pressure,
+                    }
+                )
+                debug_tower.log(
+                    ticker,
+                    "SIGNAL_DETECTED",
+                    {"action": action, "change": change_ratio, "score": score, "regime": regime},
+                )
 
         self._last_scan_time = current_time
         return detected
@@ -329,16 +339,16 @@ class RealtimeMonitor:
             except Exception as e:
                 logger.error(f"❌ 재구독 실패 ({ticker}): {e}")
                 debug_tower.capture_snapshot(ticker, e, "RESUBSCRIBE")
-        logger.info(f"✅ 전체 종목 재구독 완료")
+        logger.info("✅ 전체 종목 재구독 완료")
         debug_tower.log("SYSTEM", "RESUBSCRIBE_COMPLETE", {})
 
-    def get_latest_price(self, ticker: str) -> Optional[float]:
+    def get_latest_price(self, ticker: str) -> float | None:
         data = self._latest_data.get(ticker)
-        return data.get('price') if data else None
+        return data.get("price") if data else None
 
-    def get_orderbook(self, ticker: str) -> Optional[Dict]:
+    def get_orderbook(self, ticker: str) -> dict | None:
         data = self._latest_data.get(ticker)
-        return data.get('orderbook') if data else None
+        return data.get("orderbook") if data else None
 
     def get_subscribed_count(self) -> int:
         return len(self._subscribed_tickers)

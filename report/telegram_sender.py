@@ -1,22 +1,20 @@
 """
-report/telegram_sender.py - v7.3.0 FINAL (지수 백오프 + 자동 분할 전송)
-- 전송 실패 시 지수 백오프 재시도 (2, 4, 8, 16초, 최대 60초)
-- 메시지 길이 4000자 초과 시 자동 분할 (각 청크 3900자, HTML 태그 보존)
-- TimedOut/NetworkError/TelegramError 세부 처리 및 로깅
-- 디버그 관제탑 연동 유지
+report/telegram_sender.py - v7.3.1 (청크 전송 간격 추가)
+- send_raw()에서 청크 간 0.1초 sleep 추가 (Telegram rate limit 방어)
+- HTML 태그 분할 기본 로직 유지
 """
 
-import os
-import html
 import asyncio
-import time
-from typing import Optional, Dict, List
-from datetime import datetime, timedelta
-from telegram import Bot
-from telegram.error import TelegramError, TimedOut, NetworkError
+import html
+import os
+from datetime import datetime
+
 from dotenv import load_dotenv
-from core.logger import setup_logger
+from telegram import Bot
+from telegram.error import NetworkError, TelegramError, TimedOut
+
 from core.debug_tower import debug_tower
+from core.logger import setup_logger
 
 logger = setup_logger("telegram")
 
@@ -38,7 +36,7 @@ class TelegramSender:
             return False
 
         action = report.get("action")
-        ticker = report.get('ticker', 'UNKNOWN')
+        ticker = report.get("ticker", "UNKNOWN")
         debug_tower.log(ticker, "TELEGRAM_SEND_START", {"action": action})
 
         if action in ("ERROR", "IGNORE"):
@@ -75,44 +73,27 @@ class TelegramSender:
             return False
 
     # ============================================================
-    # 🔥 v7.3.0: 코어 전송 로직 (지수 백오프 + 분할)
+    # 🔥 P1-5: 청크 간 sleep 추가
     # ============================================================
     async def send_raw(self, message: str, max_retries: int = 4) -> bool:
-        """
-        Telegram 메시지 전송 (자동 분할 + 지수 백오프 재시도)
-
-        Args:
-            message: 전송할 메시지 (HTML 형식, 4000자 이상 자동 분할)
-            max_retries: 최대 재시도 횟수 (지수 백오프: 2, 4, 8, 16초)
-        Returns:
-            성공 여부
-        """
         if not self.bot or not self.chat_id:
             return False
 
-        # 1. 메시지 분할 (4000자 제한)
         chunks = self._split_message(message)
 
-        # 2. 각 청크 전송
         for i, chunk in enumerate(chunks, 1):
             success = False
             last_error = None
 
             for attempt in range(max_retries + 1):
                 try:
-                    # 지수 백오프: 2, 4, 8, 16, 32초 (최대 60초)
                     delay = min(2 ** (attempt + 1), 60)
                     if attempt > 0:
                         logger.info(f"⏳ Telegram 재시도 {attempt}/{max_retries} ({delay}초 대기)...")
                         await asyncio.sleep(delay)
 
                     await asyncio.wait_for(
-                        self.bot.send_message(
-                            chat_id=self.chat_id,
-                            text=chunk,
-                            parse_mode="HTML"
-                        ),
-                        timeout=30.0
+                        self.bot.send_message(chat_id=self.chat_id, text=chunk, parse_mode="HTML"), timeout=30.0
                     )
                     success = True
                     if len(chunks) > 1:
@@ -121,7 +102,7 @@ class TelegramSender:
                         logger.info("✅ Telegram 메시지 전송 성공")
                     break
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     last_error = "Timeout (30s)"
                     logger.warning(f"⚠️ Telegram 타임아웃 (시도 {attempt+1}/{max_retries+1})")
                     continue
@@ -130,7 +111,6 @@ class TelegramSender:
                     logger.warning(f"⚠️ Telegram 네트워크 오류: {e} (시도 {attempt+1}/{max_retries+1})")
                     continue
                 except TelegramError as e:
-                    # API 오류는 재시도해도 소용없는 경우가 많음 (예: 봇 차단)
                     logger.error(f"❌ Telegram API 오류: {e}")
                     debug_tower.capture_snapshot("SYSTEM", e, "TELEGRAM_API")
                     return False
@@ -144,45 +124,39 @@ class TelegramSender:
                 debug_tower.log("SYSTEM", "TELEGRAM_CHUNK_FAIL", {"chunk": i, "error": last_error})
                 return False
 
+            # 🔥 P1-5: 청크 간 0.1초 대기 (Telegram rate limit 방어)
+            if i < len(chunks):
+                await asyncio.sleep(0.1)
+
         return True
 
-    def _split_message(self, message: str) -> List[str]:
-        """
-        메시지를 3900자 이하로 분할 (HTML 태그 보존)
-        Telegram 제한은 4096자이지만, 안전하게 3900자로 설정
-        """
+    def _split_message(self, message: str) -> list[str]:
         max_len = 3900
         if len(message) <= max_len:
             return [message]
 
         chunks = []
-        lines = message.split('\n')
+        lines = message.split("\n")
         current_chunk = ""
 
         for line in lines:
-            # 현재 청크에 라인을 추가해도 max_len을 초과하지 않으면 추가
             if len(current_chunk) + len(line) + 1 <= max_len:
                 current_chunk += line + "\n"
             else:
-                # 현재 청크 저장
                 if current_chunk:
                     chunks.append(current_chunk.strip())
-                # 새 청크 시작
                 current_chunk = line + "\n"
 
-        # 마지막 청크 저장
         if current_chunk:
             chunks.append(current_chunk.strip())
 
-        # 만약 한 줄 자체가 max_len을 초과하면 강제 분할 (드물지만 안전장치)
         final_chunks = []
         for chunk in chunks:
             if len(chunk) <= max_len:
                 final_chunks.append(chunk)
             else:
-                # 강제 분할 (HTML 태그가 깨질 수 있지만 Telegram이 어느정도 복원 시도)
                 for i in range(0, len(chunk), max_len):
-                    final_chunks.append(chunk[i:i+max_len])
+                    final_chunks.append(chunk[i : i + max_len])
 
         logger.debug(f"📨 메시지 분할: {len(final_chunks)}개 청크")
         return final_chunks
@@ -191,16 +165,16 @@ class TelegramSender:
     # 기존 포맷터 (v7.2.8 그대로 유지, 변경 없음)
     # ============================================================
     _ACTION_STYLE = {
-        'EXIT': ('🔴', '지금 즉시 전량 매도'),
-        'PARTIAL_EXIT': ('🟡', '지금 즉시 부분 매도'),
-        'REDUCE': ('🟠', '포지션 축소 검토 (매도 아님)'),
-        'HOLD': ('🟢', '보유 유지 (행동 불필요)'),
-        'WATCH': ('⚪', '관찰만 (행동 불필요)'),
-        'EXECUTED': ('✅', '자동 실행 완료'),
+        "EXIT": ("🔴", "지금 즉시 전량 매도"),
+        "PARTIAL_EXIT": ("🟡", "지금 즉시 부분 매도"),
+        "REDUCE": ("🟠", "포지션 축소 검토 (매도 아님)"),
+        "HOLD": ("🟢", "보유 유지 (행동 불필요)"),
+        "WATCH": ("⚪", "관찰만 (행동 불필요)"),
+        "EXECUTED": ("✅", "자동 실행 완료"),
     }
 
     def _action_banner(self, action: str, price: float = 0.0, note: str = "") -> list:
-        emoji, label = self._ACTION_STYLE.get(action, self._ACTION_STYLE['WATCH'])
+        emoji, label = self._ACTION_STYLE.get(action, self._ACTION_STYLE["WATCH"])
         lines = [f"{emoji} <b>지금 할 일: {label}</b>"]
         if price > 0:
             lines.append(f"   → 기준가: <code>{price:,.0f}원</code>")
@@ -209,22 +183,22 @@ class TelegramSender:
         lines.append("")
         return lines
 
-    def _infer_advice_action(self, advice: Optional[dict]) -> str:
+    def _infer_advice_action(self, advice: dict | None) -> str:
         if not advice:
-            return 'HOLD'
-        rec = (advice.get('recommendation') or advice.get('action') or '').upper()
-        if rec in ('EXIT', 'SELL', 'CLOSE'):
-            return 'EXIT'
-        if rec in ('PARTIAL_EXIT', 'PARTIAL_SELL'):
-            return 'PARTIAL_EXIT'
-        if rec in ('REDUCE',):
-            return 'REDUCE'
-        label = str(advice.get('action_label', ''))
-        if '청산' in label or '매도' in label:
-            return 'EXIT' if '전량' in label or '전체' in label else 'PARTIAL_EXIT'
-        if '축소' in label:
-            return 'REDUCE'
-        return 'HOLD'
+            return "HOLD"
+        rec = (advice.get("recommendation") or advice.get("action") or "").upper()
+        if rec in ("EXIT", "SELL", "CLOSE"):
+            return "EXIT"
+        if rec in ("PARTIAL_EXIT", "PARTIAL_SELL"):
+            return "PARTIAL_EXIT"
+        if rec in ("REDUCE",):
+            return "REDUCE"
+        label = str(advice.get("action_label", ""))
+        if "청산" in label or "매도" in label:
+            return "EXIT" if "전량" in label or "전체" in label else "PARTIAL_EXIT"
+        if "축소" in label:
+            return "REDUCE"
+        return "HOLD"
 
     def _format_signal_entry(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
@@ -274,11 +248,11 @@ class TelegramSender:
         lines.append("")
         lines.append("🛡️ <b>[리스크 관리]</b>")
         lines.append(f"   • 손절가: <code>{sl1:,.0f}원</code> (ATR×2.0)")
-        lines.append(f"   • 트레일링: 최고가/최저가 대비 ATR×1.5 추적")
+        lines.append("   • 트레일링: 최고가/최저가 대비 ATR×1.5 추적")
         lines.append(f"   • ⏰ 시간 조건: {max_hold_hours}시간 초과 시 재평가")
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.0 Pro Alert</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.1 Pro Alert</i>")
         lines.append("<i>⚠️ Shadow Mode: 알림 전용 | 이후 알림은 시간이 아닌 '가격 도달' 기준으로 발송됩니다</i>")
         return "\n".join(lines)
 
@@ -342,15 +316,18 @@ class TelegramSender:
         lines = []
         lines.append(f"⚠️ [ATR 급변동 감지] {ticker} - 변동성 확대")
         lines += self._action_banner(
-            'WATCH', price=price,
-            note="이 알림은 매도 신호가 아닙니다. 손절가/목표가만 자동 재조정되었습니다. 신규 진입은 변동성이 잦아들 때까지 보류를 권장합니다."
+            "WATCH",
+            price=price,
+            note="이 알림은 매도 신호가 아닙니다. 손절가/목표가만 자동 재조정되었습니다. 신규 진입은 변동성이 잦아들 때까지 보류를 권장합니다.",
         )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>")
         lines.append("")
         lines.append("📊 <b>ATR 변동</b>")
         lines.append(f"   • 이전 ATR: <code>{old_atr:,.0f}원</code>")
-        lines.append(f"   • 🔴 <b>현재 ATR</b>: <code>{new_atr:,.0f}원</code> (+{change_ratio:.0f}%, 변동성 수준: {level})")
+        lines.append(
+            f"   • 🔴 <b>현재 ATR</b>: <code>{new_atr:,.0f}원</code> (+{change_ratio:.0f}%, 변동성 수준: {level})"
+        )
         lines.append("")
         lines.append("🔄 <b>자동 조정된 손절 (가격 도달 시 자동 실행)</b>")
         lines.append(f"   • 기존 손절: <code>{old_stop:,.0f}원</code>")
@@ -365,7 +342,7 @@ class TelegramSender:
         lines.append("   • 기존 보유자: 포지션 유지, 위 신규 손절가만 참고")
         lines.append("   • 변동성이 부담되면 물량 20~30% 자율 축소도 가능(선택)")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.0</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.1</i>")
         return "\n".join(lines)
 
     def _format_tp_hit(self, data: dict) -> str:
@@ -387,18 +364,19 @@ class TelegramSender:
         lines = []
         lines.append(f"{tp_emoji} [부분 익절 도달] {ticker} - {tp_name}")
         lines += self._action_banner(
-            'EXECUTED', price=price,
-            note=f"{tp_name} 목표가 도달 → 시스템이 자동으로 물량 일부를 이미 매도했습니다"
+            "EXECUTED", price=price, note=f"{tp_name} 목표가 도달 → 시스템이 자동으로 물량 일부를 이미 매도했습니다"
         )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>  |  <b>목표가</b>: <code>{tp_price:,.0f}원</code>")
-        lines.append(f"📊 <b>수익률</b>: <code>{((price - entry_price) / entry_price * 100) if entry_price else 0:+.2f}%</code>")
+        lines.append(
+            f"📊 <b>수익률</b>: <code>{((price - entry_price) / entry_price * 100) if entry_price else 0:+.2f}%</code>"
+        )
         lines.append(f"📌 <b>남은 물량</b>: <code>{remaining_qty*100:.0f}%</code>")
         lines.append("")
         lines.append("🧠 <b>액션 가이드</b>")
         lines.append(f"   • {rec_reason}")
         if remaining_qty > 0:
-            lines.append(f"   • 남은 물량은 트레일링 스탑으로 관리")
+            lines.append("   • 남은 물량은 트레일링 스탑으로 관리")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST</i>")
         return "\n".join(lines)
@@ -413,11 +391,12 @@ class TelegramSender:
         lines = []
         lines.append(f"🔴 [포지션 청산 완료] {ticker}")
         lines += self._action_banner(
-            'EXECUTED', price=price,
-            note="포지션이 이미 자동 종료되었습니다. 추가로 하실 행동은 없습니다."
+            "EXECUTED", price=price, note="포지션이 이미 자동 종료되었습니다. 추가로 하실 행동은 없습니다."
         )
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"💰 <b>청산가</b>: <code>{price:,.0f}원</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>")
+        lines.append(
+            f"💰 <b>청산가</b>: <code>{price:,.0f}원</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>"
+        )
         lines.append(f"📊 <b>최종 손익</b>: <code>{pnl:+.2f}%</code>  |  <b>보유 시간</b>: <code>{hold_time}</code>")
         lines.append("")
         lines.append("🛡️ <b>청산 사유</b>")
@@ -439,23 +418,29 @@ class TelegramSender:
         summary = advice.get("summary", "")
         emoji = "🔴" if "청산" in action_label else "🟡" if "관망" in action_label else "🟢"
         inferred_action = self._infer_advice_action(advice)
-        vote_str = " | ".join([
-            f"기술:{votes.get('technical', 0):+.2f}",
-            f"리스크:{votes.get('risk', 0):+.2f}",
-            f"시간:{votes.get('time_value', 0):+.2f}",
-            f"수급:{votes.get('micro', 0):+.2f}"
-        ])
+        vote_str = " | ".join(
+            [
+                f"기술:{votes.get('technical', 0):+.2f}",
+                f"리스크:{votes.get('risk', 0):+.2f}",
+                f"시간:{votes.get('time_value', 0):+.2f}",
+                f"수급:{votes.get('micro', 0):+.2f}",
+            ]
+        )
         lines = []
         lines.append(f"{emoji} [🧠 합의 엔진] {ticker} - {action_label}")
         lines += self._action_banner(inferred_action, price=price, note=summary)
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💰 <b>현재가</b>: <code>{price:,.0f}원</code>")
-        lines.append(f"📊 <b>평가 손익</b>: <code>{pnl:+.1f}%</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>")
+        lines.append(
+            f"📊 <b>평가 손익</b>: <code>{pnl:+.1f}%</code>  |  <b>진입가</b>: <code>{entry_price:,.0f}원</code>"
+        )
         lines.append("")
         lines.append("📋 <b>4대 개체 투표 결과</b> <i>(+는 매수/보유 우호, -는 매도 우호)</i>")
         lines.append(f"   {vote_str}")
-        lines.append(f"   • 합의 점수: <code>{consensus_score:.2f}</code> "
-                      f"({'매도 우세' if consensus_score < -0.1 else '매수/보유 우세' if consensus_score > 0.1 else '팽팽함'})")
+        lines.append(
+            f"   • 합의 점수: <code>{consensus_score:.2f}</code> "
+            f"({'매도 우세' if consensus_score < -0.1 else '매수/보유 우세' if consensus_score > 0.1 else '팽팽함'})"
+        )
         lines.append("")
         lines.append("🧠 <b>판단 근거</b>")
         for r in reasons[:4]:
@@ -465,14 +450,14 @@ class TelegramSender:
         lines.append("")
         lines.append(f"🎯 <b>최종 권고</b>: {action_label}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.0 Consensus (데이터 기반)</i>")
+        lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.1 Consensus (데이터 기반)</i>")
         return "\n".join(lines)
 
     def _calc_hold_time(self, entry_time_str: str) -> str:
         if not entry_time_str:
             return "N/A"
         try:
-            entry_dt = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
+            entry_dt = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
             now = datetime.now()
             elapsed = now - entry_dt
             hours, remainder = divmod(elapsed.total_seconds(), 3600)

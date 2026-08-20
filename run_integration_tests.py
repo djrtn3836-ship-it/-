@@ -6,12 +6,11 @@ run_integration_tests.py - 통합 테스트 실행기 v3.3 (UTF-8 강제 + ASCII
 """
 
 import os
-import sys
 import subprocess
+import sys
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEST_DIR = PROJECT_ROOT / "tests"
@@ -23,6 +22,7 @@ EXCLUDE_PATTERNS = [
 ]
 TIMEOUT_SECONDS = 300
 
+
 def is_test_file(file_path: Path) -> bool:
     if file_path.suffix != ".py":
         return False
@@ -32,9 +32,10 @@ def is_test_file(file_path: Path) -> bool:
             return False
     return True
 
-def find_test_files() -> List[Path]:
+
+def find_test_files() -> list[Path]:
     if not TEST_DIR.exists():
-        print(f"[WARN] tests/ 폴더가 없습니다. 생성합니다...")
+        print("[WARN] tests/ 폴더가 없습니다. 생성합니다...")
         TEST_DIR.mkdir(parents=True, exist_ok=True)
         return []
     test_files = []
@@ -43,7 +44,8 @@ def find_test_files() -> List[Path]:
             test_files.append(file_path)
     return sorted(set(test_files))
 
-def run_test(file_path: Path) -> Tuple[bool, str, str]:
+
+def run_test(file_path: Path) -> tuple[bool, str, str]:
     """단일 테스트 실행 (UTF-8 강제)"""
     cmd = [sys.executable, str(file_path)]
     env = os.environ.copy()
@@ -58,23 +60,24 @@ def run_test(file_path: Path) -> Tuple[bool, str, str]:
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECONDS,
-            encoding='utf-8',
-            errors='replace',
-            env=env
+            encoding="utf-8",
+            errors="replace",
+            env=env,
         )
         stdout = result.stdout
         stderr = result.stderr
-        success = (result.returncode == 0)
+        success = result.returncode == 0
         return success, stdout, stderr
     except subprocess.TimeoutExpired:
         return False, "", f"[TIMEOUT] 시간 초과 ({TIMEOUT_SECONDS}초)"
     except Exception as e:
         return False, "", f"[ERROR] 실행 오류: {e}"
 
+
 def main():
     # 콘솔 UTF-8 재설정 (메인 프로세스 자체도 보호)
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
     print("\n" + "=" * 70)
     print("[TEST-RUNNER] 통합 테스트 실행기 v3.3 (UTF-8 강제)")
@@ -114,10 +117,10 @@ def main():
         }
 
         if success:
-            print(f"   [PASS] 성공")
+            print("   [PASS] 성공")
             passed += 1
         else:
-            print(f"   [FAIL] 실패")
+            print("   [FAIL] 실패")
             if stderr:
                 print(f"   [DETAIL] 오류 상세:\n{stderr[:800]}")
             failed += 1
@@ -147,19 +150,26 @@ def main():
     try:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         import json
-        with open(report_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                "timestamp": datetime.now().isoformat(),
-                "total": total,
-                "passed": passed,
-                "failed": failed,
-                "results": {str(k): v for k, v in results.items()}
-            }, f, indent=2, ensure_ascii=False)
+
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "total": total,
+                    "passed": passed,
+                    "failed": failed,
+                    "results": {str(k): v for k, v in results.items()},
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
         print(f"\n[INFO] 상세 보고서 저장됨: {report_path}")
     except Exception as e:
         print(f"[WARN] 보고서 저장 실패: {e}")
 
     sys.exit(0 if failed == 0 else 1)
+
 
 if __name__ == "__main__":
     main()

@@ -5,19 +5,20 @@ Phase 1 Shadow Mode 가동용
 """
 
 import asyncio
-import logging
-from pathlib import Path
 
 # 프로젝트 루트 추가
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.logger import setup_logger
-from orchestrator.pipeline_manager import PipelineManager
 from monitor.daily_monitor import DailyMonitor
 from monitor.shadow_logger import ShadowLogger
+from orchestrator.pipeline_manager import PipelineManager
 
 logger = setup_logger("main")
+
 
 async def main():
     logger.info("=" * 60)
