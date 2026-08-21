@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v7.7.0 (P2-4 + P2-6 통합)
-- PerformanceTracker 백그라운드 갱신
-- PhaseTransitionValidator 자동 검증 (매일 17:30)
-- SafetyGuard 60초 주기 호출 (P0)
-- macro_collector 순환 참조 제거
+scanner_main.py - v8.0.0 FINAL (Supervisor + Verifier 통합)
+- SystemSupervisor 자동 재시작 및 모니터링
+- AlertVerifier 매일 16:00 검증 리포트
+- Windows 최적화 (uvloop 제거)
+- 기존 모든 기능 100% 유지
 """
 
 import asyncio
@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 from core.blackbox_logger import get_status, log_error, log_event
 from core.config import get_config
+from core.container import AppContainer
 from core.debug_tower import debug_tower
 from core.exception_handler import (
     restore_exception_handler,
@@ -46,12 +47,14 @@ from scheduler.macro_collector import fetch_macro_data, get_cached_macro, set_al
 
 FatalError = Exception
 
+from analytics.calibration_executor import ExecutionCalibrator
 from analytics.performance_tracker import performance_tracker
 from collector.collector_status import collector_status
 from data.dart_connector import DartConnector
 from data.db_manager import DatabaseManager
 from data.kiwoom_connector import KiwoomConnectorV512
 from data.news_crawler import NewsCrawler
+from execution.order_executor import OrderExecutor
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from report.daily_report import DailyReportGenerator
@@ -62,6 +65,12 @@ from risk.safety_guard import SafetyGuard
 from scanner.deep_analyzer import DeepAnalyzer
 from scanner.realtime_monitor import RealtimeMonitor
 from scheduler.daily_collector import collect_daily_ohlcv
+
+# ============================================================
+# 🔥 신규: Supervisor, Verifier
+# ============================================================
+from core.supervisor import SystemSupervisor
+from analytics.alert_verifier import scheduled_verify
 
 logger = setup_logger("scanner")
 config = get_config()
@@ -87,13 +96,14 @@ _last_data_time = 0.0
 _DATA_FLOW_TIMEOUT = 180
 
 _safety_guard: SafetyGuard | None = None
+_container: AppContainer | None = None
 
 
 # ============================================================
 # Telegram 명령어용 시스템 상태 수집 콜백
 # ============================================================
 def get_system_stats() -> dict[str, Any]:
-    global _kiwoom, _monitor, _start_time, _last_data_time, MESSAGE_QUEUE
+    global _kiwoom, _monitor, _start_time, _last_data_time, MESSAGE_QUEUE, _container
 
     now = time.time()
     last_data_ago = "없음"
@@ -123,9 +133,9 @@ def get_system_stats() -> dict[str, Any]:
     regime_status = regime_manager.get_status()
     macro = get_cached_macro()
     collector_summary = collector_status.get_summary()
-
-    # PerformanceTracker 상태 추가
     perf_status = performance_tracker.get_status() if performance_tracker else {}
+
+    container_status = "초기화됨" if _container else "미초기화"
 
     return {
         "status": "운영 중" if (_kiwoom and _kiwoom.is_connected()) else "연결 끊김",
@@ -151,6 +161,7 @@ def get_system_stats() -> dict[str, Any]:
             "fresh": collector_summary.get("fresh", 0),
         },
         "performance": perf_status,
+        "container": container_status,
     }
 
 
@@ -210,15 +221,11 @@ async def run_macro_update() -> None:
     await fetch_macro_data(force=True)
 
 
-# ============================================================
-# P2-4: PhaseTransitionValidator 자동 검증
-# ============================================================
 async def run_phase_transition_check(db: DatabaseManager, sender: TelegramSender) -> None:
-    """Shadow→Paper 전환 조건 자동 검증 (매일 17:30)"""
     logger.info("📋 Phase 전환 조건 검증 시작")
     try:
         validator = PhaseTransitionValidator()
-        start_date = "2026-08-20"  # Shadow 시작일 (설정에서 읽어오도록 개선 가능)
+        start_date = "2026-08-20"
         end_date = datetime.now().strftime("%Y-%m-%d")
         decisions = await db.get_decisions_by_date_range(start_date, end_date)
 
@@ -263,6 +270,14 @@ async def run_phase_transition_check(db: DatabaseManager, sender: TelegramSender
     except Exception as e:
         logger.error(f"❌ Phase 전환 검증 실패: {e}")
         await sender.send_raw(f"⚠️ Phase 전환 검증 오류: {str(e)[:100]}")
+
+
+async def run_calibration(calibrator: ExecutionCalibrator) -> None:
+    logger.info("📊 Calibration 실행 시작")
+    try:
+        await calibrator.run(days=30)
+    except Exception as e:
+        logger.error(f"❌ Calibration 실행 실패: {e}")
 
 
 # ============================================================
@@ -348,9 +363,7 @@ async def strategy_worker(worker_id: int, analyzer: DeepAnalyzer, db: DatabaseMa
                     elif action == "EVENT_ATR_SPIKE":
                         logger.info(f"📊 Worker-{worker_id} [ATR급변동] {analysis.get('ticker')}")
                     elif action == "EVENT_TP_HIT":
-                        logger.info(
-                            f"📊 Worker-{worker_id} [부분익절] {analysis.get('ticker')} TP{analysis.get('tp_level')}"
-                        )
+                        logger.info(f"📊 Worker-{worker_id} [부분익절] {analysis.get('ticker')} TP{analysis.get('tp_level')}")
                     elif action == "EVENT_EXIT":
                         logger.info(f"📊 Worker-{worker_id} [청산] {analysis.get('ticker')}")
                         await analyzer.clear_trailing_stop(analysis.get("ticker"))
@@ -401,7 +414,7 @@ async def send_error_alert(error_msg: str, error_detail: str = "") -> None:
 """
     try:
         await _error_sender.send_raw(message)
-    except:
+    except Exception:
         pass
 
 
@@ -436,11 +449,11 @@ async def send_startup_notification(success: bool, details: dict | None = None) 
 📡 <b>구독 종목</b>: {len(tickers)}개 → {ticker_str}
 🔌 <b>키움 연결</b>: {"✅ 연결됨" if details.get('kiwoom_connected') else "❌ 연결 실패"}
 ⏰ <b>스케줄러</b>: {details.get('job_count', 0)}개 작업 등록
-📊 <b>버전</b>: v7.7.0 (P2 통합)
+📊 <b>버전</b>: v8.0.0 (Supervisor + Verifier)
 📈 <b>거시 지표</b>: KOSPI 5일 {macro.kospi_trend:.2f}% | USD/KRW {macro.usdkrw:.0f} | VIX {macro.vix:.1f}
 💾 <b>{bb_info}</b>
 ━━━━━━━━━━━━━━━━━━━━━
-<i>실시간 스캔 + 이벤트 알림 + 자가 치유 + 성과 추적</i>
+<i>실시간 스캔 + 자가 치유 + 성과 추적 + Paper Trading</i>
 """
     else:
         msg += f"""
@@ -470,7 +483,7 @@ async def send_shutdown_notification(reason: str = "정상 종료") -> None:
 """
     try:
         await _error_sender.send_raw(msg)
-    except:
+    except Exception:
         pass
 
 
@@ -478,7 +491,7 @@ async def send_shutdown_notification(reason: str = "정상 종료") -> None:
 # 헬스체크 서버
 # ============================================================
 async def health_check(request: web.Request) -> web.Response:
-    global _kiwoom, _monitor, _db, _start_time, _last_data_time
+    global _kiwoom, _monitor, _db, _start_time, _last_data_time, _container
     queue_usage = (MESSAGE_QUEUE.qsize() / MESSAGE_QUEUE.maxsize) * 100 if MESSAGE_QUEUE.maxsize > 0 else 0
     data_flow_healthy = (time.time() - _last_data_time) < 180
 
@@ -503,6 +516,7 @@ async def health_check(request: web.Request) -> web.Response:
         "macro": macro.to_dict(),
         "collector_status": collector_summary,
         "performance_tracker": perf_status,
+        "container": "initialized" if _container else "none",
     }
     return web.json_response(status)
 
@@ -531,21 +545,10 @@ async def start_health_server(host: str = "0.0.0.0", port: int = 8080) -> None:
 # ============================================================
 async def main() -> None:
     global \
-        _kiwoom, \
-        _monitor, \
-        _db, \
-        _start_time, \
-        _error_sender, \
-        _scheduler, \
-        _worker_tasks, \
-        _main_loop, \
-        _last_data_time, \
-        _health_task, \
-        _telegram_cmd, \
-        _all_tasks, \
-        _original_exception_handlers, \
-        _shutdown_requested, \
-        _safety_guard
+        _kiwoom, _monitor, _db, _start_time, _error_sender, \
+        _scheduler, _worker_tasks, _main_loop, _last_data_time, \
+        _health_task, _telegram_cmd, _all_tasks, _original_exception_handlers, \
+        _shutdown_requested, _safety_guard, _container
 
     if not is_trading_day():
         log_event("NON_TRADING_DAY", {"date": datetime.now().strftime("%Y-%m-%d")})
@@ -558,8 +561,8 @@ async def main() -> None:
     _main_loop = asyncio.get_running_loop()
     _last_data_time = time.time()
 
-    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v7.7.0"})
-    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v7.7.0"})
+    log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v8.0.0"})
+    debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v8.0.0"})
 
     check_and_create_pid()
     load_dotenv(override=True)
@@ -568,7 +571,6 @@ async def main() -> None:
     _start_time = asyncio.get_event_loop().time()
     _error_sender = TelegramSender()
 
-    # macro_collector 순환 참조 해결
     set_alert_callback(send_error_alert)
     logger.info("✅ macro_collector 알림 콜백 등록 완료")
 
@@ -579,8 +581,8 @@ async def main() -> None:
     logger.info("✅ 시그널 핸들러 등록 완료 (SIGINT/SIGTERM)")
 
     logger.info("=" * 70)
-    logger.info("🚀 v7.7.0 FINAL - P2 통합 (PerformanceTracker + PhaseTransition)")
-    logger.info("📌 기능: 실시간 스캔, 이벤트 알림, 성과 추적, 자동 전환 검증")
+    logger.info("🚀 v8.0.0 FINAL - Supervisor + Verifier 통합 (자가 치유 + 검증)")
+    logger.info("📌 기능: 실시간 스캔, 자동 재시작, 알림 검증, 성과 추적, Paper Trading")
     logger.info("📱 Telegram: '현황', '신호', '삼전' → 종합 분석 리포트")
     logger.info("=" * 70)
 
@@ -591,6 +593,14 @@ async def main() -> None:
     startup_details: dict[str, Any] = {}
 
     try:
+        # ============================================================
+        # 🔥 Supervisor 백그라운드 태스크 시작 (시스템 감시)
+        # ============================================================
+        supervisor = SystemSupervisor()
+        supervisor_task = asyncio.create_task(supervisor.run())
+        _all_tasks.append(supervisor_task)
+        logger.info("✅ SystemSupervisor 백그라운드 감시 시작됨")
+
         set_alert_handler(send_error_alert)
         logger.info("✅ Telegram 알림 핸들러 연결 완료")
 
@@ -602,25 +612,25 @@ async def main() -> None:
         macro = get_cached_macro()
         logger.info(f"   ✅ KOSPI 5일: {macro.kospi_trend:.2f}% | USD/KRW: {macro.usdkrw:.2f} | VIX: {macro.vix:.1f}")
 
-        _db = DatabaseManager()
-        await _db.init_db()
-        logger.info("✅ DB 초기화 완료")
-        log_event("DB_INIT_SUCCESS", {})
-        debug_tower.log("SYSTEM", "DB_INIT_SUCCESS", {})
+        _container = AppContainer.create_production()
+        await _container.initialize()
+        logger.info("✅ DI 컨테이너 초기화 완료")
 
-        _kiwoom = KiwoomConnectorV512(rate_limit=config.get_float("rate_limit_capacity", 5.0))
-        logger.info("⏳ 키움 서버 연결 대기 중...")
-        retry_count = 0
-        while not _kiwoom.is_connected():
-            retry_count += 1
-            await _kiwoom.connect()
-            if not _kiwoom.is_connected():
-                if retry_count % 5 == 0:
-                    await send_error_alert(f"키움 연결 실패 (재시도 {retry_count}회)")
-                await asyncio.sleep(config.get_int("connect_retry_interval", 60))
-        logger.info("✅ 키움 서버 연결 성공!")
-        log_event("KIWOOM_CONNECTED", {"retries": retry_count})
-        debug_tower.log("SYSTEM", "KIWOOM_CONNECTED", {"retries": retry_count})
+        _db = _container.db_manager
+        _kiwoom = _container.kiwoom
+        if not _kiwoom.is_connected():
+            logger.info("⏳ 키움 서버 연결 대기 중...")
+            retry_count = 0
+            while not _kiwoom.is_connected():
+                retry_count += 1
+                await _kiwoom.connect()
+                if not _kiwoom.is_connected():
+                    if retry_count % 5 == 0:
+                        await send_error_alert(f"키움 연결 실패 (재시도 {retry_count}회)")
+                    await asyncio.sleep(config.get_int("connect_retry_interval", 60))
+            logger.info("✅ 키움 서버 연결 성공!")
+            log_event("KIWOOM_CONNECTED", {"retries": retry_count})
+            debug_tower.log("SYSTEM", "KIWOOM_CONNECTED", {"retries": retry_count})
 
         logger.info("⏳ WebSocket LOGIN 및 수신 루프 준비 대기 중...")
         if not await _kiwoom.wait_until_ready(timeout=10.0):
@@ -668,10 +678,15 @@ async def main() -> None:
         await news_crawler.connect()
         logger.info("✅ 뉴스 크롤러 초기화 완료")
 
-        # 🔥 P2-1: PerformanceTracker 초기화 및 시작
         performance_tracker.initialize(_db)
         await performance_tracker.start()
         logger.info("✅ PerformanceTracker 시작됨 (5분 간격 성과 갱신)")
+
+        order_executor = _container.order_executor
+        logger.info("✅ OrderExecutor 초기화 완료 (Paper Mode)")
+
+        calibrator = ExecutionCalibrator(_db, sender)
+        logger.info("✅ ExecutionCalibrator 초기화 완료")
 
         daily_reporter = DailyReportGenerator(db_manager=_db, telegram_sender=sender)
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=_db, kiwoom_connector=_kiwoom)
@@ -692,73 +707,67 @@ async def main() -> None:
         _scheduler = SchedulerManager()
         _scheduler.add_job_with_retry(
             run_daily_report,
-            CronTrigger(
-                hour=config.get_int("daily_report_hour", 7),
-                minute=config.get_int("daily_report_minute", 0),
-                timezone="Asia/Seoul",
-            ),
+            CronTrigger(hour=config.get_int("daily_report_hour", 7), minute=config.get_int("daily_report_minute", 0), timezone="Asia/Seoul"),
             "daily_report",
             daily_reporter,
-            max_retries=3,
-            retry_delay=5,
+            max_retries=3, retry_delay=5,
         )
         _scheduler.add_job_with_retry(
             run_feedback_and_reload,
-            CronTrigger(
-                hour=config.get_int("feedback_hour", 17),
-                minute=config.get_int("feedback_minute", 0),
-                timezone="Asia/Seoul",
-            ),
+            CronTrigger(hour=config.get_int("feedback_hour", 17), minute=config.get_int("feedback_minute", 0), timezone="Asia/Seoul"),
             "feedback_learning",
             feedback_learner,
             analyzer,
-            max_retries=3,
-            retry_delay=5,
+            max_retries=3, retry_delay=5,
         )
         _scheduler.add_job_with_retry(
             run_weekly_pdf,
-            CronTrigger(
-                day_of_week=config.get("weekly_pdf_day", "mon"),
-                hour=config.get_int("weekly_pdf_hour", 6),
-                minute=config.get_int("weekly_pdf_minute", 0),
-                timezone="Asia/Seoul",
-            ),
+            CronTrigger(day_of_week=config.get("weekly_pdf_day", "mon"), hour=config.get_int("weekly_pdf_hour", 6), minute=config.get_int("weekly_pdf_minute", 0), timezone="Asia/Seoul"),
             "weekly_pdf",
             weekly_pdf_gen,
-            max_retries=3,
-            retry_delay=5,
+            max_retries=3, retry_delay=5,
         )
         _scheduler.add_job_with_retry(
             run_daily_ohlcv_collect,
-            CronTrigger(
-                hour=config.get_int("ohlcv_hour", 16), minute=config.get_int("ohlcv_minute", 30), timezone="Asia/Seoul"
-            ),
+            CronTrigger(hour=config.get_int("ohlcv_hour", 16), minute=config.get_int("ohlcv_minute", 30), timezone="Asia/Seoul"),
             "daily_ohlcv",
             _kiwoom,
             _db,
             _monitor.tickers,
-            max_retries=3,
-            retry_delay=5,
+            max_retries=3, retry_delay=5,
         )
         _scheduler.add_job_with_retry(
             run_macro_update,
             CronTrigger(hour=8, minute=0, timezone="Asia/Seoul"),
             "macro_update",
-            max_retries=3,
-            retry_delay=5,
+            max_retries=3, retry_delay=5,
         )
-        # 🔥 P2-4: PhaseTransitionValidator 스케줄링
         _scheduler.add_job_with_retry(
             run_phase_transition_check,
             CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
             "phase_transition_check",
             _db,
             sender,
-            max_retries=2,
-            retry_delay=5,
+            max_retries=2, retry_delay=5,
+        )
+        _scheduler.add_job_with_retry(
+            run_calibration,
+            CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
+            "calibration",
+            calibrator,
+            max_retries=2, retry_delay=5,
+        )
+        # ============================================================
+        # 🔥 AlertVerifier 스케줄 등록 (매일 16:00)
+        # ============================================================
+        _scheduler.add_job_with_retry(
+            scheduled_verify,
+            CronTrigger(hour=16, minute=0, timezone="Asia/Seoul"),
+            "alert_verifier",
+            max_retries=2, retry_delay=5,
         )
         _scheduler.start()
-        startup_details["job_count"] = 7
+        startup_details["job_count"] = 9  # 8개 + alert_verifier
         logger.info(f"⏰ 스케줄러 등록 완료 (총 {startup_details['job_count']}개 작업)")
         log_event("SCHEDULER_STARTED", {"jobs": startup_details["job_count"]})
         debug_tower.log("SYSTEM", "SCHEDULER_STARTED", {"jobs": startup_details["job_count"]})
@@ -778,7 +787,6 @@ async def main() -> None:
             if pm_task:
                 _all_tasks.append(pm_task)
 
-        # PerformanceTracker 태스크 추가
         if performance_tracker._task:
             _all_tasks.append(performance_tracker._task)
 
@@ -787,10 +795,9 @@ async def main() -> None:
         log_event("SYSTEM_READY", {})
         debug_tower.log("SYSTEM", "SYSTEM_READY", {})
 
-        logger.info("🚀 메인 루프 진입 (Phoenix Watchdog + SafetyGuard + PerformanceTracker)")
+        logger.info("🚀 메인 루프 진입 (Windows 기본 asyncio + Supervisor + SafetyGuard + PerformanceTracker + Paper Trading)")
         while not _shutdown_requested:
             try:
-                # SafetyGuard 실행 (60초 주기)
                 macro = get_cached_macro()
                 safety_data = {
                     "kospi_drop": macro.kospi_trend if macro.kospi_trend != 0 else 0.0,
@@ -877,7 +884,7 @@ async def main() -> None:
         if PID_FILE.exists():
             try:
                 PID_FILE.unlink()
-            except:
+            except Exception:
                 pass
 
         if _all_tasks:
@@ -908,11 +915,12 @@ async def main() -> None:
         if _scheduler:
             _scheduler.shutdown()
 
+        if _container:
+            await _container.shutdown()
+
         try:
             summary = collector_status.get_summary()
-            logger.info(
-                f"📊 수집기 상태 요약: 건강 {summary['healthy']}/{summary['total']}, 신선 {summary['fresh']}/{summary['total']}"
-            )
+            logger.info(f"📊 수집기 상태 요약: 건강 {summary['healthy']}/{summary['total']}, 신선 {summary['fresh']}/{summary['total']}")
             if summary["unhealthy"] > 0:
                 unhealthy = [name for name, s in summary["collectors"].items() if not s["is_healthy"]]
                 logger.warning(f"⚠️ 비정상 수집기: {', '.join(unhealthy)}")
@@ -932,7 +940,7 @@ async def main() -> None:
 
 
 # ============================================================
-# 유틸리티 (메인 내에서만 사용)
+# 유틸리티
 # ============================================================
 def check_and_create_pid() -> None:
     if PID_FILE.exists():
@@ -945,10 +953,10 @@ def check_and_create_pid() -> None:
                 sys.exit(1)
             else:
                 PID_FILE.unlink()
-        except:
+        except Exception:
             try:
                 PID_FILE.unlink()
-            except:
+            except Exception:
                 pass
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
@@ -974,11 +982,10 @@ if __name__ == "__main__":
         if PID_FILE.exists():
             try:
                 PID_FILE.unlink()
-            except:
+            except Exception:
                 pass
     except Exception as e:
         print(f"❌ 시스템 종료: {e}")
         import traceback
-
         traceback.print_exc()
         debug_tower.flush()

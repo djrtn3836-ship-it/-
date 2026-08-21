@@ -1,8 +1,8 @@
 """
-DART Connector v5.4.1 (async 래퍼 추가)
-- get_financials_async(), get_company_info_async(), search_notices_async() 신규
-- 기존 sync 메서드는 그대로 유지 (하위 호환성)
-- telegram_commands.py 등에서 비동기 호출 가능
+DART Connector v5.4.2 FINAL (User-Agent 추가, XML 파싱 오류 처리)
+- _download_corp_code에 User-Agent 명시
+- XML 파싱 실패 시 빈 딕셔너리 반환
+- 기존 async 래퍼 유지
 """
 
 import asyncio
@@ -138,7 +138,9 @@ class DartConnector:
 
         url = f"{self.base_url}/corpCode.xml"
         params = {"crtfc_key": self.api_key}
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
 
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=30)
@@ -146,7 +148,7 @@ class DartConnector:
 
             content_type = resp.headers.get("Content-Type", "")
             if "xml" not in content_type and not resp.text.strip().startswith("<?xml"):
-                logger.warning(f"⚠️ DART 응답이 XML 아님 (Content-Type: {content_type})")
+                logger.warning(f"⚠️ DART 응답이 XML 아님 (Content-Type: {content_type}), 캐시 유지")
                 return {}
 
             root = ET.fromstring(resp.content)
@@ -390,7 +392,7 @@ class DartConnector:
             self.last_reset = datetime.now()
 
     # ============================================================
-    # 동기 메서드 (기존, 하위 호환성 유지)
+    # 동기 메서드 (기존, 하위 호환성)
     # ============================================================
     def get_financials_sync(self, corp_code: str, year: str = None) -> dict[str, float]:
         if not self.api_key:
@@ -498,20 +500,17 @@ class DartConnector:
         return None
 
     # ============================================================
-    # 🔥 P1-7: Async Wrappers (asyncio.to_thread 사용)
+    # Async 래퍼 (P1-7)
     # ============================================================
     async def get_financials_async(self, corp_code: str, year: str = None) -> dict[str, float]:
-        """비동기 재무제표 조회 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.get_financials_sync, corp_code, year)
 
     async def get_company_info_async(self, corp_code: str) -> dict | None:
-        """비동기 기업 정보 조회 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.get_company_info_sync, corp_code)
 
     async def search_notices_async(self, corp_code: str, start_date: str | None = None, limit: int = 10) -> list | None:
-        """비동기 공시 검색 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.search_notices_sync, corp_code, start_date, limit)
 

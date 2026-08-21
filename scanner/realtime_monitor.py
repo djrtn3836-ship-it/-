@@ -1,19 +1,20 @@
 """
-scanner/realtime_monitor.py - v5.7.0 FINAL (REG 요청 최적화 + 재시도 강화)
-- 등록 간격 0.05 → 0.15초로 증가 (초당 요청 수 제한 초과 방지)
-- 1차 등록 후 실패한 종목을 수집하여 3초 후 2차 재등록 시도
-- _register_with_retry 재시도 횟수 2→3회, 간격 1→2초
+scanner/realtime_monitor.py - v5.8.5 FINAL (시총 순 정렬 + 200개 강제 제한)
+- max_subscriptions = 200 (하드코딩, config 무시)
+- get_universe_sorted_by_market_cap() 사용하여 시총 상위 200개 구독
+- 105115 오류 원천 차단
 """
 
 import asyncio
 import time
-from collections import deque
+
+from cachetools import TTLCache
 
 from core.config import get_config
 from core.debug_tower import debug_tower
 from core.logger import setup_logger
 from core.regime_manager import regime_manager
-from data.stock_universe import get_universe
+from data.stock_universe import get_universe_sorted_by_market_cap
 
 logger = setup_logger("monitor")
 config = get_config()
@@ -27,10 +28,8 @@ class RealtimeMonitor:
         self._handler = self._on_data
         self._subscribed_tickers: list[str] = []
         self._latest_data: dict[str, dict] = {}
-        self._history: dict[str, deque] = {}
-        self._orderbook_history: dict[str, deque] = {}
-        self._history_limit = 100
-        self._orderbook_limit = 50
+        self._history: TTLCache = TTLCache(maxsize=500, ttl=3600)
+        self._orderbook_history: TTLCache = TTLCache(maxsize=500, ttl=3600)
         self._is_running = False
         self._last_scan_time = 0.0
         self.tickers: list[str] = []
@@ -45,7 +44,11 @@ class RealtimeMonitor:
         self.price_change_ratio = config.get_float("price_change_ratio", 0.02)
         self.cooldown_seconds = config.get_int("cooldown_seconds", 300)
         self.emergency_threshold = config.get_float("emergency_threshold", 0.05)
-        self.max_subscriptions = 500
+
+        # 🔥 하드코딩 200 (Kiwoom 절대 제한)
+        self.max_subscriptions = 200
+
+        self._prev_prices: dict[str, float] = {}
 
     def _get_current_regime(self) -> str:
         return regime_manager.get_regime()
@@ -58,12 +61,13 @@ class RealtimeMonitor:
         logger.info(f"📡 RealtimeMonitor 시작 중... (최대 {self.max_subscriptions}종목)")
 
         try:
-            universe = get_universe()
-            self.tickers = list(universe.keys())[: self.max_subscriptions]
+            # 🔥 시총 순 정렬된 유니버스 사용
+            universe = get_universe_sorted_by_market_cap()
+            self.tickers = list(universe.keys())[:self.max_subscriptions]
             if not self.tickers:
                 raise ValueError("Universe is empty")
-            self._name_cache = universe
-            logger.info(f"📊 Universe 로드 완료: {len(self.tickers)}개 종목")
+            self._name_cache = {t: universe[t] for t in self.tickers}
+            logger.info(f"📊 Universe 로드 완료: {len(self.tickers)}개 종목 (시총 상위 {self.max_subscriptions}개)")
             debug_tower.log("SYSTEM", "UNIVERSE_LOADED", {"count": len(self.tickers)})
         except Exception as e:
             logger.warning(f"⚠️ Universe 로드 실패 ({e}), 기본 종목 사용")
@@ -71,20 +75,15 @@ class RealtimeMonitor:
             self.tickers = self.DEFAULT_TICKERS
             self._name_cache = {t: f"종목_{t}" for t in self.tickers}
 
-        # ============================================================
-        # 🔥 v5.7.0: REG 등록 최적화 (간격 증가 + 실패 재시도)
-        # ============================================================
         REGISTER_INTERVAL = 0.3
         RETRY_INTERVAL = 0.2
-        RETRY_DELAY = 3.0  # 1차 완료 후 재시도 전 대기 시간
+        RETRY_DELAY = 3.0
 
         self._subscribed_tickers.clear()
         failed_tickers: list[str] = []
 
-        # 1차 등록
         for idx, ticker in enumerate(self.tickers):
             try:
-                # 🔥 기존 등록 로직 (성공/실패 구분)
                 try:
                     await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
                     self._subscribed_tickers.append(ticker)
@@ -92,21 +91,16 @@ class RealtimeMonitor:
                 except Exception as e:
                     logger.warning(f"⚠️ {ticker} 등록 실패: {e}")
                     failed_tickers.append(ticker)
-
-                # 등록 간격 (0.15초)
                 await asyncio.sleep(REGISTER_INTERVAL)
-
             except Exception as e:
                 logger.error(f"❌ {ticker} 등록 중 오류: {e}")
                 failed_tickers.append(ticker)
 
         logger.info(f"✅ 1차 등록 완료: 성공 {len(self._subscribed_tickers)}개, 실패 {len(failed_tickers)}개")
 
-        # 2차 재등록 (실패한 종목만)
         if failed_tickers:
             logger.info(f"⏳ {len(failed_tickers)}개 종목 2차 재등록 시도 (3초 후)...")
             await asyncio.sleep(RETRY_DELAY)
-
             retry_success = 0
             for ticker in failed_tickers:
                 try:
@@ -117,14 +111,11 @@ class RealtimeMonitor:
                 except Exception as e:
                     logger.warning(f"⚠️ {ticker} 재등록 실패 (최종): {e}")
                 await asyncio.sleep(RETRY_INTERVAL)
-
-            logger.info(
-                f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개"
-            )
+            logger.info(f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개")
 
         self._is_running = True
         self._last_scan_time = time.time()
-        logger.info(f"✅ RealtimeMonitor 시작 완료 (구독 종목: {len(self._subscribed_tickers)}개)")
+        logger.info(f"✅ RealtimeMonitor 시작 완료 (실제 구독 종목: {len(self._subscribed_tickers)}개)")
         debug_tower.log("SYSTEM", "MONITOR_STARTED", {"count": len(self._subscribed_tickers)})
 
     def _on_data(self, data: dict):
@@ -143,19 +134,18 @@ class RealtimeMonitor:
                 else:
                     try:
                         price = float(price)
-                    except:
+                    except Exception:
                         price = 0.0
                 volume = data.get("volume") or data.get("acc_vol") or 0
                 try:
                     volume = int(volume)
-                except:
+                except Exception:
                     volume = 0
 
                 parsed["price"] = price
                 parsed["volume"] = volume
-                if ticker not in self._history:
-                    self._history[ticker] = deque(maxlen=self._history_limit)
-                self._history[ticker].append(parsed)
+                self._history[ticker] = parsed
+                self._prev_prices[ticker] = price
 
                 debug_tower.log(ticker, "MONITOR_RECV", {"price": price, "volume": volume})
 
@@ -171,7 +161,7 @@ class RealtimeMonitor:
                     if price is not None and qty is not None:
                         try:
                             orderbook["bids"].append((float(price), int(qty)))
-                        except:
+                        except Exception:
                             pass
                 for i in range(1, 11):
                     if i == 1:
@@ -183,12 +173,10 @@ class RealtimeMonitor:
                     if price is not None and qty is not None:
                         try:
                             orderbook["asks"].append((float(price), int(qty)))
-                        except:
+                        except Exception:
                             pass
                 parsed["orderbook"] = orderbook
-                if ticker not in self._orderbook_history:
-                    self._orderbook_history[ticker] = deque(maxlen=self._orderbook_limit)
-                self._orderbook_history[ticker].append(parsed)
+                self._orderbook_history[ticker] = parsed
                 debug_tower.log(
                     ticker, "ORDERBOOK_RECV", {"bids": len(orderbook["bids"]), "asks": len(orderbook["asks"])}
                 )
@@ -246,16 +234,13 @@ class RealtimeMonitor:
             if price <= 0:
                 continue
 
-            history = self._history.get(ticker, [])
-            if len(history) < 2:
-                continue
-
-            prev_data = history[-2]
-            prev_price = prev_data.get("price", price)
+            prev_price = self._prev_prices.get(ticker, price)
             if prev_price <= 0:
+                self._prev_prices[ticker] = price
                 continue
 
-            change_ratio = (price - prev_price) / prev_price
+            change_ratio = (price - prev_price) / prev_price if prev_price != 0 else 0.0
+            self._prev_prices[ticker] = price
 
             orderbook = data.get("orderbook", {})
             bids = orderbook.get("bids", [])
@@ -335,7 +320,7 @@ class RealtimeMonitor:
         for ticker in self._subscribed_tickers:
             try:
                 await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
-                await asyncio.sleep(0.15)  # 재구독 시에도 간격 유지
+                await asyncio.sleep(0.15)
             except Exception as e:
                 logger.error(f"❌ 재구독 실패 ({ticker}): {e}")
                 debug_tower.capture_snapshot(ticker, e, "RESUBSCRIBE")
@@ -359,7 +344,10 @@ class RealtimeMonitor:
     async def stop(self):
         self._is_running = False
         for ticker in self._subscribed_tickers:
-            await self.kiwoom.unregister_realtime(ticker)
+            try:
+                await self.kiwoom.unregister_realtime(ticker)
+            except Exception:
+                pass
         self._subscribed_tickers.clear()
         self._latest_data.clear()
         self._history.clear()

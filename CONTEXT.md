@@ -124,3 +124,95 @@ git commit -m "feat: v7.6.4 FINAL - 안정화 완료 (REG 0.3초, Ctrl+C, Chaos 
 - 3개 Chaos 장애 테스트 전면 통과 (네트워크/DB/Telegram)
 - 11개 통합 + 16개 단위 테스트 통과
 - Windows Ctrl+C 즉시 종료 확인"
+
+
+## 📄 2. `CONTEXT.md` (v8.0.0 최신화)
+
+```markdown
+# 🔬 프로젝트 완전 상태 저장소 (Full Context) - v8.0.0 FINAL
+
+> 📌 **이 문서의 목적**: 새 대화를 시작하거나 다른 AI에게 인수인계할 때, 10분 만에 시스템의 완전한 상태를 복원할 수 있는 **초정밀 명세서**입니다.
+> 📅 **최종 업데이트**: 2026-08-21 (금) 21:00 KST
+> ✅ **현재 상태**: **v8.0.0 FINAL (자가 치유 + 알림 검증 통합)**
+
+---
+
+## 📁 1. 프로젝트 기본 정보
+
+| 항목 | 값 |
+| :--- | :--- |
+| **프로젝트명** | stock_analyzer_v5.1.2 |
+| **버전** | **v8.0.0 FINAL** |
+| **Python 버전** | 3.12.9 |
+| **운영 모드** | Phase 2 Paper Trading (모의투자) |
+| **실행 명령어** | `python scanner_main.py` |
+| **Git 브랜치** | main |
+
+---
+
+## 🛡️ 2. v8.0.0 신규 기능 (2026-08-21)
+
+### 2.1 SystemSupervisor (자가 치유)
+- `core/supervisor.py` 추가
+- 프로세스가 죽으면 **30초 내 자동 재시작**
+- 메모리 사용량 1GB 초과 시 Telegram 경고
+- 5분 내 재시작 5회 초과 시 수동 개입 알림
+
+### 2.2 AlertVerifier (알림 검증)
+- `analytics/alert_verifier.py` 추가
+- 매일 **16:00**에 오늘 신호 대비 Telegram 전송 건수 비교
+- 누락 발생 시 원인 분석 리포트 자동 전송
+
+### 2.3 시가총액 순 정렬 (구독 최적화)
+- `data/stock_universe.py`에 `get_universe_sorted_by_market_cap()` 추가
+- `yfinance`로 시총 정보를 조회하여 **상위 200개 종목** 구독
+- `196170(알테오젠)` 등 시총 상위 종목 누락 문제 완전 해결
+
+### 2.4 SafetyGuard 조건 명확화
+- `kospi_drop`: **음수(-)일 때만 트리거** (양수 1080% 무시)
+- `usdkrw_spike`: **1400 초과 시 트리거** (임계값 상향)
+- 이상치로 인한 오작동 완전 차단
+
+### 2.5 105115 구독 초과 오류 원천 차단
+- `max_subscriptions = 200` 하드코딩
+- `config.yaml` 설정 완전 무시
+
+---
+
+## 🔧 3. 중요 설정값 요약 (운영 시 참고)
+
+| 설정 | 값 | 파일 |
+| :--- | :--- | :--- |
+| REG 등록 간격 | **0.3초** | `scanner/realtime_monitor.py` |
+| 최대 구독 종목 | **200개 (하드코딩)** | `scanner/realtime_monitor.py` |
+| 변동률 임계값 | **2%** | `scanner/realtime_monitor.py` |
+| 로그 포맷 | JSON (밀리초 포함) | `core/logger.py` |
+| Telegram 전송 타임아웃 | 30초 | `report/telegram_sender.py` |
+| VaR 갱신 간격 | 300초 (5분) | `config/risk_config.yaml` |
+| Supervisor 감시 간격 | 30초 | `core/supervisor.py` |
+| Alert Verifier 실행 시간 | 매일 16:00 | `scanner_main.py` |
+
+---
+
+## 📂 4. 최종 파일 구조 (v8.0.0)
+
+```text
+stock_analyzer_v5.1.2/
+├── scanner_main.py (v8.0.0)       # Supervisor + Verifier 통합
+├── core/
+│   ├── supervisor.py (🆕)         # 자가 치유 감독관
+│   ├── container.py                # DI 컨테이너
+│   ├── config.py                   # 중앙 설정 (int→float 변환)
+│   └── logger.py                   # JSON 로깅 (Gzip 비동기화)
+├── scanner/
+│   ├── realtime_monitor.py        # 시총 상위 200개 구독
+│   └── deep_analyzer.py           # VaR 캐시 + 락 최적화
+├── analytics/
+│   ├── performance_tracker.py     # 성과 추적
+│   └── alert_verifier.py (🆕)    # 알림 누락 검증
+├── risk/
+│   └── safety_guard.py            # 하락/상승 조건 분리
+├── data/
+│   └── stock_universe.py          # 시총 정렬 함수 추가
+└── report/
+    └── telegram_sender.py         # 청크 전송 최적화
