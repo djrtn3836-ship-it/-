@@ -1,0 +1,13 @@
+# config/strategies.yaml - 멀티 전략 가중치 설정
+# 각 전략의 가중치 합계는 자동으로 1.0으로 정규화됨
+
+strategies:
+  Trend:
+    weight: 0.40
+    description: "추세 추종 (EMA 정배열, ADX)"
+  Reversal:
+    weight: 0.30
+    description: "역추세 (RSI 과매수/과매도, 볼린저)"
+  Breakout:
+    weight: 0.30
+    description: "돌파/모멘텀 (52주 신고가, 거래량 급증)"

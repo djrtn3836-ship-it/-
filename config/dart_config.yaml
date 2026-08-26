@@ -1,0 +1,19 @@
+# DART API 설정
+
+api:
+  base_url: "https://opendart.fss.or.kr/api"
+  daily_limit: 10000
+
+risk_weights:
+  third_party_allotment: 30
+  rights_offering_high_discount: 30
+  cb_issue: 20
+  bw_issue: 20
+  large_issue: 30
+  related_party: 20
+  merger: 25
+
+thresholds:
+  normal: 19
+  warning: 49
+  high: 69

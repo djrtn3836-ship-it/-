@@ -1,0 +1,21 @@
+# config/regime_weights.yaml - v1.0
+# 국면(Bull/Sideways/Bear)별 기술적 지표 임계값
+# stock_filter.py에서 동적으로 로드하여 사용
+
+Bull:
+  rsi_buy_threshold: 30      # 과매도 기준 (낮을수록 매수 기회)
+  rsi_sell_threshold: 80     # 과매수 기준 (높을수록 매도 신호)
+  ma_trend_multiplier: 1.2   # 추세 신호 가중치
+  volume_bull_threshold: 1.5 # 거래량 활성화 임계값
+
+Sideways:
+  rsi_buy_threshold: 30
+  rsi_sell_threshold: 70
+  ma_trend_multiplier: 1.0
+  volume_bull_threshold: 1.2
+
+Bear:
+  rsi_buy_threshold: 40      # 하락장에서는 40 이하도 매수 신호로 봄
+  rsi_sell_threshold: 60     # 60 이상이면 과매수로 간주
+  ma_trend_multiplier: 0.8   # 추세 신호 가중치 하향
+  volume_bull_threshold: 1.0
