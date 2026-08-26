@@ -78,8 +78,8 @@
 - [x] **Portfolio VaR v2.0 Kelly 통합** (`risk/portfolio_var.py`)
   - `position_limit = min(risk_adj_factor, kelly_position_limit)`
   - Monte Carlo 10,000회 + Cholesky 분해 상관관계 반영
-- [ ] **Correlation Matrix** 실시간 갱신 → 포트폴리오 분산 최적화
-- [ ] Circuit Breaker 강화: 연속 손실 / 변동성 급등 / 유동성 위기 대응
+- [x] **Correlation Matrix** 실시간 갱신 → 포트폴리오 분산 최적화 ← Session 9 완료
+- [x] Circuit Breaker 강화: 연속 손실 / 변동성 급등 / 유동성 위기 대응 ← Session 9 완료
 
 ### 2-5. 관측성 (Observability)
 - [x] **`@trace.traced` 핵심 메서드 전면 적용** (Session 5+6 완료)
@@ -111,7 +111,7 @@
 
 ### 3-2. 자가 진단 시스템
 - [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
-- [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
+- [x] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest) ← Session 9 완료
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
 - [x] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
 
@@ -188,7 +188,7 @@
 | 지표 | 현재 | Phase1 목표 | Phase2 목표 | Phase3 목표 |
 |------|------|-------------|-------------|-------------|
 | pyflakes 경고 | **0** ✅ | 0 | 0 | 0 |
-| 단위 테스트 통과율 | **531/531** ✅ | 130/130 | 200/200 | 300/300 |
+| 단위 테스트 통과율 | **655/655** ✅ | 130/130 | 200/200 | 300/300 |
 | 타입 힌트 커버리지 | ~70% | 80% | 95% | 100% |
 | 함수 평균 복잡도 | ~4.2 | <6 | <5 | <4 |
 | 코드 중복도 | ~8% | <10% | <5% | <3% |
@@ -208,7 +208,7 @@
 - ✅ E2E 통합 테스트 (test_e2e_bootstrap_dry_run.py 19개)
 - ✅ CalibrationTracker v5.2.0 단위 테스트 (21개)
 - ✅ OrderExecutor position_limit 단위 테스트 (20개)
-- ✅ 전체 531/531 테스트 통과 (+60개)
+- ✅ 전체 655/655 테스트 통과 (+60개)
 
 ### 다음 우선순위
 1. **SQI v2** — 신호 품질 지수 고도화 (모멘텀·거래량·변동성 복합 스코어)
@@ -302,9 +302,9 @@
 
 ### 2-3. 리스크 관리 고도화
 - [ ] **CVaR (Conditional VaR)** 구현 → 극단 손실 대비
-- [ ] **Correlation Matrix** 실시간 갱신 → 포트폴리오 분산 최적화
+- [x] **Correlation Matrix** 실시간 갱신 → 포트폴리오 분산 최적화 ← Session 9 완료
 - [ ] **Kelly Criterion** 포지션 사이징 → 기대값 기반 최적 투자 비율
-- [ ] Circuit Breaker 강화: 연속 손실 / 변동성 급등 / 유동성 위기 대응
+- [x] Circuit Breaker 강화: 연속 손실 / 변동성 급등 / 유동성 위기 대응 ← Session 9 완료
 
 ### 2-4. 데이터 파이프라인 강화
 - [ ] **Feature Store 완성** (`orchestrator/feature_store.py`)
@@ -325,7 +325,7 @@
 
 ### 3-2. 자가 진단 시스템
 - [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
-- [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
+- [x] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest) ← Session 9 완료
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
 - [x] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
 
