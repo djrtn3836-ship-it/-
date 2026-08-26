@@ -113,7 +113,7 @@
 - [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
 - [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
-- [ ] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
+- [x] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
 
 ### 3-3. 자기 최적화 루프
 - [x] **A/B Testing Framework v1.0** (`application/analysis/ab_framework.py`)
@@ -188,7 +188,7 @@
 | 지표 | 현재 | Phase1 목표 | Phase2 목표 | Phase3 목표 |
 |------|------|-------------|-------------|-------------|
 | pyflakes 경고 | **0** ✅ | 0 | 0 | 0 |
-| 단위 테스트 통과율 | **432/432** ✅ | 130/130 | 200/200 | 300/300 |
+| 단위 테스트 통과율 | **531/531** ✅ | 130/130 | 200/200 | 300/300 |
 | 타입 힌트 커버리지 | ~70% | 80% | 95% | 100% |
 | 함수 평균 복잡도 | ~4.2 | <6 | <5 | <4 |
 | 코드 중복도 | ~8% | <10% | <5% | <3% |
@@ -208,7 +208,7 @@
 - ✅ E2E 통합 테스트 (test_e2e_bootstrap_dry_run.py 19개)
 - ✅ CalibrationTracker v5.2.0 단위 테스트 (21개)
 - ✅ OrderExecutor position_limit 단위 테스트 (20개)
-- ✅ 전체 432/432 테스트 통과 (+60개)
+- ✅ 전체 531/531 테스트 통과 (+60개)
 
 ### 다음 우선순위
 1. **SQI v2** — 신호 품질 지수 고도화 (모멘텀·거래량·변동성 복합 스코어)
@@ -327,7 +327,7 @@
 - [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
 - [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
-- [ ] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
+- [x] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
 
 ### 3-3. 자기 최적화 루프
 - [ ] **A/B Testing Framework**: 전략 버전 비교 실험
