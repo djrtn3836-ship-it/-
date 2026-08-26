@@ -1,9 +1,10 @@
 """
-tests/unit/test_model_drift_detector.py - v1.0 (Session 10)
+tests/unit/test_model_drift_detector.py - v1.1 (Session 10 hotfix)
 ModelDriftDetector 단위 테스트 (38개)
 """
 
 import pytest
+from dataclasses import FrozenInstanceError
 
 from observability.model_drift_detector import (
     DriftLevel,
@@ -205,7 +206,6 @@ class TestModelDriftDetectorObserve:
         assert d.win_rate("b") == pytest.approx(0.0)
 
     def test_observe_handles_nan_gracefully(self):
-        # 원본 로그에는 assert가 누락된 채로 존재했던 테스트 → 실제 검증 로직으로 보강
         d = ModelDriftDetector(baseline_size=50)
         try:
             result = d.observe("s5", float("nan"), True)
@@ -232,8 +232,12 @@ class TestDriftReport:
         assert self._make(level=DriftLevel.CRITICAL).to_dict()["drift_level"] == "CRITICAL"
 
     def test_frozen_immutability(self):
-        with pytest.raises(Exception):
-            object.__setattr__(self._make(), "psi_score", 0.99)
+        # object.__setattr__()는 인스턴스의 오버라이드된 __setattr__(frozen 보호)를
+        # 완전히 우회하므로 예외가 발생하지 않는다. 일반 속성 대입(=)을 써야
+        # dataclass가 생성한 __setattr__이 호출되어 FrozenInstanceError가 발생한다.
+        r = self._make()
+        with pytest.raises(FrozenInstanceError):
+            r.psi_score = 0.99
 
     def test_should_retrain_true_on_drift(self):
         assert self._make(level=DriftLevel.DRIFT, retrain=True).should_retrain is True

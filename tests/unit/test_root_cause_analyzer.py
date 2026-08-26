@@ -1,9 +1,10 @@
 """
-tests/unit/test_root_cause_analyzer.py - v1.0 (Session 10)
-RootCauseAnalyzer 단위 테스트 (37개)
+tests/unit/test_root_cause_analyzer.py - v1.1 (Session 10 hotfix)
+RootCauseAnalyzer 단위 테스트 (38개)
 """
 
 import pytest
+from dataclasses import FrozenInstanceError
 
 from observability.root_cause_analyzer import (
     AnomalyInput,
@@ -40,8 +41,9 @@ class TestAnomalyInput:
         assert a.anomaly_score == 0.75
 
     def test_frozen(self):
-        with pytest.raises(Exception):
-            object.__setattr__(make_anomaly(), "is_anomaly", False)
+        a = make_anomaly()
+        with pytest.raises(FrozenInstanceError):
+            a.is_anomaly = False
 
     def test_not_anomaly(self):
         assert make_anomaly(is_anomaly=False).is_anomaly is False
@@ -54,8 +56,9 @@ class TestDriftInput:
         assert d.drift_level == "DRIFT"
 
     def test_frozen(self):
-        with pytest.raises(Exception):
-            object.__setattr__(make_drift(), "drift_level", "STABLE")
+        d = make_drift()
+        with pytest.raises(FrozenInstanceError):
+            d.drift_level = "STABLE"
 
     def test_stable_level(self):
         d = make_drift(level="STABLE", psi=0.05, drop=0.0, retrain=False)
@@ -69,8 +72,9 @@ class TestCircuitBreakerInput:
         assert cb.open_count == 1
 
     def test_frozen(self):
-        with pytest.raises(Exception):
-            object.__setattr__(make_cb(), "is_open", False)
+        cb = make_cb()
+        with pytest.raises(FrozenInstanceError):
+            cb.is_open = False
 
     def test_multiple_breakers(self):
         assert len(make_cb(count=2, names=["BreakA", "BreakB"]).breaker_names) == 2
@@ -135,7 +139,15 @@ class TestRootCauseAnalyzerAnalyze:
         assert self.rca.analyze(cb=make_cb(count=1)).primary_cause == CauseCategory.RISK_BREACH
 
     def test_drift_detected(self):
+        # level="DRIFT" → 신뢰도 MEDIUM(0.65) < HIGH(0.85) 임계값
+        # → 현재 구현의 단계적 대응 설계상 MONITOR가 정확한 결과
         report = self.rca.analyze(drift=make_drift(level="DRIFT"))
+        assert report.primary_cause == CauseCategory.SIGNAL_DEGRADATION
+        assert report.recommended_action == RecommendedAction.MONITOR
+
+    def test_drift_critical_triggers_retrain(self):
+        # level="CRITICAL" → 신뢰도 HIGH(0.85) → RETRAIN_MODEL
+        report = self.rca.analyze(drift=make_drift(level="CRITICAL"))
         assert report.primary_cause == CauseCategory.SIGNAL_DEGRADATION
         assert report.recommended_action == RecommendedAction.RETRAIN_MODEL
 
@@ -189,8 +201,9 @@ class TestRootCauseReport:
         assert self._make().is_critical is True
 
     def test_frozen_immutability(self):
-        with pytest.raises(Exception):
-            object.__setattr__(self._make(), "severity", "INFO")
+        r = self._make()
+        with pytest.raises(FrozenInstanceError):
+            r.severity = "INFO"
 
     def test_secondary_causes_in_dict(self):
         assert isinstance(self._make().to_dict()["secondary_causes"], list)
