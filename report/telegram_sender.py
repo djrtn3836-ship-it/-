@@ -259,10 +259,10 @@ class TelegramSender:
     def _format_sl_trail(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
-        entry_price = data.get("entry_price", price)
+        _ = data.get("entry_price", price)
         old_stop = data.get("old_stop", 0.0)
         new_stop = data.get("new_stop", 0.0)
-        atr = data.get("atr", 0.0)
+        _ = data.get("atr", 0.0)
         pnl = data.get("pnl", 0.0)
         advice = data.get("consensus") or data.get("advice")
         action = self._infer_advice_action(advice)
@@ -303,7 +303,7 @@ class TelegramSender:
     def _format_atr_spike(self, data: dict) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
-        entry_price = data.get("entry_price", 0.0)
+        _ = data.get("entry_price", 0.0)
         old_atr = data.get("old_atr", 0.0)
         new_atr = data.get("new_atr", 0.0)
         old_stop = data.get("old_stop", 0.0)

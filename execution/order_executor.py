@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any
+
 
 from data.db_manager import DatabaseManager
 from data.kiwoom_connector import KiwoomConnectorV512
@@ -138,7 +138,7 @@ class OrderExecutor:
         # 오늘 손익 계산 (DB에서 outcomes 조회)
         today = datetime.now().strftime("%Y-%m-%d")
         decisions = await self.db.get_decisions_by_date(today)
-        total_pnl = 0.0
+        _ = 0.0
         for d in decisions:
             # outcome 조회 (간단히)
             # 실제로는 DB에서 outcome 테이블 조회 필요

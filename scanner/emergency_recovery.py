@@ -5,7 +5,6 @@ scanner/emergency_recovery.py - v1.0 (WebSocket Fallback)
 """
 
 import asyncio
-import time
 from datetime import datetime
 
 from core.logger import setup_logger

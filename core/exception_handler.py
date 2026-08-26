@@ -31,7 +31,7 @@ def _send_alert_sync(error_msg: str, error_detail: str = ""):
         return
 
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()  # ensure we're in async context
         # 이미 이벤트 루프가 실행 중이면 create_task로 실행
         asyncio.create_task(_send_alert_func(error_msg, error_detail))
     except RuntimeError:

@@ -66,7 +66,7 @@ class SchedulerManager:
 
         def _wrapper():
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()  # ensure we're in async context
                 asyncio.create_task(_wrapped_coro())
             except RuntimeError:
                 asyncio.run(_wrapped_coro())

@@ -70,7 +70,6 @@ class SentimentAnalyzer:
         if self._model_loaded:
             return
         try:
-            import torch
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
             model_name = "nlptown/bert-base-multilingual-uncased-sentiment"

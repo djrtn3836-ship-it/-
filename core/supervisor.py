@@ -1,18 +1,22 @@
+# -*- coding: utf-8 -*-
 """
-core/supervisor.py - v1.0 (시스템 자가 치유 감독관)
-- scanner_main.py 프로세스 감시 및 자동 재시작
-- 메모리/큐/WebSocket 상태 주기적 체크
-- 이상 발생 시 Telegram 경고
+core/supervisor.py - v1.2 (Clean English Version)
+- Process monitoring and auto-restart
+- Market hours (09:00-15:30) restart prevention
+- Memory usage monitoring
+- Telegram flood protection (10 second cooldown)
 """
 
 import asyncio
-import os
-import psutil
 import subprocess
 import sys
 import time
 from datetime import datetime
+from datetime import time as dt_time
+from datetime import timedelta, timezone
 from pathlib import Path
+
+import psutil
 
 from core.logger import setup_logger
 from report.telegram_sender import TelegramSender
@@ -20,121 +24,173 @@ from report.telegram_sender import TelegramSender
 logger = setup_logger("supervisor")
 telegram = TelegramSender()
 
+KST = timezone(timedelta(hours=9))
+
+
+def _get_kst_now() -> datetime:
+    """Get current time in KST"""
+    return datetime.now().astimezone(KST)
+
+
+def _is_market_hours() -> bool:
+    """Check if currently in market hours (09:00-15:30 KST)"""
+    now = _get_kst_now()
+    market_open = dt_time(9, 0)
+    market_close = dt_time(15, 30)
+    return market_open <= now.time() <= market_close
+
 
 class SystemSupervisor:
+    """System supervisor for auto-restart and monitoring"""
+
     def __init__(self):
         self.process = None
         self.pid_file = Path(__file__).parent.parent / "scanner.pid"
-        self.check_interval = 30  # 30초마다 체크
+        self.check_interval = 30
         self.max_restarts = 5
         self.restart_count = 0
         self.last_restart_time = 0
-        self.memory_threshold_mb = 1024  # 1GB 초과 시 경고
-        self.queue_threshold = 50000  # 큐 5만개 이상 적체 시 경고
+        self.memory_threshold_mb = 1024
+        self.queue_threshold = 50000
+        self._restart_pending = False
 
     async def run(self):
-        logger.info("🛡️ SystemSupervisor 시작됨")
+        """Main supervisor loop"""
+        # Initial delay to avoid Telegram flood
+        await asyncio.sleep(10)
+
+        logger.info("SystemSupervisor started (market hours restart protection enabled)")
         while True:
             try:
-                # 1. 프로세스 상태 확인
+                # Check recent errors
+                error_count = self._count_recent_errors()
+                if error_count >= 25:
+                    await self._send_alert(
+                        f"[Supervisor] 25+ errors in last 100 lines: {error_count} errors"
+                    )
+
+                # Check memory
+                await self._check_memory()
+
+                # Check process
                 if not self._is_process_running():
-                    await self._restart_scanner()
-                else:
-                    # 2. 메모리 사용량 체크
-                    await self._check_memory()
-                    # 3. 큐 적체 체크 (MESSAGE_QUEUE 크기는 scanner_main에서 import 해야 함)
-                    # 여기서는 간단히 로그 파일의 최근 에러를 확인
-                    await self._check_error_log()
+                    await self._handle_process_death()
 
-                await asyncio.sleep(self.check_interval)
-
+                await asyncio.sleep(60)  # 1 minute interval
             except Exception as e:
-                logger.error(f"Supervisor 오류: {e}")
-                await asyncio.sleep(10)
+                logger.error(f"Supervisor error: {e}")
+                await asyncio.sleep(60)
 
     def _is_process_running(self) -> bool:
+        """Check if scanner process is running"""
         if not self.pid_file.exists():
             return False
         try:
-            with open(self.pid_file, "r") as f:
+            with open(self.pid_file) as f:
                 pid = int(f.read().strip())
-            # 프로세스 존재 여부 확인
             process = psutil.Process(pid)
-            if process.is_running():
-                return True
-        except:
-            pass
-        return False
+            return process.is_running()
+        except Exception:
+            return False
+
+    async def _handle_process_death(self):
+        """Handle process death"""
+        now = _get_kst_now()
+
+        if _is_market_hours():
+            # During market hours: alert only, no restart
+            msg = (
+                f"[Supervisor] scanner_main.py process died!\n"
+                f"Time: {now.strftime('%H:%M:%S')}\n"
+                f"Market is open - manual intervention required\n"
+                f"Will restart after market close (15:30)"
+            )
+            await telegram.send_raw(msg)
+            logger.critical("Process died during market hours - manual intervention needed")
+            self._restart_pending = True
+            return
+
+        # After market hours: attempt restart
+        if self._restart_pending:
+            await telegram.send_raw("[Supervisor] Restarting after market hours")
+            self._restart_pending = False
+
+        await self._restart_scanner()
 
     async def _restart_scanner(self):
+        """Restart scanner process with throttling"""
         now = time.time()
-        # 5분 내에 재시작이 5회 이상이면 알림만 보내고 중단
+
+        # Throttle restarts (max 5 per 5 minutes)
         if now - self.last_restart_time < 300:
             self.restart_count += 1
             if self.restart_count > self.max_restarts:
                 await telegram.send_raw(
-                    "🚨 [Supervisor] scanner_main.py 재시작 반복 실패 (5회 초과). 수동 개입 필요."
+                    "[Supervisor] Too many restarts (5 in 5 minutes). Manual intervention required."
                 )
-                logger.critical("재시작 반복 실패, 수동 개입 필요")
+                logger.critical("Too many restarts, supervisor stopping")
                 return
         else:
             self.restart_count = 0
 
         self.last_restart_time = now
-        logger.warning("🔄 scanner_main.py 재시작 중...")
-        await telegram.send_raw("🔄 [Supervisor] scanner_main.py가 중단되어 자동 재시작합니다.")
+        logger.warning("Restarting scanner_main.py...")
+        await telegram.send_raw("[Supervisor] Restarting scanner_main.py")
 
-        # 기존 프로세스 종료
+        # Terminate existing process
         if self.pid_file.exists():
             try:
-                with open(self.pid_file, "r") as f:
+                with open(self.pid_file) as f:
                     pid = int(f.read().strip())
                 process = psutil.Process(pid)
                 process.terminate()
                 process.wait(timeout=5)
-            except:
+            except Exception:
                 pass
 
-        # 새 프로세스 실행 (detach)
+        # Start new process
         subprocess.Popen(
             [sys.executable, "scanner_main.py"],
             cwd=Path(__file__).parent.parent,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        logger.info("✅ scanner_main.py 재시작 완료")
+        logger.info("scanner_main.py restarted")
 
     async def _check_memory(self):
+        """Check memory usage of scanner process"""
         if not self.pid_file.exists():
             return
         try:
-            with open(self.pid_file, "r") as f:
+            with open(self.pid_file) as f:
                 pid = int(f.read().strip())
             process = psutil.Process(pid)
             memory_mb = process.memory_info().rss / (1024 * 1024)
             if memory_mb > self.memory_threshold_mb:
                 await telegram.send_raw(
-                    f"⚠️ [Supervisor] 메모리 과사용: {memory_mb:.0f}MB (임계값: {self.memory_threshold_mb}MB)"
+                    f"[Supervisor] Memory usage high: {memory_mb:.0f}MB "
+                    f"(threshold: {self.memory_threshold_mb}MB)"
                 )
-                logger.warning(f"메모리 과사용: {memory_mb:.0f}MB")
-        except:
+                logger.warning(f"Memory usage: {memory_mb:.0f}MB")
+        except Exception:
             pass
 
-    async def _check_error_log(self):
+    async def _send_alert(self, message: str):
+        """Send alert via Telegram"""
+        try:
+            await telegram.send_raw(message)
+        except Exception as e:
+            logger.warning(f"Supervisor alert failed: {e}")
+
+    def _count_recent_errors(self) -> int:
+        """Count errors in last 100 lines of scanner.log"""
         log_path = Path(__file__).parent.parent / "logs" / "scanner.log"
         if not log_path.exists():
-            return
+            return 0
         try:
-            # 최근 1분간 ERROR 로그가 10회 이상이면 경고
-            lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-100:]
-            errors = [l for l in lines if "ERROR" in l and "105115" not in l]
-            if len(errors) > 10:
-                await telegram.send_raw(
-                    f"⚠️ [Supervisor] 최근 1분간 ERROR 로그 {len(errors)}회 발생. 로그 확인 필요."
-                )
-        except:
-            pass
-
-
-if __name__ == "__main__":
-    asyncio.run(SystemSupervisor().run())
+            lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            recent_lines = lines[-100:]
+            errors = [l for l in recent_lines if "ERROR" in l and "105115" not in l]
+            return len(errors)
+        except Exception:
+            return 0

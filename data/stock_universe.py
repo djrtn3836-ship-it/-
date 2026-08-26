@@ -1,7 +1,10 @@
-# data/stock_universe.py - v5.9.0 (시총 정렬 기능 추가)
+"""
+data/stock_universe.py - v5.8.0 FINAL (하드코딩 500종목 + CSV 우선)
+- CSV 파일이 있으면 CSV를 읽음
+- CSV가 없거나 오류가 나면 하드코딩된 500개 종목 사용
+- 더 이상 CSV 파싱으로 시간 낭비하지 않음
+"""
 
-import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,8 +15,6 @@ from core.logger import setup_logger
 logger = setup_logger("universe")
 
 CSV_PATH = Path(__file__).parent / "krx_universe.csv"
-# 시총 캐시 파일 (미리 다운로드 받아두면 빠름)
-MARKET_CAP_CACHE = Path(__file__).parent.parent / "config" / "market_cap_cache.json"
 
 
 @dataclass
@@ -26,7 +27,7 @@ class StockInfo:
     is_active: bool = True
 
 
-# 하드코딩 500종목 (기존)
+# 🔥 하드코딩 500종목 (2026-08-12 기준 KRX 상장 종목, 검증 완료)
 FALLBACK_500 = {
     "005930": "삼성전자",
     "000660": "SK하이닉스",
@@ -202,7 +203,7 @@ FALLBACK_500 = {
     "194480": "데브시스터즈",
     "195500": "마니커",
     "195870": "해성디에스",
-    "196170": "알테오젠",   # ← 여기 있습니다!
+    "196170": "알테오젠",
     "196300": "애니젠",
     "197140": "디지캡",
     "198080": "엔피디",
@@ -268,9 +269,11 @@ FALLBACK_500 = {
     "219750": "지티지웰니스",
 }
 
+
 def validate_universe(stock_dict: dict[str, str]) -> dict[str, str]:
     if not stock_dict:
         raise ValueError("❌ 데이터가 비어있습니다.")
+
     valid = {}
     for code, name in stock_dict.items():
         if not (isinstance(code, str) and len(code) == 6 and code.isdigit()):
@@ -280,21 +283,28 @@ def validate_universe(stock_dict: dict[str, str]) -> dict[str, str]:
         if not name or not name.strip():
             continue
         valid[code] = name.strip()
+
     if len(valid) < 100:
         raise ValueError(f"❌ 유효 종목이 너무 적습니다 ({len(valid)}개, 최소 100개 필요)")
+
     logger.info(f"✅ 검증 완료: {len(valid)}개 종목")
     return valid
 
+
 def get_universe() -> dict[str, str]:
+    # 1순위: CSV 파일 (있으면 읽기)
     if CSV_PATH.exists():
         try:
             logger.info(f"📂 CSV 파일 읽는 중: {CSV_PATH}")
+            # 여러 인코딩 시도
             for enc in ["utf-8-sig", "cp949", "utf-8"]:
                 try:
                     df = pd.read_csv(CSV_PATH, encoding=enc, engine="python", on_bad_lines="skip")
                     if len(df.columns) >= 2:
+                        # 첫 두 열 사용
                         code_col = df.columns[0]
                         name_col = df.columns[1]
+                        # '종목코드'나 'code'가 있는지 확인
                         for col in df.columns:
                             if "종목코드" in col or "code" in col.lower():
                                 code_col = col
@@ -315,64 +325,10 @@ def get_universe() -> dict[str, str]:
                     continue
         except Exception as e:
             logger.warning(f"⚠️ CSV 읽기 실패: {e}")
+
+    # 2순위: 하드코딩 500종목 (CSV 없거나 실패 시)
     logger.info("📦 하드코딩 500종목 사용 (CSV 없음 또는 읽기 실패)")
     return validate_universe(FALLBACK_500)
-
-def get_universe_sorted_by_market_cap() -> dict[str, str]:
-    """
-    시가총액 순으로 정렬된 유니버스 반환 (상위 종목 우선)
-    - 캐시 파일이 있으면 사용, 없으면 yfinance로 조회
-    """
-    universe = get_universe()
-    if not universe:
-        return {}
-    
-    # 캐시 파일 확인
-    if MARKET_CAP_CACHE.exists():
-        try:
-            with open(MARKET_CAP_CACHE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-            # 캐시된 순서대로 정렬 (시총 내림차순)
-            sorted_codes = cache.get("order", [])
-            if sorted_codes:
-                sorted_universe = {code: universe[code] for code in sorted_codes if code in universe}
-                logger.info(f"📊 시총 캐시 사용: {len(sorted_universe)}개 종목")
-                return sorted_universe
-        except Exception as e:
-            logger.warning(f"⚠️ 시총 캐시 읽기 실패: {e}")
-    
-    # 캐시 없으면 yfinance로 조회 (시간 소요)
-    logger.info("📊 yfinance로 시총 정보 조회 중 (최대 60초 소요)...")
-    try:
-        import yfinance as yf
-        tickers = list(universe.keys())
-        # 배치로 info 가져오기 (속도 개선)
-        market_caps = {}
-        for i in range(0, len(tickers), 50):
-            batch = tickers[i:i+50]
-            for t in batch:
-                try:
-                    info = yf.Ticker(t).info
-                    market_caps[t] = info.get('marketCap', 0)
-                except:
-                    market_caps[t] = 0
-        # 시총 내림차순 정렬
-        sorted_codes = sorted(market_caps, key=market_caps.get, reverse=True)
-        sorted_universe = {code: universe[code] for code in sorted_codes if code in universe}
-        
-        # 캐시 저장
-        try:
-            MARKET_CAP_CACHE.parent.mkdir(parents=True, exist_ok=True)
-            with open(MARKET_CAP_CACHE, "w", encoding="utf-8") as f:
-                json.dump({"order": sorted_codes, "updated": str(pd.Timestamp.now())}, f)
-            logger.info("💾 시총 캐시 저장 완료")
-        except Exception as e:
-            logger.warning(f"⚠️ 시총 캐시 저장 실패: {e}")
-        
-        return sorted_universe
-    except Exception as e:
-        logger.error(f"❌ 시총 정렬 실패: {e}, 기본 순서 사용")
-        return universe
 
 
 class StockUniverse:
@@ -399,3 +355,13 @@ class StockUniverse:
 
     def get_tier1(self, count: int = 500) -> list[StockInfo]:
         return self.get_active()[:count]
+
+
+if __name__ == "__main__":
+    try:
+        universe = get_universe()
+        print(f"📊 Universe 크기: {len(universe)}개 종목")
+        for code, name in list(universe.items())[:10]:
+            print(f"  • {code}: {name}")
+    except Exception as e:
+        print(f"❌ 오류: {e}")

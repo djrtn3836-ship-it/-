@@ -786,7 +786,7 @@ class DeepAnalyzer:
             if strategy_action in ["BUY", "SELL"] and strategy_confidence > 0.6:
                 final_action = strategy_action
                 final_confidence = strategy_confidence
-                action_reason = f"전략 합의: {strategy_result['consensus']}"
+                _ = f"전략 합의: {strategy_result['consensus']}"
             else:
                 decision = self.decider.decide(
                     {
@@ -799,7 +799,7 @@ class DeepAnalyzer:
                 )
                 final_action = decision.get("action", "HOLD")
                 final_confidence = decision.get("confidence", 0.5)
-                action_reason = "점수 기반 결정"
+                _ = "점수 기반 결정"
 
             original_action_label = {"BUY": "매수", "SELL": "매도", "HOLD": "관망"}.get(final_action, "관망")
 

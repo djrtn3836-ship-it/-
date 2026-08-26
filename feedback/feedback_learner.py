@@ -185,7 +185,7 @@ class FeedbackLearner:
         """XGBoost 학습 (FEATURE_COLS 사용)"""
         try:
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
+            _ = end_date - timedelta(days=30)
 
             # 최근 30일치 결정 데이터 로드
             all_decisions = []

@@ -267,8 +267,8 @@ class Backtester:
             price = signal["price"]
             action = signal["action"]
             score = signal.get("score", 0.5)
-            confidence = signal.get("confidence", 0.5)
-            entry_price = signal.get("entry_price", price)
+            _ = signal.get("confidence", 0.5)
+            _ = signal.get("entry_price", price)
 
             # 기존 포지션 업데이트 (가격 변동)
             for pos_ticker in list(positions.keys()):

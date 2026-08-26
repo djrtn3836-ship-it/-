@@ -5,11 +5,10 @@ analytics/calibration_executor.py - v1.0 (P3-2: Slippage Calibration)
 - 주기적 실행 (매일 17:30) 스케줄러에 등록 가능
 """
 
-import asyncio
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+
 
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager

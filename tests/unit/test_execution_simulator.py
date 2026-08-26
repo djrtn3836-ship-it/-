@@ -3,6 +3,7 @@ tests/unit/test_execution_simulator.py - Execution Simulator 단위 테스트
 """
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -94,7 +95,7 @@ class TestExecutionSimulator:
             order_size=1500,
             market_cap=1_000_000_000_000,
             avg_daily_volume=1500000,
-            current_time=None,
+            current_time=datetime(2024, 1, 15, 10, 30, 0),  # 거래 시간(10:30) 고정
             orderbook=sample_orderbook,
         )
         assert result.filled is True

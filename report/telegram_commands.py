@@ -417,7 +417,7 @@ class TelegramCommandHandler:
         # AI 분석 결과
         action = analysis.get("action", "HOLD")
         score = analysis.get("score", 0)
-        confidence = analysis.get("confidence", 0)
+        _ = analysis.get("confidence", 0)
         positives = analysis.get("positives", [])[:4]
         negatives = analysis.get("negatives", [])[:3]
         regime = analysis.get("regime", "N/A")

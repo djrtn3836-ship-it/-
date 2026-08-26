@@ -151,7 +151,6 @@ class KoreanSpecialFilter:
 
     def _is_near_market_close(self, dt: datetime) -> bool:
         """장 마감 30분 전 여부"""
-        t = dt.time()
         close_buffer = timedelta(minutes=self.MARKET_CLOSE_BUFFER_MIN)
         close_time = datetime.combine(dt.date(), self.MARKET_CLOSE)
         return dt >= (close_time - close_buffer)

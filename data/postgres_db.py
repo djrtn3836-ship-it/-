@@ -5,10 +5,8 @@ data/postgres_db.py - v1.0 (P3-5: PostgreSQL Implementation)
 - 현재는 SQLite와 동일한 인터페이스 제공 (마이그레이션 준비)
 """
 
-import asyncio
-import json
-from datetime import datetime
-from typing import Any
+
+
 
 import asyncpg
 

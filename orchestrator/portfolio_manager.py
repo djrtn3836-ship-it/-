@@ -1,7 +1,7 @@
 """
-orchestrator/portfolio_manager.py - v1.3 (VaR 계산 오류 처리)
-- update_var()에서 returns_dict가 비어있으면 계산 스킵
-- 포지션 락 유지
+orchestrator/portfolio_manager.py - v1.2 (포지션 락 추가)
+- _positions 딕셔너리 동시 접근을 asyncio.Lock으로 보호
+- update_position()을 async def로 변경
 """
 
 import asyncio
@@ -33,6 +33,7 @@ class PortfolioManager:
         self._positions: dict[str, dict] = {}
         self._weights: dict[str, float] = {}
         self._total_value: float = 0.0
+        # 🔥 P1-3: 포지션 접근 락 추가
         self._position_lock = asyncio.Lock()
 
         self.var_calculator = PortfolioVaR(
@@ -137,11 +138,6 @@ class PortfolioManager:
             except Exception as e:
                 logger.debug(f"⚠️ {ticker} 수익률 데이터 조회 실패: {e}")
 
-        # 🔥 returns_dict가 비어있으면 계산 스킵
-        if not returns_dict:
-            logger.debug("📭 수익률 데이터 없음 → VaR 계산 스킵")
-            return
-
         total_value = sum(p.get("current_price", 0) * p.get("qty", 0) for p in self._positions.values())
         if total_value == 0:
             return
@@ -173,7 +169,10 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"❌ 포트폴리오 VaR 계산 실패: {e}")
 
-    async def update_position(self, ticker: str, price: float, qty: float, entry_price: float = None, action: str = "BUY"):
+    # 🔥 P1-3: async def로 변경 및 락 적용
+    async def update_position(
+        self, ticker: str, price: float, qty: float, entry_price: float = None, action: str = "BUY"
+    ):
         async with self._position_lock:
             if action in ["BUY", "SIGNAL_ENTRY"]:
                 self._positions[ticker] = {
@@ -191,6 +190,7 @@ class PortfolioManager:
                 if ticker in self._positions:
                     self._positions[ticker]["current_price"] = price
 
+        # 락 외부에서 VaR 갱신 태스크 생성
         asyncio.create_task(self.update_var())
 
     def get_portfolio_risk(self) -> PortfolioRiskMetrics | None:

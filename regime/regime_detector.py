@@ -54,7 +54,7 @@ class RegimeDetector:
 
         kospi = data.get("kospi_trend", macro.kospi_trend)
         spx = data.get("spx_trend", macro.spx_trend)
-        ndx = data.get("ndx_trend", macro.ndx_trend)
+        _ = data.get("ndx_trend", macro.ndx_trend)
         sox = data.get("sox_trend", macro.sox_trend)
         vix = data.get("vix", macro.vix)
         oil = data.get("oil_price", macro.oil_price)

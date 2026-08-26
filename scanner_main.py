@@ -1,11 +1,34 @@
 #!/usr/bin/env python3
 """
-scanner_main.py - v8.0.0 FINAL (Supervisor + Verifier 통합)
-- SystemSupervisor 자동 재시작 및 모니터링
-- AlertVerifier 매일 16:00 검증 리포트
-- Windows 최적화 (uvloop 제거)
-- 기존 모든 기능 100% 유지
+scanner_main.py - v8.0.0 LEGACY (Deprecated)
+
+⚠️  DEPRECATED: 이 파일은 레거시 진입점입니다.
+    V10 DDD 아키텍처에서는 app/main.py 를 사용하세요.
+
+    실행 방법 (V10):
+        python app/main.py
+
+    이 파일이 유지되는 이유:
+        - Strangler Fig 패턴으로 점진적 전환 지원
+        - 긴급 롤백 시 레거시 진입점 역할
+        - 기존 운영 스크립트 호환성 유지
+
+    V10과의 핵심 차이:
+        scanner_main.py → core.config (딕셔너리 방식)
+        app/main.py     → config.schema (Pydantic V10)
+
+        scanner_main.py → data.*, scanner.* (레거시 경로)
+        app/main.py     → infrastructure.*, application.* (DDD 경로)
+
+    완전 전환 예정: Phase 4 (인프라 현대화) 완료 후 삭제
 """
+import warnings
+warnings.warn(
+    "scanner_main.py는 레거시 진입점입니다. "
+    "V10 DDD 아키텍처에서는 'python app/main.py'를 사용하세요.",
+    DeprecationWarning,
+    stacklevel=1,
+)
 
 import asyncio
 import logging
@@ -54,7 +77,6 @@ from data.dart_connector import DartConnector
 from data.db_manager import DatabaseManager
 from data.kiwoom_connector import KiwoomConnectorV512
 from data.news_crawler import NewsCrawler
-from execution.order_executor import OrderExecutor
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from report.daily_report import DailyReportGenerator
@@ -103,8 +125,6 @@ _container: AppContainer | None = None
 # Telegram 명령어용 시스템 상태 수집 콜백
 # ============================================================
 def get_system_stats() -> dict[str, Any]:
-    global _kiwoom, _monitor, _start_time, _last_data_time, MESSAGE_QUEUE, _container
-
     now = time.time()
     last_data_ago = "없음"
     if _last_data_time > 0:
@@ -169,7 +189,6 @@ def get_system_stats() -> dict[str, Any]:
 # 시그널 핸들러
 # ============================================================
 def setup_signal_handlers():
-    global _shutdown_requested
     is_windows = sys.platform == "win32"
 
     def _signal_handler(sig, frame):
@@ -491,7 +510,6 @@ async def send_shutdown_notification(reason: str = "정상 종료") -> None:
 # 헬스체크 서버
 # ============================================================
 async def health_check(request: web.Request) -> web.Response:
-    global _kiwoom, _monitor, _db, _start_time, _last_data_time, _container
     queue_usage = (MESSAGE_QUEUE.qsize() / MESSAGE_QUEUE.maxsize) * 100 if MESSAGE_QUEUE.maxsize > 0 else 0
     data_flow_healthy = (time.time() - _last_data_time) < 180
 
@@ -663,6 +681,22 @@ async def main() -> None:
         analyzer = DeepAnalyzer(db_manager=_db, feedback_learner=feedback_learner)
         await analyzer.load_weights()
 
+        # 🔥 버그 2 수정: portfolio_manager.start() 명시적 호출
+        if hasattr(analyzer, "portfolio_manager"):
+            await analyzer.portfolio_manager.start()
+            logger.info("✅ PortfolioManager 시작됨 (VaR 갱신 루프 활성화)")
+
+        # 🔥 trailing_stops 이전 세션 상태 복구 (DB에서 로드)
+        try:
+            restored = await _db.load_trailing_stops()
+            if restored:
+                analyzer.trailing_stops.update(restored)
+                logger.info(f"♻️ trailing_stops 복구 완료: {len(restored)}건 ({list(restored.keys())})")
+            else:
+                logger.info("ℹ️ 복구할 trailing_stops 없음 (첫 실행 또는 정상 종료)")
+        except Exception as e:
+            logger.warning(f"⚠️ trailing_stops 복구 실패 (무시하고 계속): {e}")
+
         sender = TelegramSender()
 
         dart_api_key = os.getenv("DART_API_KEY")
@@ -682,7 +716,7 @@ async def main() -> None:
         await performance_tracker.start()
         logger.info("✅ PerformanceTracker 시작됨 (5분 간격 성과 갱신)")
 
-        order_executor = _container.order_executor
+        _container.order_executor  # OrderExecutor 초기화 (Paper Mode)
         logger.info("✅ OrderExecutor 초기화 완료 (Paper Mode)")
 
         calibrator = ExecutionCalibrator(_db, sender)
@@ -834,12 +868,12 @@ async def main() -> None:
                         _last_data_time = time.time()
 
                 signals = await _monitor.scan()
-                for signal in signals:
+                for sig_data in signals:
                     try:
-                        MESSAGE_QUEUE.put_nowait(signal)
-                        debug_tower.log(signal.get("ticker"), "SIGNAL_ENQUEUED", {"action": signal.get("action")})
+                        MESSAGE_QUEUE.put_nowait(sig_data)
+                        debug_tower.log(sig_data.get("ticker"), "SIGNAL_ENQUEUED", {"action": sig_data.get("action")})
                     except asyncio.QueueFull:
-                        logger.warning(f"⚠️ 큐 가득 참, 신호 드롭: {signal.get('ticker')}")
+                        logger.warning(f"⚠️ 큐 가득 참, 신호 드롭: {sig_data.get('ticker')}")
                         debug_tower.log(signal.get("ticker"), "SIGNAL_DROPPED", {"reason": "queue_full"})
 
                 await asyncio.sleep(1)
@@ -900,6 +934,19 @@ async def main() -> None:
 
         if analyzer is not None and hasattr(analyzer, "portfolio_manager"):
             await analyzer.portfolio_manager.stop()
+
+        # 🔥 trailing_stops 상태 DB 저장 (프로세스 재시작 시 복구용)
+        if analyzer is not None and _db is not None:
+            try:
+                stops = getattr(analyzer, "trailing_stops", {})
+                if stops:
+                    saved = await _db.save_trailing_stops(stops)
+                    logger.info(f"✅ trailing_stops {saved}건 DB 저장 완료")
+                else:
+                    await _db.clear_trailing_stops()
+                    logger.info("✅ trailing_stops 없음 - DB 초기화")
+            except Exception as e:
+                logger.warning(f"⚠️ trailing_stops 저장 실패: {e}")
 
         await performance_tracker.stop()
 
@@ -986,6 +1033,5 @@ if __name__ == "__main__":
                 pass
     except Exception as e:
         print(f"❌ 시스템 종료: {e}")
-        import traceback
         traceback.print_exc()
         debug_tower.flush()

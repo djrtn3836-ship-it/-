@@ -153,7 +153,7 @@ class Explainer:
         reasons = []
 
         if 0.4 <= decision.get("score", 0.5) <= 0.6:
-            reasons.append("현재 점수(%.0f)는 중립 구간 (40~60%)" % (decision.get("score", 0.5) * 100))
+            reasons.append("현재 점수(%.0f%%)는 중립 구간 (40~60%%)" % (decision.get("score", 0.5) * 100))
 
         if data.get("regime") in ["Sideways", "Correction"]:
             reasons.append("현재 시장 국면(%s)은 진입에 불확실성이 높음" % data.get("regime", "Unknown"))

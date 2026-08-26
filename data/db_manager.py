@@ -1,8 +1,10 @@
+# -*- coding: utf-8 -*-
 """
-data/db_manager.py - v6.1.2 (OHLCV 배치 커밋 통일)
+data/db_manager.py - v6.1.3 (OHLCV 배치 커밋 + get_outcome 추가)
 - save_ohlcv()도 _execute_batched 사용하도록 변경
 - save_ohlcv_batch() 신규 추가 (대량 저장 최적화)
-- 기존 모든 기능 100% 유지
+- get_outcome() 추가: validation/backtester.py의 Walk-Forward 검증에서
+  승률이 항상 0.0으로 계산되던 버그 해결
 """
 
 import asyncio
@@ -50,9 +52,9 @@ class DatabaseManager:
                 await self._pool.execute("PRAGMA journal_mode=WAL")
                 await self._pool.execute("PRAGMA synchronous=NORMAL")
                 await self._pool.execute("PRAGMA cache_size=-20000")
-                logger.info("✅ DB 연결 풀 초기화 완료 (WAL 모드)")
+                logger.info("DB 연결 풀 초기화 완료 (WAL 모드)")
             except TimeoutError:
-                logger.error("❌ DB 연결 타임아웃")
+                logger.error("DB 연결 타임아웃")
                 raise
         return self._pool
 
@@ -93,7 +95,7 @@ class DatabaseManager:
             conn = await self._get_connection()
             await conn.commit()
             self._pending_writes = 0
-            logger.debug("✅ 배치 커밋 플러시 완료")
+            logger.debug("배치 커밋 플러시 완료")
 
     async def init_db(self):
         conn = await self._get_connection()
@@ -152,6 +154,11 @@ class DatabaseManager:
                 entry_time DATETIME,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS trailing_stop_states (
+                ticker TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                saved_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         """)
 
         for col, dtype in [
@@ -164,7 +171,7 @@ class DatabaseManager:
                 await conn.commit()
             except aiosqlite.OperationalError as e:
                 if "duplicate column name" not in str(e).lower():
-                    logger.warning(f"⚠️ 컬럼 추가 시도 중 오류: {e}")
+                    logger.warning(f"컬럼 추가 시도 중 오류: {e}")
 
         indexes = [
             ("idx_decisions_created_at", "decisions", "created_at"),
@@ -177,12 +184,12 @@ class DatabaseManager:
             try:
                 await conn.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})")
             except Exception as e:
-                logger.warning(f"⚠️ 인덱스 생성 실패 ({idx_name}): {e}")
+                logger.warning(f"인덱스 생성 실패 ({idx_name}): {e}")
 
         await conn.commit()
         await self.analyze_db()
 
-        logger.info("✅ DB 초기화 완료 (v6.1.2 - OHLCV 배치 커밋)")
+        logger.info("DB 초기화 완료 (v6.2.0 - trailing_stop_states 테이블 추가)")
         debug_tower.log("SYSTEM", "DB_INIT_DONE", {})
 
     async def analyze_db(self):
@@ -194,13 +201,10 @@ class DatabaseManager:
             await conn.execute("ANALYZE")
             await conn.commit()
             self._last_analyze = now
-            logger.debug("✅ DB ANALYZE 완료")
+            logger.debug("DB ANALYZE 완료")
         except Exception as e:
-            logger.debug(f"⚠️ ANALYZE 실패: {e}")
+            logger.debug(f"ANALYZE 실패: {e}")
 
-    # ============================================================
-    # 🔥 P1-1: save_ohlcv → 배치 커밋으로 변경
-    # ============================================================
     async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict):
         """OHLCV 저장 (배치 커밋 적용)"""
         debug_tower.log(ticker, "DB_SAVE_OHLCV", {"date": date})
@@ -220,15 +224,7 @@ class DatabaseManager:
             ),
         )
 
-    # ============================================================
-    # 🔥 P1-1 신규: 대량 OHLCV 배치 저장
-    # ============================================================
     async def save_ohlcv_batch(self, records: list[tuple]) -> int:
-        """
-        여러 종목 OHLCV를 단일 트랜잭션으로 저장 (executemany)
-        records: [(ticker, date, open, high, low, close, volume), ...]
-        Returns: 저장된 레코드 수
-        """
         if not records:
             return 0
         conn = await self._get_connection()
@@ -240,7 +236,7 @@ class DatabaseManager:
             records,
         )
         await conn.commit()
-        logger.debug(f"✅ OHLCV 배치 저장 완료: {len(records)}개 레코드")
+        logger.debug(f"OHLCV 배치 저장 완료: {len(records)}개 레코드")
         return len(records)
 
     async def get_ohlcv(self, ticker: str, period: int = 14) -> list[dict]:
@@ -365,6 +361,20 @@ class DatabaseManager:
             outcome,
         )
 
+    async def get_outcome(self, decision_id: int) -> dict | None:
+        """
+        특정 decision_id에 대한 결과(outcome) 단건 조회.
+        validation/backtester.py의 _train_on_period()에서 사용되며,
+        이 메서드가 없어서 Walk-Forward 검증 승률이 항상 0.0으로
+        계산되던 버그를 해결하기 위해 추가됨.
+        """
+        cursor = await self._execute_with_retry(
+            "SELECT * FROM decision_outcomes WHERE decision_id = ?",
+            (decision_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def get_feedback_stats(self, days: int = 30) -> dict:
         cursor = await self._execute_with_retry(
             """SELECT d.action, o.return_1d, o.is_correct
@@ -391,9 +401,124 @@ class DatabaseManager:
             "avg_return": round(avg_ret, 3),
         }
 
+    async def get_strategy_outcomes(self, days: int = 30) -> list[dict]:
+        """전략별 결과(outcome) 조회 - StrategyBandit 피드백용.
+
+        decisions.strategy_scores(JSON)에서 전략 점수를 파싱하고
+        decision_outcomes.return_1d로 실현 수익률을 결합합니다.
+
+        Args:
+            days: 조회 기간 (기본 30일)
+
+        Returns:
+            list[dict]: [
+                {
+                    "decision_id": int,
+                    "ticker": str,
+                    "action": str,
+                    "return_1d": float,        # 실현 수익률 (소수)
+                    "is_correct": bool,
+                    "strategy_scores": dict,   # 전략별 원본 점수 (파싱됨)
+                }
+            ]
+        """
+        cursor = await self._execute_with_retry(
+            """SELECT d.id as decision_id, d.ticker, d.action,
+                      d.strategy_scores,
+                      o.return_1d, o.is_correct
+               FROM decisions d
+               JOIN decision_outcomes o ON d.id = o.decision_id
+               WHERE d.created_at >= datetime('now', ?)
+                 AND o.return_1d IS NOT NULL
+               ORDER BY d.created_at DESC""",
+            (f"-{days} days",),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            # strategy_scores JSON 파싱
+            raw = r.get("strategy_scores") or "{}"
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                parsed = {}
+            r["strategy_scores"] = parsed
+            result.append(r)
+        return result
+
+    # ──────────────────────────────────────────────────
+    # trailing_stop_states - 저장 / 로드 (프로세스 재시작 시 복구용)
+    # ──────────────────────────────────────────────────
+    async def save_trailing_stops(self, states: dict[str, dict]) -> int:
+        """DeepAnalyzer.trailing_stops 전체를 DB에 저장 (종료 전 호출).
+
+        Args:
+            states: {ticker: state_dict} 형태의 트레일링 스탑 딕셔너리
+
+        Returns:
+            저장된 레코드 수
+        """
+        if not states:
+            return 0
+        try:
+            conn = await self._get_connection()
+            count = 0
+            for ticker, state in states.items():
+                state_json = json.dumps(state, ensure_ascii=False, default=str)
+                await conn.execute(
+                    """INSERT OR REPLACE INTO trailing_stop_states
+                       (ticker, state_json, saved_at)
+                       VALUES (?, ?, datetime('now'))""",
+                    (ticker, state_json),
+                )
+                count += 1
+            await conn.commit()
+            logger.info("✅ trailing_stop_states 저장 완료: %d건", count)
+            return count
+        except Exception as e:
+            logger.error("❌ trailing_stop_states 저장 실패: %s", e)
+            return 0
+
+    async def load_trailing_stops(self) -> dict[str, dict]:
+        """DB에서 저장된 트레일링 스탑 상태 복구.
+
+        Returns:
+            {ticker: state_dict} - 비어있으면 빈 딕셔너리
+        """
+        try:
+            cursor = await self._execute_with_retry(
+                "SELECT ticker, state_json FROM trailing_stop_states"
+                " ORDER BY saved_at DESC"
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return {}
+            result = {}
+            for row in rows:
+                try:
+                    result[row["ticker"]] = json.loads(row["state_json"])
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.warning("trailing_stop 파싱 실패 (%s): %s", row["ticker"], e)
+            logger.info("✅ trailing_stop_states 복구: %d건", len(result))
+            return result
+        except Exception as e:
+            logger.error("❌ trailing_stop_states 로드 실패: %s", e)
+            return {}
+
+    async def clear_trailing_stops(self) -> None:
+        """저장된 트레일링 스탑 상태 전체 삭제 (정상 종료 후 정리)."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute("DELETE FROM trailing_stop_states")
+            await conn.commit()
+            logger.debug("trailing_stop_states 초기화 완료")
+        except Exception as e:
+            logger.warning("trailing_stop_states 초기화 실패: %s", e)
+
     async def close(self):
         await self._flush_pending()
         if self._pool:
             await self._pool.close()
             self._pool = None
-        logger.info("🔌 DB 연결 종료 완료")
+        logger.info("DB 연결 종료 완료")

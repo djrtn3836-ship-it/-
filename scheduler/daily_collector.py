@@ -28,7 +28,7 @@ async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, 
 
     yesterday = datetime.now() - timedelta(days=1)
     date_str = yesterday.strftime("%Y-%m-%d")
-    date_param = yesterday.strftime("%Y%m%d")
+    _ = yesterday.strftime("%Y%m%d")
 
     if not kiwoom.is_connected():
         logger.warning("⚠️ Kiwoom 연결 없음, 재연결 시도...")

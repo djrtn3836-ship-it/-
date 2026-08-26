@@ -1,16 +1,16 @@
 """
-scheduler/macro_collector.py - v2.5 FINAL (이상치 강제 처리)
-- KOSPI 변동률 ±30% 초과 시 0.0 강제 설정
-- 장 마감 후 수집 스킵 (캐시 유지)
-- USD/KRW, VIX 등 유효 범위 검사
+scheduler/macro_collector.py - v2.2 (순환 참조 제거)
+- _send_alert()에서 scanner_main 동적 import 제거 → 콜백 패턴으로 변경
+- set_alert_callback() 함수 추가
+- 기존 데이터 수집 로직 100% 유지
 """
 
 import asyncio
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time, timezone, timedelta
-from typing import Callable
+from datetime import datetime
 
 import requests
 
@@ -20,10 +20,14 @@ from core.logger import setup_logger
 
 logger = setup_logger("macro_collector")
 
+# ============================================================
+# 콜백 패턴 (순환 참조 제거)
+# ============================================================
 _alert_callback: Callable[[str, str], None] | None = None
 
 
 def set_alert_callback(func: Callable[[str, str], None]) -> None:
+    """scanner_main에서 알림 함수를 등록"""
     global _alert_callback
     _alert_callback = func
 
@@ -66,27 +70,11 @@ _consecutive_failures: int = 0
 _LAST_ALERT_TIME: float = 0
 _ALERT_COOLDOWN = 1800
 
-KST = timezone(timedelta(hours=9))
-
-
-def _get_kst_now() -> datetime:
-    return datetime.now().astimezone(KST)
-
-
-def _is_market_hours() -> bool:
-    now = _get_kst_now()
-    market_open = dt_time(9, 0)
-    market_close = dt_time(15, 30)
-    return market_open <= now.time() <= market_close
-
-
-def _is_valid_value(value: float, min_val: float, max_val: float) -> bool:
-    return min_val <= value <= max_val
-
 
 def _fetch_yahoo(symbol: str, period: str = "5d") -> float | None:
     try:
         import yfinance as yf
+
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period=period)
         if hist.empty:
@@ -131,6 +119,7 @@ def _fetch_ktb_yield() -> float | None:
 
 
 async def _send_alert(error_msg: str) -> None:
+    """콜백을 통해 알림 전송 (순환 참조 제거)"""
     global _LAST_ALERT_TIME
     now = time.time()
     if now - _LAST_ALERT_TIME < _ALERT_COOLDOWN:
@@ -138,6 +127,12 @@ async def _send_alert(error_msg: str) -> None:
     _LAST_ALERT_TIME = now
     if _alert_callback:
         await _alert_callback("📊 거시 데이터 수집 위기", error_msg)
+
+
+def _is_anomaly(value: float, mean: float, std: float, z_threshold: float = 3.0) -> bool:
+    if std == 0:
+        return False
+    return abs((value - mean) / std) > z_threshold
 
 
 async def fetch_macro_data(force: bool = False) -> MacroData:
@@ -150,75 +145,97 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
         logger.debug("📊 거시 데이터 캐시 사용 (10분 이내)")
         return _cached_macro
 
-    if not _is_market_hours() and not force and _cached_macro is not None:
-        logger.debug("📊 장 마감 후 → 거시 데이터 수집 스킵 (캐시 사용)")
-        return _cached_macro
-
     logger.info("📊 글로벌 거시 데이터 수집 시작...")
     debug_tower.log("SYSTEM", "MACRO_FETCH_START", {})
 
     data = _cached_macro if _cached_macro else MacroData()
+    _ = False
     loop = asyncio.get_running_loop()
 
-    # (field, symbol, period, default, min, max)
-    item_configs = [
-        ("kospi_trend", "^KS200", "5d", 0.0, -30.0, 30.0),
-        ("usdkrw", "KRW=X", "1d", 1300.0, 1100.0, 1550.0),
-        ("vix", "^VIX", "1d", 20.0, 5.0, 80.0),
-        ("bond_3y", "^TNX", "1d", 3.5, 0.0, 8.0),
-        ("spx_trend", "^GSPC", "5d", 0.0, -30.0, 30.0),
-        ("ndx_trend", "^NDX", "5d", 0.0, -30.0, 30.0),
-        ("sox_trend", "^SOX", "5d", 0.0, -30.0, 30.0),
-        ("oil_price", "CL=F", "1d", 75.0, 20.0, 150.0),
-    ]
-
-    for field, symbol, period, default, min_val, max_val in item_configs:
-        try:
-            value = await loop.run_in_executor(None, _fetch_yahoo, symbol, period)
-            old_value = getattr(_cached_macro, field, default) if _cached_macro else default
-
-            if value is None:
-                logger.warning(f"   ⚠️ {field} 수집 실패, 캐시값 {old_value:.2f} 유지")
-                setattr(data, field, old_value)
-            elif _is_valid_value(value, min_val, max_val):
-                setattr(data, field, value)
-                logger.info(f"   ✅ {field}: {value:.2f}")
-            else:
-                # 🔥 이상치: 캐시값 유지 (0으로 대체하지 않음)
-                logger.warning(f"   ⚠️ {field} 이상치 ({value:.2f}) → 캐시값 {old_value:.2f} 유지")
-                setattr(data, field, old_value)
-        except Exception as e:
-            logger.warning(f"   ⚠️ {field} 처리 오류: {e}")
-
-    # KTB
     try:
+        kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d")
+        if kospi is not None:
+            data.kospi_trend = kospi
+            logger.info(f"   ✅ KOSPI: {kospi:.2f}%")
+        else:
+            logger.warning("   ⚠️ KOSPI 수집 실패, 이전값 유지")
+
+        usd = await loop.run_in_executor(None, _fetch_yahoo, "KRW=X", "1d")
+        if usd and usd > 0:
+            data.usdkrw = usd
+            logger.info(f"   ✅ USD/KRW: {usd:.2f}")
+
+        vix = await loop.run_in_executor(None, _fetch_yahoo, "^VIX", "1d")
+        if vix and vix > 0:
+            data.vix = vix
+            data.vkospi = vix * 0.8
+            logger.info(f"   ✅ VIX: {vix:.2f}")
+        else:
+            vix_fallback = await loop.run_in_executor(None, _fetch_fred, "VIXCLS")
+            if vix_fallback and vix_fallback > 0:
+                data.vix = vix_fallback
+                data.vkospi = vix_fallback * 0.8
+                logger.info(f"   ✅ VIX (FRED Fallback): {vix_fallback:.2f}")
+
+        bond = await loop.run_in_executor(None, _fetch_yahoo, "^TNX", "1d")
+        if bond and bond > 0:
+            data.bond_3y = bond
+            logger.info(f"   ✅ US 10Y: {bond:.2f}%")
+        else:
+            bond_fallback = await loop.run_in_executor(None, _fetch_fred, "DGS10")
+            if bond_fallback and bond_fallback > 0:
+                data.bond_3y = bond_fallback
+                logger.info(f"   ✅ US 10Y (FRED Fallback): {bond_fallback:.2f}%")
+
+        spx = await loop.run_in_executor(None, _fetch_yahoo, "^GSPC", "5d")
+        if spx is not None:
+            data.spx_trend = spx
+            logger.info(f"   ✅ S&P 500: {spx:.2f}%")
+
+        ndx = await loop.run_in_executor(None, _fetch_yahoo, "^NDX", "5d")
+        if ndx is not None:
+            data.ndx_trend = ndx
+            logger.info(f"   ✅ 나스닥: {ndx:.2f}%")
+
+        sox = await loop.run_in_executor(None, _fetch_yahoo, "^SOX", "5d")
+        if sox is not None:
+            data.sox_trend = sox
+            logger.info(f"   ✅ SOX: {sox:.2f}%")
+
+        oil = await loop.run_in_executor(None, _fetch_yahoo, "CL=F", "1d")
+        if oil and oil > 0:
+            data.oil_price = oil
+            logger.info(f"   ✅ WTI: ${oil:.2f}")
+
         ktb = await loop.run_in_executor(None, _fetch_ktb_yield)
-        old_ktb = _cached_macro.ktb_3y if _cached_macro else 3.0
-        if ktb is not None and 0 < ktb < 6:
+        if ktb and ktb > 0:
             data.ktb_3y = ktb
             logger.info(f"   ✅ KTB 3Y: {ktb:.2f}%")
-        else:
-            logger.warning(f"   ⚠️ KTB 이상치 ({ktb}) → 캐시값 {old_ktb:.2f} 유지")
-            data.ktb_3y = old_ktb
+
+        if data.vix < 0 or data.vix > 100:
+            logger.warning(f"⚠️ VIX 이상치 감지: {data.vix:.2f} → 20.0으로 대체")
+            data.vix = 20.0
+            data.vkospi = 16.0
+
+        data.last_update = datetime.now().isoformat()
+        _cached_macro = data
+        _last_fetch_time = time.time()
+        _consecutive_failures = 0
+        _ = True
+
+        collector_status.record_success("macro_collector", data.to_dict())
+        logger.info("📊 글로벌 거시 데이터 수집 완료")
+        debug_tower.log("SYSTEM", "MACRO_FETCH_SUCCESS", data.to_dict())
+
     except Exception as e:
-        logger.warning(f"   ⚠️ KTB 수집 오류: {e}")
+        _consecutive_failures += 1
+        collector_status.record_failure("macro_collector", str(e))
+        logger.error(f"❌ 거시 수집 실패 ({_consecutive_failures}회): {e}")
+        debug_tower.capture_snapshot("SYSTEM", e, "MACRO_FETCH")
+        if _consecutive_failures >= 3:
+            await _send_alert(f"{_consecutive_failures}회 연속 실패: {e!s}")
 
-    # KOSPI 이상치 강제 보정 (추가 안전장치)
-    if abs(data.kospi_trend) > 30:
-        logger.warning(f"🔥 KOSPI 이상치 강제 보정: {data.kospi_trend:.2f}% → 0.0")
-        data.kospi_trend = 0.0
-
-    data.vkospi = data.vix * 0.8
-    data.last_update = _get_kst_now().isoformat()
-
-    _cached_macro = data
-    _last_fetch_time = time.time()
-    _consecutive_failures = 0
-
-    collector_status.record_success("macro_collector", data.to_dict())
-    logger.info("📊 글로벌 거시 데이터 수집 완료")
-    debug_tower.log("SYSTEM", "MACRO_FETCH_SUCCESS", data.to_dict())
-    return data
+    return _cached_macro if _cached_macro else MacroData()
 
 
 def get_cached_macro() -> MacroData:
