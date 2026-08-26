@@ -90,6 +90,7 @@ from scanner.deep_analyzer import DeepAnalyzer
 from application.analysis.signal_pipeline import SignalPipeline
 from application.analysis.strategy_bandit import StrategyBandit
 from application.analysis.bandit_feedback_bridge import BanditFeedbackBridge
+from application.analysis.ab_framework import get_ab_manager, ABTestManager
 
 # ─── Analytics / Report / Risk ───────────────────────────────────────
 from analytics.performance_tracker import performance_tracker
@@ -155,6 +156,7 @@ class Bootstrapper(TracedService):
         self.signal_pipeline: Optional[SignalPipeline] = None   # V10 신규
         self.bandit: Optional[StrategyBandit] = None            # V10: MAB
         self.bandit_bridge: Optional[BanditFeedbackBridge] = None  # V10: 피드백 브리지
+        self.ab_manager: Optional[ABTestManager] = None           # Phase 3: A/B 테스트
         self._error_sender: Optional[TelegramSender] = None
         self._original_exception_handlers: Optional[dict] = None
 
@@ -374,6 +376,34 @@ class Bootstrapper(TracedService):
 
         await performance_tracker.start()
         logger.info("PerformanceTracker v3.0 started (5min update loop + Bandit feedback)")
+
+    async def start_ab_framework(self) -> None:
+        """A/B Testing Framework 초기화 (Phase 3).
+
+        기본 전략 비교 실험 등록:
+            - 'strategy_selection': control(기존 선택) vs ml_bandit(MAB 최적화)
+        """
+        self.ab_manager = get_ab_manager()
+        # 기본 실험: 전략 선택 방식 비교
+        self.ab_manager.create_test(
+            test_name="strategy_selection",
+            variant_names=["control", "ml_bandit"],
+            traffic_split=[0.5, 0.5],
+            alpha=0.05,
+            min_samples=30,
+        )
+        # 기본 실험: 진입 타이밍 비교 (모멘텀 vs 역추세)
+        self.ab_manager.create_test(
+            test_name="entry_timing",
+            variant_names=["momentum", "mean_revert"],
+            traffic_split=[0.5, 0.5],
+            alpha=0.05,
+            min_samples=30,
+        )
+        logger.info(
+            "✅ A/B Framework 시작: 실험=%s",
+            list(self.ab_manager.list_tests().keys()),
+        )
 
     async def init_execution(self) -> None:
         """OrderExecutor / Calibrator 초기화."""
@@ -1008,6 +1038,7 @@ class Bootstrapper(TracedService):
             await self.init_analyzer()          # DeepAnalyzer + SignalPipeline
             await self.init_data_sources()
             await self.start_performance_tracker()
+            await self.start_ab_framework()          # Phase 3: A/B Testing
             await self.init_execution()
             await self.start_telegram_commands()
             await self.init_scheduler()
