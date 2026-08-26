@@ -3,12 +3,52 @@ tests/conftest.py - pytest 공통 픽스처 및 설정
 """
 
 import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 # 프로젝트 루트를 PYTHONPATH에 추가
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ─── telegram mock 전역 설치 ─────────────────────────────────────────────────
+# execution/order_executor.py → report/telegram_sender.py → telegram (외부 패키지)
+# telegram 패키지가 없어도 테스트가 가능하도록 mock을 pytest 수집 전에 등록합니다.
+
+def _install_telegram_mock_if_needed():
+    """telegram 패키지가 없는 경우에만 mock 설치."""
+    try:
+        import telegram  # 실제 패키지가 있으면 건너뜀
+        return
+    except ImportError:
+        pass
+
+    tg = types.ModuleType("telegram")
+    tg.Bot = MagicMock
+    tg.Update = MagicMock
+    sys.modules["telegram"] = tg
+
+    tg_err = types.ModuleType("telegram.error")
+    tg_err.NetworkError = type("NetworkError", (Exception,), {})
+    tg_err.TelegramError = type("TelegramError", (Exception,), {})
+    tg_err.TimedOut = type("TimedOut", (Exception,), {})
+    sys.modules["telegram.error"] = tg_err
+    tg.error = tg_err
+
+    tg_ext = types.ModuleType("telegram.ext")
+    tg_ext.Application = MagicMock
+    tg_ext.ApplicationBuilder = MagicMock
+    tg_ext.CommandHandler = MagicMock
+    tg_ext.MessageHandler = MagicMock
+    tg_ext.filters = MagicMock()
+    sys.modules["telegram.ext"] = tg_ext
+    tg.ext = tg_ext
+
+
+_install_telegram_mock_if_needed()
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 import pytest

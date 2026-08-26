@@ -21,7 +21,7 @@ application/analysis/bandit_feedback_bridge.py - StrategyBandit ↔ PerformanceT
     - 비동기 안전: asyncio.Lock 보호
     - 폴백 안전: DB 없거나 전략 매핑 실패 시 기존 가중치 유지
     - 보상 정규화: return_1d → reward (SQI 보정 포함)
-    - 순수 비즈니스 로직: observability 트레이서 선택적 사용
+    - 순수 비즈니스 로직: observability 트레이서 전면 적용 (@trace.traced)
     - 5분 최소 간격: PerformanceTracker와 동일한 주기로 throttle
 
 보상 계산 공식:
@@ -39,7 +39,10 @@ if TYPE_CHECKING:
     from data.db_manager import DatabaseManager
     from application.analysis.strategy_bandit import StrategyBandit
 
+from observability.tracer import get_tracer
+
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 # 전략 이름 정규화 테이블 (DB strategy_scores 키 → Bandit arm 이름)
 _STRATEGY_NAME_MAP: Dict[str, str] = {
@@ -108,6 +111,7 @@ class BanditFeedbackBridge:
 
     # ─── 외부 진입점 ────────────────────────────────────────────────
 
+    @trace.traced
     async def on_performance_updated(self) -> Dict[str, float]:
         """PerformanceTracker 갱신 완료 후 호출되는 훅.
 
@@ -154,6 +158,7 @@ class BanditFeedbackBridge:
                 logger.error("BanditBridge: 피드백 실패 %s", e, exc_info=True)
                 return self._bandit.get_weights()
 
+    @trace.traced
     async def force_feedback(self, days: Optional[int] = None) -> Dict[str, float]:
         """throttle 무시하고 즉시 피드백 강제 실행 (수동 트리거용).
 
@@ -177,6 +182,7 @@ class BanditFeedbackBridge:
 
     # ─── 핵심 보상 계산 ────────────────────────────────────────────
 
+    @trace.traced
     def _compute_strategy_rewards(
         self, outcomes: List[dict]
     ) -> Dict[str, float]:
@@ -262,6 +268,7 @@ class BanditFeedbackBridge:
         """전략별 상세 통계 반환."""
         return self._bandit.get_stats()
 
+    @trace.traced
     def get_status(self) -> dict:
         """브리지 상태 반환 (헬스체크용)."""
         return {

@@ -16,8 +16,10 @@ from data.db_manager import DatabaseManager
 from data.kiwoom_connector import KiwoomConnectorV512
 from report.telegram_sender import TelegramSender
 from validation.execution_simulator import RealisticExecutionSimulator
+from observability.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 
 class OrderMode(Enum):
@@ -80,10 +82,42 @@ class OrderExecutor:
         # 현재 포지션 정보 (DB에서 주기적 갱신)
         self._positions: dict[str, dict] = {}
 
+        # PortfolioVaR v2.0 position_limit 연동
+        # 0.0 < position_limit ≤ 1.0 범위; 기본 1.0 (비정제)
+        self._portfolio_position_limit: float = 1.0
+
     async def initialize(self):
         """초기화: DB에서 현재 포지션 로드"""
         self._positions = {p["ticker"]: p for p in await self.db.get_positions()}
         logger.info(f"✅ OrderExecutor 초기화 완료 (포지션 {len(self._positions)}개)")
+
+    @trace.traced
+    def update_position_limit(self, position_limit: float) -> None:
+        """PortfolioVaR.position_limit → OrderExecutor 주문 크기 한도 갱신.
+
+        PortfolioManager / PortfolioVaR가 주기적으로 호출하여
+        현재 포트폴리오 리스크에 맞는 주문 크기 상한을 동적으로 설정합니다.
+
+        Args:
+            position_limit: PortfolioRiskMetrics.position_limit 값 (0 < x ≤ 1.0)
+                            예) 0.75 → 최대 주문 수량의 75%까지만 허용
+        """
+        if not (0.0 < position_limit <= 1.0):
+            logger.warning(
+                "OrderExecutor.update_position_limit: 범위 이탈 %.4f → 무시 (0 < limit ≤ 1.0)",
+                position_limit,
+            )
+            return
+        old = self._portfolio_position_limit
+        self._portfolio_position_limit = position_limit
+        logger.info(
+            "📊 OrderExecutor: position_limit 갱신 %.2f → %.2f (VaR+Kelly 통합)",
+            old, position_limit,
+        )
+
+    def get_position_limit(self) -> float:
+        """현재 포트폴리오 포지션 한도 반환."""
+        return self._portfolio_position_limit
 
     # ============================================================
     # 메인 실행 메서드
@@ -128,9 +162,23 @@ class OrderExecutor:
     # 안전장치 체크 (Private)
     # ============================================================
     async def _position_size_check(self, request: OrderRequest) -> tuple[bool, str]:
-        """최대 포지션 크기 검증 (1회 1000주 이하)"""
-        if request.quantity > 1000:
-            return False, f"주문 수량 초과: {request.quantity} > 1000"
+        """최대 포지션 크기 검증 (1회 1000주 이하 + PortfolioVaR position_limit 적용).
+
+        PortfolioVaR.position_limit이 1.0 미만이면 최대 수량을 비율로 축소합니다.
+        예) position_limit=0.75, quantity=1000 → 허용 최대 = 750주
+        """
+        # 1. 절대 한도 (1000주)
+        abs_max = 1000
+        # 2. PortfolioVaR 연동 한도
+        var_adj_max = int(abs_max * self._portfolio_position_limit)
+        effective_max = min(abs_max, var_adj_max)
+
+        if request.quantity > effective_max:
+            return (
+                False,
+                f"주문 수량 초과: {request.quantity} > {effective_max}"
+                f" (position_limit={self._portfolio_position_limit:.2f})",
+            )
         return True, ""
 
     async def _daily_loss_limit_check(self, request: OrderRequest) -> tuple[bool, str]:

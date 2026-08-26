@@ -400,6 +400,15 @@ class Bootstrapper(TracedService):
             alpha=0.05,
             min_samples=30,
         )
+        # Phase 3 신규: CalibrationTracker ↔ ABTest 연동 실험
+        # regime별 ECE(Expected Calibration Error) 비교 → 더 잘 교정된 regime 파악
+        self.ab_manager.create_test(
+            test_name="calibration_quality",
+            variant_names=["trend", "reversal", "sideways"],
+            traffic_split=[1.0 / 3, 1.0 / 3, 1.0 / 3],
+            alpha=0.05,
+            min_samples=20,
+        )
         logger.info(
             "✅ A/B Framework 시작: 실험=%s",
             list(self.ab_manager.list_tests().keys()),

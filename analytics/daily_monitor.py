@@ -1,6 +1,12 @@
+# -*- coding: utf-8 -*-
 """
-Daily Monitor v5.1.2
+Daily Monitor v5.2.0
 일일 모니터링 대시보드
+
+변경 이력:
+    v5.2.0  - @trace.traced 적용: run / _generate_report
+            - CRLF → LF 변환 완료
+    v5.1.2  - 초기 버전
 """
 
 import asyncio
@@ -8,9 +14,11 @@ from datetime import datetime
 
 from core.circuit_breaker import DART_API_CB, KIWOOM_TR_CB
 from core.logger import setup_logger
+from observability.tracer import get_tracer
 from orchestrator.feature_store import FeatureStore
 
 logger = setup_logger("monitor")
+trace = get_tracer(__name__)
 
 
 class DailyMonitor:
@@ -20,6 +28,7 @@ class DailyMonitor:
         self.feature_store = FeatureStore()
         self.report: dict = {}
 
+    @trace.traced
     async def run(self):
         """모니터링 실행 (1시간 주기)"""
         logger.info("DailyMonitor started")
@@ -29,6 +38,7 @@ class DailyMonitor:
             self.report = await self._generate_report()
             logger.info(f"DailyMonitor report: {self.report}")
 
+    @trace.traced
     async def _generate_report(self) -> dict:
         """모니터링 리포트 생성"""
         # 1. Feature Freshness
