@@ -11,7 +11,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from observability.tracer import get_tracer
+
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 
 @dataclass
@@ -42,6 +45,7 @@ class PortfolioVaR:
         self.num_simulations = num_simulations
         self.lookback_days = lookback_days
 
+    @trace.traced
     def calculate(
         self, tickers: list[str], returns_dict: dict[str, list[float]], weights: dict[str, float]
     ) -> PortfolioRiskMetrics:

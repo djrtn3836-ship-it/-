@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 
 from data.db_manager import DatabaseManager
+from observability.tracer import get_tracer
 
 if TYPE_CHECKING:
     from application.analysis.bandit_feedback_bridge import BanditFeedbackBridge
 
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 # 연간화 계수 (252 거래일)
 ANNUALIZATION = 252 ** 0.5
@@ -112,6 +114,7 @@ class PerformanceTracker:
         self._bandit_bridge = None
         logger.info("🔌 BanditFeedbackBridge 연결 해제")
 
+    @trace.traced
     async def start(self) -> None:
         """백그라운드 갱신 시작"""
         if self._running or not self._initialized:
@@ -120,6 +123,7 @@ class PerformanceTracker:
         self._task = asyncio.create_task(self._update_loop())
         logger.info("✅ PerformanceTracker 백그라운드 갱신 시작 (간격: 5분)")
 
+    @trace.traced
     async def stop(self) -> None:
         """백그라운드 갱신 중지"""
         self._running = False
@@ -138,6 +142,7 @@ class PerformanceTracker:
             await asyncio.sleep(self._update_interval)
             await self._update_metrics()
 
+    @trace.traced
     async def _update_metrics(self) -> None:
         """실제 성과 지표 계산 및 스냅샷 저장"""
         if self.db is None:
@@ -228,6 +233,7 @@ class PerformanceTracker:
     # ──────────────────────────────────────────────────
     # v2.0 핵심: _get_daily_returns() 실제 구현
     # ──────────────────────────────────────────────────
+    @trace.traced
     async def _get_daily_returns(self) -> list[float]:
         """DB decision_outcomes에서 최근 30일 일별 수익률 계산.
 

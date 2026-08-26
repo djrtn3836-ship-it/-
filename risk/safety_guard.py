@@ -12,7 +12,10 @@ import logging
 import time  # 🔥 추가
 from dataclasses import dataclass
 
+from observability.tracer import get_tracer
+
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 
 @dataclass
@@ -69,6 +72,7 @@ class SafetyGuard:
         self._condition_checks: dict[str, bool] = {}
         self._trigger_log: list[dict] = []
 
+    @trace.traced
     def check(self, data: dict) -> dict:
         """
         모든 안전 조건 체크
@@ -115,6 +119,7 @@ class SafetyGuard:
             "critical_triggered": has_critical,
         }
 
+    @trace.traced
     def _is_triggered(self, condition: str, current: float, threshold: SafetyThreshold) -> bool:
         """조건별 트리거 판정"""
         if "drop" in condition or "spike" in condition:
@@ -132,6 +137,7 @@ class SafetyGuard:
             return "CRITICAL"
         return "HIGH"
 
+    @trace.traced
     def get_threshold_basis(self) -> dict:
         """임계값 근거 요약 반환"""
         return {
@@ -139,6 +145,7 @@ class SafetyGuard:
             for condition, th in self.THRESHOLDS.items()
         }
 
+    @trace.traced
     def get_trigger_log(self, limit: int = 50) -> list[dict]:
         """최근 트리거 이력 반환 (모니터링/디버깅용)"""
         return self._trigger_log[-limit:]

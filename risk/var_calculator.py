@@ -23,7 +23,10 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from observability.tracer import get_tracer
+
 logger = logging.getLogger(__name__)
+trace = get_tracer(__name__)
 
 # ── numpy/scipy 선택적 로드 ──────────────────────────────────────────
 try:
@@ -392,6 +395,7 @@ class VaRCalculator:
 
     # ── 핵심 메서드 ────────────────────────────────────────────────
 
+    @trace.traced
     def calculate_metrics(self, returns: List[float]) -> RiskMetrics:
         """VaR + CVaR + Kelly 통합 RiskMetrics 계산.
 
@@ -508,11 +512,13 @@ class VaRCalculator:
             kelly_meta=kelly_result,
         )
 
+    @trace.traced
     def calculate(self, returns: List[float]) -> dict:
         """하위 호환 dict API (v7.x 코드와 호환 유지)."""
         metrics = self.calculate_metrics(returns)
         return metrics.to_dict()
 
+    @trace.traced
     def calculate_kelly(
         self,
         returns: List[float],
