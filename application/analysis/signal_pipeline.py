@@ -56,6 +56,15 @@ _SELL_THRESHOLD = 0.38  # 최종 스코어 SELL 임계값
 _MIN_CONFIDENCE = 0.45  # 최소 신뢰도 (이하면 HOLD 강제)
 _MIN_CONSENSUS = 0.50   # 다수결 합의도 임계값 (0.5 = 과반수)
 
+# ─── SQI v2 가중치 상수 ──────────────────────────────────────────────
+# sqi_v2 = (momentum_w × momentum_score + conf_w × confidence + cons_w × consensus)
+#         × volume_boost × volatility_penalty
+_SQI_V2_MOMENTUM_W = 0.30    # 모멘텀 스코어 가중치
+_SQI_V2_CONFIDENCE_W = 0.40  # 신뢰도 가중치
+_SQI_V2_CONSENSUS_W = 0.30   # 합의도 가중치
+_SQI_V2_MIN = 0.0             # SQI v2 하한
+_SQI_V2_MAX = 1.0             # SQI v2 상한
+
 
 class EnsembleResult:
     """전략 앙상블 결과 DTO
@@ -65,11 +74,13 @@ class EnsembleResult:
         confidence: 가중 평균 신뢰도 (0~1)
         action: 다수결 최종 Action 문자열
         consensus: 다수결 합의도 (0~1, 높을수록 전략 일치)
-        sqi: Signal Quality Index = confidence × consensus (0~1)
+        sqi: Signal Quality Index v1 = confidence × consensus (0~1)
+        sqi_v2: Signal Quality Index v2 = weighted(momentum,confidence,consensus)
+                × volume_boost × volatility_penalty (0~1)
         details: 각 전략 결과 요약 리스트
     """
 
-    __slots__ = ("score", "confidence", "action", "consensus", "sqi", "details")
+    __slots__ = ("score", "confidence", "action", "consensus", "sqi", "sqi_v2", "details")
 
     def __init__(
         self,
@@ -79,12 +90,14 @@ class EnsembleResult:
         consensus: float,
         sqi: float,
         details: List[str],
+        sqi_v2: float = 0.0,
     ) -> None:
         self.score = score
         self.confidence = confidence
         self.action = action
         self.consensus = consensus
         self.sqi = sqi
+        self.sqi_v2 = sqi_v2
         self.details = details
 
 
@@ -159,6 +172,32 @@ class SignalPipeline(TracedService):
             self.atr_service.set_realtime_price_provider(provider)
 
     # ═══════════════════════════════════════════════════════════════
+    #  Public: SQI v2 정적 메서드 (외부에서 직접 호출 가능)
+    # ═══════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def compute_sqi_v2(
+        momentum_score: float,
+        volume_ratio: float,
+        bb_pct: float,
+        confidence: float,
+        consensus: float,
+    ) -> float:
+        """Signal Quality Index v2 계산 (모듈 수준 함수 위임).
+
+        Args:
+            momentum_score: RSI+MACD 기반 모멘텀 품질 (0~1)
+            volume_ratio: 현재 거래량 / 평균 거래량 (0 이상, 1.0=기준)
+            bb_pct: Bollinger %B 값 (0~1)
+            confidence: 전략 가중 평균 신뢰도 (0~1)
+            consensus: 다수결 합의도 (0~1)
+
+        Returns:
+            float: SQI v2 값 (0~1)
+        """
+        return compute_sqi_v2(momentum_score, volume_ratio, bb_pct, confidence, consensus)
+
+    # ═══════════════════════════════════════════════════════════════
     #  Public API
     # ═══════════════════════════════════════════════════════════════
 
@@ -213,16 +252,18 @@ class SignalPipeline(TracedService):
         # ── 5. 도메인 전략 병렬 실행 ─────────────────────────────
         valid_results = await self._run_strategies(data)
 
-        # ── 6. 신뢰도 기반 앙상블 ────────────────────────────────
-        ensemble = self._ensemble(valid_results)
+        # ── 6. 신뢰도 기반 앙상블 (tech_data 전달 → SQI v2 계산) ─────
+        ensemble = self._ensemble(valid_results, tech_data)
 
         # ── 7. 최종 스코어 결합 ──────────────────────────────────
         final_score, action = self._combine_scores(base_score, ensemble)
 
-        # ── 8. 신호 품질 지수(SQI)가 낮으면 HOLD 강제 ────────────
-        if ensemble.sqi < _MIN_CONFIDENCE and action != Action.HOLD:
+        # ── 8. 신호 품질 지수(SQI v2)가 낮으면 HOLD 강제 ──────────
+        #    tech_data 있으면 sqi_v2, 없으면 sqi_v1 사용
+        effective_sqi = ensemble.sqi_v2 if tech_data else ensemble.sqi
+        if effective_sqi < _MIN_CONFIDENCE and action != Action.HOLD:
             trace.warning(
-                f"SQI too low ({ensemble.sqi:.2f}) → forced HOLD",
+                f"SQI v2={effective_sqi:.2f} (v1={ensemble.sqi:.2f}) too low → forced HOLD",
                 ticker=ticker,
             )
             action = Action.HOLD
@@ -249,8 +290,8 @@ class SignalPipeline(TracedService):
 
         trace.debug(
             f"Signal generated: ticker={ticker} action={action.value} "
-            f"score={final_score:.3f} sqi={ensemble.sqi:.3f} "
-            f"consensus={ensemble.consensus:.2f}"
+            f"score={final_score:.3f} sqi_v1={ensemble.sqi:.3f} "
+            f"sqi_v2={ensemble.sqi_v2:.3f} consensus={ensemble.consensus:.2f}"
         )
         return signal
 
@@ -320,29 +361,36 @@ class SignalPipeline(TracedService):
     #  Private: 신뢰도 기반 앙상블 ★ 핵심 개선
     # ═══════════════════════════════════════════════════════════════
 
-    def _ensemble(self, results: List[StrategyResult]) -> EnsembleResult:
-        """신뢰도 기반 가중 앙상블 + 다수결 판정.
+    def _ensemble(
+        self,
+        results: List[StrategyResult],
+        tech_data: Optional[Dict[str, Any]] = None,
+    ) -> EnsembleResult:
+        """신뢰도 기반 가중 앙상블 + 다수결 판정 + SQI v2 계산.
 
         기존 방식의 문제:
             - 고정 가중치 (Trend:0.4 등) → 신호 품질 무시
             - Strategy.weight 프로퍼티 미사용
 
-        개선된 방식:
+        개선된 방식 (v3.0):
             - 각 전략의 weight × confidence를 결합 가중치로 사용
             - 다수결 투표 (BUY/SELL/HOLD 각각 가중치 합산)
             - consensus = 최다 득표 Action의 가중치 비율 (합의도)
-            - SQI = avg_confidence × consensus (신호 품질 지수)
+            - SQI v1 = avg_confidence × consensus (기존)
+            - SQI v2 = compute_sqi_v2(momentum, volume, bb_pct, confidence, consensus)
+              → tech_data 없으면 sqi_v2 = sqi_v1 (fallback)
 
         Args:
             results: 유효한 전략 결과 목록
+            tech_data: 기술 지표 딕셔너리 (SQI v2 계산에 사용, 선택적)
 
         Returns:
-            EnsembleResult: 앙상블 집계 결과
+            EnsembleResult: 앙상블 집계 결과 (sqi_v2 포함)
         """
         if not results:
             return EnsembleResult(
                 score=0.5, confidence=0.5,
-                action="HOLD", consensus=0.0, sqi=0.0, details=[]
+                action="HOLD", consensus=0.0, sqi=0.0, sqi_v2=0.0, details=[]
             )
 
         # ── 가중치 계산: strategy.weight × result.confidence ─────
@@ -371,7 +419,9 @@ class SignalPipeline(TracedService):
                 r.score * weighted_scores[r.name] for r in results
             )
             avg_score = weighted_score_sum / total_weight
-            avg_confidence = sum(r.confidence * weighted_scores[r.name] for r in results) / total_weight
+            avg_confidence = sum(
+                r.confidence * weighted_scores[r.name] for r in results
+            ) / total_weight
         else:
             avg_score = 0.5
             avg_confidence = 0.5
@@ -385,8 +435,35 @@ class SignalPipeline(TracedService):
         if consensus < _MIN_CONSENSUS:
             winning_action = "HOLD"
 
-        # ── Signal Quality Index ─────────────────────────────────
+        # ── Signal Quality Index v1 (기존) ───────────────────────
         sqi = avg_confidence * consensus
+
+        # ── Signal Quality Index v2 (신규) ───────────────────────
+        if tech_data:
+            momentum_score = _calc_momentum_score(
+                rsi=tech_data.get("rsi", 50.0),
+                macd_hist=tech_data.get("macd_hist", 0.0),
+            )
+            volume_ratio = tech_data.get("volume_ratio", 1.0)
+            # price 레이얼파이: current_price 우선, 없으면 ema5 fallback
+            price_ref = (
+                tech_data.get("current_price") or tech_data.get("ema5", 0.0) or 0.0
+            )
+            bb_pct = _calc_bb_pct(
+                price=price_ref,
+                bb_upper=tech_data.get("bb_upper", 0.0),
+                bb_lower=tech_data.get("bb_lower", 0.0),
+            )
+            sqi_v2 = compute_sqi_v2(
+                momentum_score=momentum_score,
+                volume_ratio=volume_ratio,
+                bb_pct=bb_pct,
+                confidence=avg_confidence,
+                consensus=consensus,
+            )
+        else:
+            # tech_data 없으면 SQI v1과 동일값으로 fallback
+            sqi_v2 = sqi
 
         return EnsembleResult(
             score=max(0.0, min(1.0, avg_score)),
@@ -394,6 +471,7 @@ class SignalPipeline(TracedService):
             action=winning_action,
             consensus=consensus,
             sqi=sqi,
+            sqi_v2=max(_SQI_V2_MIN, min(_SQI_V2_MAX, sqi_v2)),
             details=details,
         )
 
@@ -467,7 +545,9 @@ class SignalPipeline(TracedService):
             float: 0.3~0.95 범위의 최종 confidence
         """
         score_distance = abs(final_score - 0.5) * 2  # 0~1 정규화
-        raw = (score_distance * 0.6 + ensemble.sqi * 0.4)
+        # sqi_v2가 0이면 (tech_data 없음) sqi_v1 사용, 아니면 sqi_v2 사용
+        quality_index = ensemble.sqi_v2 if ensemble.sqi_v2 > 0 else ensemble.sqi
+        raw = (score_distance * 0.6 + quality_index * 0.4)
         return max(0.30, min(0.95, raw))
 
     @staticmethod
@@ -480,10 +560,12 @@ class SignalPipeline(TracedService):
     ) -> Tuple[List[str], List[str]]:
         """증거 수집 - positives / negatives 리스트 생성.
 
+        SQI v2가 있으면 우선 사용, 없으면 SQI v1으로 fallback.
+
         Args:
             action: 최종 Action
             final_score: 최종 스코어
-            ensemble: 앙상블 결과
+            ensemble: 앙상블 결과 (sqi_v2 포함)
             tech_data: 기술 지표 데이터
             regime: 시장 레짐
 
@@ -493,18 +575,24 @@ class SignalPipeline(TracedService):
         positives: List[str] = []
         negatives: List[str] = []
 
+        # SQI v2 우선 사용, 없으면 SQI v1 fallback
+        display_sqi = ensemble.sqi_v2 if ensemble.sqi_v2 > 0 else ensemble.sqi
+        sqi_label = "SQI_v2" if ensemble.sqi_v2 > 0 else "SQI_v1"
+
         if ensemble.details:
             positives.append(f"Ensemble: {' | '.join(ensemble.details)}")
-        if ensemble.sqi >= 0.5:
-            positives.append(f"SQI {ensemble.sqi:.2f} (합의도 {ensemble.consensus:.0%})")
+        if display_sqi >= 0.5:
+            positives.append(
+                f"{sqi_label} {display_sqi:.2f} (합의도 {ensemble.consensus:.0%})"
+            )
         if final_score > _BUY_THRESHOLD:
             positives.append(f"총점 {final_score:.1%}")
         if tech_data:
             rsi = tech_data.get("rsi", 50)
             positives.append(f"RSI {rsi:.0f} / Regime:{regime}")
 
-        if ensemble.sqi < 0.4:
-            negatives.append(f"SQI 낮음 ({ensemble.sqi:.2f}) - 전략 불일치")
+        if display_sqi < 0.4:
+            negatives.append(f"{sqi_label} 낮음 ({display_sqi:.2f}) - 전략 불일치")
         if final_score < _SELL_THRESHOLD:
             negatives.append(f"낮은 총점 ({final_score:.1%})")
         if ensemble.consensus < _MIN_CONSENSUS:
@@ -706,3 +794,133 @@ def _macd(
     histogram = macd_line - signal_line
 
     return macd_line, signal_line, histogram
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  SQI v2 헬퍼 함수 (모듈 수준 - 재사용 가능)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _calc_momentum_score(rsi: float, macd_hist: float) -> float:
+    """RSI + MACD 히스토그램 기반 모멘텀 품질 스코어 계산.
+
+    RSI 정규화 (중앙 50 거리 기반):
+        - RSI < 30 / RSI > 70: 극단 → 높은 모멘텀 품질
+        - RSI 40~60: 중립 → 낮은 모멘텀 품질
+        공식: abs(rsi - 50) / 50 → [0, 1]
+
+    MACD 방향 보정 (±0.1):
+        - macd_hist > 0 → +0.1 (상승 모멘텀)
+        - macd_hist < 0 → -0.1 (하락 모멘텀)
+        - macd_hist == 0 → 보정 없음
+
+    최종: clamp(rsi_score + macd_dir, 0.0, 1.0)
+
+    Args:
+        rsi: RSI 값 (0~100)
+        macd_hist: MACD 히스토그램 값 (양수=상승, 음수=하락)
+
+    Returns:
+        float: 모멘텀 품질 스코어 (0~1)
+    """
+    rsi_clamped = max(0.0, min(100.0, rsi))
+    rsi_score = abs(rsi_clamped - 50.0) / 50.0  # [0, 1]
+
+    if macd_hist > 0:
+        macd_dir = 0.10
+    elif macd_hist < 0:
+        macd_dir = -0.10
+    else:
+        macd_dir = 0.0
+
+    return max(0.0, min(1.0, rsi_score + macd_dir))
+
+
+def _calc_bb_pct(
+    price: float,
+    bb_upper: float,
+    bb_lower: float,
+) -> float:
+    """Bollinger %B 계산 (볼린저 밴드 내 현재 위치).
+
+    공식: %B = (price - lower) / (upper - lower)
+        - 0.0 → 하단 밴드 (과매도)
+        - 0.5 → 중간선 (중립)
+        - 1.0 → 상단 밴드 (과매수)
+
+    Args:
+        price: 현재가
+        bb_upper: 볼린저 상단 밴드
+        bb_lower: 볼린저 하단 밴드
+
+    Returns:
+        float: Bollinger %B (0~1, 범위 초과 시 clamp)
+    """
+    band_width = bb_upper - bb_lower
+    if band_width <= 0 or price <= 0:
+        return 0.5  # 데이터 부족 → 중립
+    pct_b = (price - bb_lower) / band_width
+    return max(0.0, min(1.0, pct_b))
+
+
+def compute_sqi_v2(
+    momentum_score: float,
+    volume_ratio: float,
+    bb_pct: float,
+    confidence: float,
+    consensus: float,
+) -> float:
+    """Signal Quality Index v2 계산.
+
+    기존 SQI v1 = confidence × consensus 에서
+    모멘텀·거래량·변동성 3개 차원을 추가한 복합 스코어.
+
+    공식:
+        base = (momentum_w × momentum_score
+               + conf_w × confidence
+               + cons_w × consensus)
+        volume_boost  = clamp(0.7 + 0.3 × ln(max(volume_ratio, 0.01) + 1), 0.7, 1.3)
+        volatility_pn = 1.0 - 0.4 × |bb_pct - 0.5| × 2  → [0.6, 1.0]
+                        (bb_pct=0.5 → 패널티 없음, 0 or 1 → 최대 패널티 0.4)
+        sqi_v2 = clamp(base × volume_boost × volatility_pn, 0.0, 1.0)
+
+    Args:
+        momentum_score: RSI+MACD 기반 모멘텀 품질 (0~1)
+        volume_ratio: 현재 거래량 / 평균 거래량 (0 이상, 1.0=기준)
+        bb_pct: Bollinger %B 값 (0~1)
+        confidence: 전략 가중 평균 신뢰도 (0~1)
+        consensus: 다수결 합의도 (0~1)
+
+    Returns:
+        float: SQI v2 값 (0~1)
+
+    Examples:
+        >>> round(compute_sqi_v2(0.6, 1.5, 0.5, 0.8, 0.9), 2)
+        0.86
+        >>> round(compute_sqi_v2(0.1, 0.3, 0.02, 0.3, 0.3), 2)
+        0.16
+    """
+    import math
+
+    # ── 1. 기본 가중합 ───────────────────────────────────────────
+    base = (
+        _SQI_V2_MOMENTUM_W * max(0.0, min(1.0, momentum_score))
+        + _SQI_V2_CONFIDENCE_W * max(0.0, min(1.0, confidence))
+        + _SQI_V2_CONSENSUS_W * max(0.0, min(1.0, consensus))
+    )
+
+    # ── 2. 거래량 부스트 (로그 스케일) ──────────────────────────
+    # volume_ratio=1.0 → boost≈1.0, =2.0 → boost≈1.1, =0.5 → boost≈0.86
+    safe_vol = max(volume_ratio, 0.01)
+    volume_boost = 0.7 + 0.3 * math.log(safe_vol + 1.0)
+    volume_boost = max(0.7, min(1.3, volume_boost))  # [0.7, 1.3]
+
+    # ── 3. 변동성 패널티 (BB %B 기반) ───────────────────────────
+    # bb_pct=0.5 → penalty=0 (중립, 패널티 없음)
+    # bb_pct=0 or 1 → 최대 패널티 0.4
+    bb_pct_clamped = max(0.0, min(1.0, bb_pct))
+    volatility_penalty = 1.0 - 0.4 * (abs(bb_pct_clamped - 0.5) * 2.0)
+    # 범위: [0.6, 1.0]
+
+    # ── 4. 최종 SQI v2 ──────────────────────────────────────────
+    sqi_v2 = base * volume_boost * volatility_penalty
+    return max(_SQI_V2_MIN, min(_SQI_V2_MAX, sqi_v2))

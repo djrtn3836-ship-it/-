@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from observability.tracer import get_tracer
 from observability.auto_trace import TracedService
 from observability.trace_id import bind_trace_id, reset_trace_id, new_trace_id
+from observability.health_score import calculate_health_score
 
 trace = get_tracer(__name__)
 
@@ -574,16 +575,33 @@ class Bootstrapper(TracedService):
     # ═══════════════════════════════════════════════════════════════
 
     async def _health_endpoint(self, request: Any) -> Any:
-        """GET /health 응답."""
+        """GET /health 응답 (Health Score 대시보드 v1.0 포함)."""
         queue_usage = (
             self.message_queue.qsize() / self.message_queue.maxsize * 100
             if self.message_queue.maxsize > 0 else 0
         )
         data_flow_ok = (time.time() - self._last_data_time) < _DATA_FLOW_TIMEOUT
 
+        workers_total = len(self.worker_tasks)
+        workers_alive = sum(1 for t in self.worker_tasks if not t.done())
+
+        # ─── Health Score 계산 (컴포넌트별 0~100점 + 전체 점수) ──────
+        health = calculate_health_score(
+            db_initialized=self.db is not None,
+            queue_size=self.message_queue.qsize(),
+            queue_maxsize=self.message_queue.maxsize,
+            last_data_time=self._last_data_time,
+            kiwoom_connected=self.kiwoom.is_connected() if self.kiwoom else False,
+            signal_pipeline_initialized=self.signal_pipeline is not None,
+            workers_alive=workers_alive,
+            workers_total=workers_total,
+            monitor_running=self.monitor.is_running() if self.monitor else False,
+        )
+
         status = {
             "status": "healthy" if (queue_usage < 90 and data_flow_ok) else "degraded",
             "uptime_seconds": time.time() - self.start_time if self.start_time else 0,
+            "health_score": health.to_dict(),
             "components": {
                 "kiwoom": {"connected": self.kiwoom.is_connected() if self.kiwoom else False},
                 "monitor": {"running": self.monitor.is_running() if self.monitor else False},
@@ -605,8 +623,8 @@ class Bootstrapper(TracedService):
             "performance": performance_tracker.get_status() if performance_tracker else {},
             "collector": collector_status.get_summary(),
             "workers": {
-                "total": len(self.worker_tasks),
-                "alive": sum(1 for t in self.worker_tasks if not t.done()),
+                "total": workers_total,
+                "alive": workers_alive,
             },
         }
         return aiohttp_web.json_response(status)

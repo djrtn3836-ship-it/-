@@ -51,7 +51,7 @@
   - [x] SQI < 0.45 시 HOLD 강제
   - [x] Bollinger Band, MACD 기술지표 추가
 - [x] ATR 기반 동적 손절/익절 자동 조정 (AtrService)
-- [ ] 신호 품질 지수 고도화 (SQI → SQI v2)
+- [x] 신호 품질 지수 고도화 (SQI → SQI v2) ← Session 7 완료
 
 ### 2-2. 도메인 전략 강화 (v2.0)
 - [x] TrendStrategy: MACD 크로스오버 + Regime 보정
@@ -105,12 +105,12 @@
 - [x] **`@trace.traced` 데코레이터** — ModuleTracer, ENTER/EXIT/EXCEPTION 로깅
 - [x] **TraceConfigManager** — Hot-reload, 모듈별 ON/OFF, trace_config.json
 - [x] **TracedService** 기반 클래스 — `__init_subclass__` 자동 계측
-- [ ] **Trace ID 전파**: HTTP 요청 → DB → 알림까지 전체 추적
+- [x] **Trace ID 전파**: HTTP→DB→Telegram 전체 체인 (trace_propagation.py) ← Session 7 완료
 - [ ] 성능 병목 자동 감지 → 슬로우 쿼리 알림
 - [ ] 의사결정 경로 시각화 (Trace Tree)
 
 ### 3-2. 자가 진단 시스템
-- [ ] **Health Score 대시보드**: 각 컴포넌트 건강도 0~100점
+- [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
 - [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
 - [ ] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가
@@ -188,7 +188,7 @@
 | 지표 | 현재 | Phase1 목표 | Phase2 목표 | Phase3 목표 |
 |------|------|-------------|-------------|-------------|
 | pyflakes 경고 | **0** ✅ | 0 | 0 | 0 |
-| 단위 테스트 통과율 | **288/288** ✅ | 130/130 | 200/200 | 300/300 |
+| 단위 테스트 통과율 | **432/432** ✅ | 130/130 | 200/200 | 300/300 |
 | 타입 힌트 커버리지 | ~70% | 80% | 95% | 100% |
 | 함수 평균 복잡도 | ~4.2 | <6 | <5 | <4 |
 | 코드 중복도 | ~8% | <10% | <5% | <3% |
@@ -208,7 +208,7 @@
 - ✅ E2E 통합 테스트 (test_e2e_bootstrap_dry_run.py 19개)
 - ✅ CalibrationTracker v5.2.0 단위 테스트 (21개)
 - ✅ OrderExecutor position_limit 단위 테스트 (20개)
-- ✅ 전체 288/288 테스트 통과 (+60개)
+- ✅ 전체 432/432 테스트 통과 (+60개)
 
 ### 다음 우선순위
 1. **SQI v2** — 신호 품질 지수 고도화 (모멘텀·거래량·변동성 복합 스코어)
@@ -285,7 +285,7 @@
   - [x] SQI < 0.45 시 HOLD 강제
   - [x] Bollinger Band, MACD 기술지표 추가
 - [x] ATR 기반 동적 손절/익절 자동 조정 (AtrService)
-- [ ] 신호 품질 지수 고도화 (SQI → SQI v2)
+- [x] 신호 품질 지수 고도화 (SQI → SQI v2) ← Session 7 완료
 
 ### 2-2. 도메인 전략 강화 (v2.0)
 - [x] TrendStrategy: MACD 크로스오버 + Regime 보정
@@ -319,12 +319,12 @@
 
 ### 3-1. 분산 트레이싱 완성 (observability/)
 - [ ] **Span 자동 생성**: `@auto_trace` 데코레이터 전면 적용
-- [ ] **Trace ID 전파**: HTTP 요청 → DB → 알림까지 전체 추적
+- [x] **Trace ID 전파**: HTTP→DB→Telegram 전체 체인 (trace_propagation.py) ← Session 7 완료
 - [ ] 성능 병목 자동 감지 → 슬로우 쿼리 알림
 - [ ] 의사결정 경로 시각화 (Trace Tree)
 
 ### 3-2. 자가 진단 시스템
-- [ ] **Health Score 대시보드**: 각 컴포넌트 건강도 0~100점
+- [x] **Health Score 대시보드**: 컴포넌트별 0~100점 + /health 통합 ← Session 7 완료
 - [ ] **Anomaly Detection**: 비정상 패턴 자동 탐지 (Isolation Forest)
 - [ ] **Root Cause Analysis**: 장애 원인 자동 추론
 - [ ] Shadow Mode: 신규 전략을 실거래 없이 실시간 평가

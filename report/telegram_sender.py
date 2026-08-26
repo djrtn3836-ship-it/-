@@ -1,7 +1,7 @@
 """
-report/telegram_sender.py - v7.3.1 (청크 전송 간격 추가)
-- send_raw()에서 청크 간 0.1초 sleep 추가 (Telegram rate limit 방어)
-- HTML 태그 분할 기본 로직 유지
+report/telegram_sender.py - v7.4.0 (Trace ID 전파 지원 추가)
+- 모든 알림 모을 하단에 trace_id 푸터 자동 주입
+- v7.3.1 유지: send_raw() 청크 간 0.1초 sleep + HTML 태그 분할
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from telegram.error import NetworkError, TelegramError, TimedOut
 
 from core.debug_tower import debug_tower
 from core.logger import setup_logger
+from observability.trace_propagation import format_trace_footer
 
 logger = setup_logger("telegram")
 
@@ -61,7 +62,7 @@ class TelegramSender:
                 debug_tower.log(ticker, "TELEGRAM_UNKNOWN_ACTION", {"action": action})
                 return True
 
-            result = await self.send_raw(message)
+            result = await self.send_raw(message + format_trace_footer(report.get("trace_id")))
             if result:
                 debug_tower.log(ticker, "TELEGRAM_SEND_SUCCESS", {"action": action})
             else:

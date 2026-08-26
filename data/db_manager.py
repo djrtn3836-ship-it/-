@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-data/db_manager.py - v6.1.3 (OHLCV 배치 커밋 + get_outcome 추가)
-- save_ohlcv()도 _execute_batched 사용하도록 변경
-- save_ohlcv_batch() 신규 추가 (대량 저장 최적화)
-- get_outcome() 추가: validation/backtester.py의 Walk-Forward 검증에서
-  승률이 항상 0.0으로 계산되던 버그 해결
+data/db_manager.py - v6.2.0 (Trace ID 전파 지원 추가)
+- decisions 테이블 trace_id TEXT 커럼 추가 (IF NOT EXISTS + ALTER 폈오)
+- save_decision(): current_trace_id() 자동 주입
+- v6.1.3 유지: OHLCV 배치 커밋 + get_outcome 추가
 """
 
 import asyncio
@@ -17,6 +16,7 @@ import aiosqlite
 
 from core.debug_tower import debug_tower
 from core.logger import setup_logger
+from observability.trace_propagation import inject_trace_id
 
 logger = setup_logger("db_manager")
 DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
@@ -115,8 +115,22 @@ class DatabaseManager:
                 ml_score REAL DEFAULT 0.5,
                 risk_adjustment_factor REAL DEFAULT 1.0,
                 strategy_scores TEXT,
+                trace_id TEXT DEFAULT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+        """)
+
+        # 기존 DB에 trace_id 커럼 없으면 추가 (ALTER TABLE 폈오 패턴)
+        try:
+            await conn.execute(
+                "ALTER TABLE decisions ADD COLUMN trace_id TEXT DEFAULT NULL"
+            )
+            await conn.commit()
+            logger.info("decisions 테이블에 trace_id 커럼 추가")
+        except Exception:
+            pass  # 이미 존재하면 무시
+
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS decision_outcomes (
                 decision_id INTEGER PRIMARY KEY,
                 price_after_1d REAL,
@@ -262,6 +276,9 @@ class DatabaseManager:
         return [dict(row) for row in rows]
 
     async def save_decision(self, analysis: dict):
+        # Trace ID 자동 주입 (current_trace_id() 사용)
+        inject_trace_id(analysis, key="trace_id")
+
         features = analysis.pop("features", {})
         strategy_scores = analysis.get("strategy_result")
 
@@ -279,8 +296,8 @@ class DatabaseManager:
             """
             INSERT INTO decisions
             (ticker, action, score, confidence, price_at_decision, positives, negatives, counterfactuals,
-             sentiment_score, ml_score, risk_adjustment_factor, strategy_scores)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             sentiment_score, ml_score, risk_adjustment_factor, strategy_scores, trace_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 analysis.get("ticker", "N/A"),
@@ -295,6 +312,7 @@ class DatabaseManager:
                 analysis.get("ml_score", 0.5),
                 analysis.get("risk_adjustment_factor", 1.0),
                 strategy_json,
+                analysis.get("trace_id"),  # Trace ID 전파
             ),
         )
 
