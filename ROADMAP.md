@@ -1,8 +1,8 @@
 # 🗺️ 자율 AI 퀀트 시스템 - 장기 개선 로드맵
 
-> \\\\\\\*\\\\\\\*작성일\\\\\\\*\\\\\\\*: 2026-08-25 | \\\\\\\*\\\\\\\*최종 갱신\\\\\\\*\\\\\\\*: 2026-08-26 Session 6  
-> \\\\\\\*\\\\\\\*기준 버전\\\\\\\*\\\\\\\*: V10 DDD 아키텍처  
-> \\\\\\\*\\\\\\\*철학\\\\\\\*\\\\\\\*: 끊임없는 자기 비판과 자율 개선을 통한 초지능형 퀀트 시스템 구축
+> \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*작성일\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*: 2026-08-25 | \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*최종 갱신\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*: 2026-08-26 Session 6  
+> \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*기준 버전\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*: V10 DDD 아키텍처  
+> \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*철학\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*: 끊임없는 자기 비판과 자율 개선을 통한 초지능형 퀀트 시스템 구축
 
 \---
 
@@ -32,7 +32,7 @@
 * \[x] Bug1: asyncio.sleep() 제거
 * \[x] Bug2: portfolio\_manager.start() 추가
 * \[x] Bug3: 배치 커밋 완성
-* \[x] **`\\\\\\\_get\\\\\\\_daily\\\\\\\_returns()` 실제 구현** (outcome 기반 수익률 계산)
+* \[x] **`\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_get\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_daily\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_returns()` 실제 구현** (outcome 기반 수익률 계산)
 * \[x] **trailing\_stops 종료 전 DB 저장** (프로세스 재시작 시 복구 가능)
 * \[x] **`app/bootstrap.py` 전면 재작성** (V10 진입점 통합, 1100+ lines)
 * \[x] **`app/main.py` 유일한 진입점** (scanner\_main.py Deprecated)
@@ -49,7 +49,7 @@
 
 ### 2-1. Signal Pipeline V10 완성
 
-* \[x] `application/analysis/signal\\\\\\\_pipeline.py` 전략 앙상블 완성 (v2.0)
+* \[x] `application/analysis/signal\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_pipeline.py` 전략 앙상블 완성 (v2.0)
 
   * \[x] 신뢰도 기반 동적 가중치: strategy.weight × confidence
   * \[x] 다수결 판정: consensus 기반 최종 Action
@@ -79,18 +79,18 @@
 
 ### 2-4. 리스크 관리 고도화
 
-* \[x] **CVaR (Conditional VaR)** — `risk/var\\\\\\\_calculator.py` v2.0
+* \[x] **CVaR (Conditional VaR)** — `risk/var\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_calculator.py` v2.0
 
-  * Gaussian CVaR: `ES = -μ + σ·φ(z\\\\\\\_α)/α` (부호 버그 수정 포함)
+  * Gaussian CVaR: `ES = -μ + σ·φ(z\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_α)/α` (부호 버그 수정 포함)
   * Cornish-Fisher 수정 CVaR (팻테일 보정)
   * Historical CVaR (비모수)
 * \[x] **Kelly Criterion** 포지션 사이징
 
-  * `f\\\\\\\* = (b·p - q)/b`, Fractional Kelly×0.5, max 30%
+  * `f\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\* = (b·p - q)/b`, Fractional Kelly×0.5, max 30%
   * VaR-Kelly 결합 position\_limit
-* \[x] **Portfolio VaR v2.0 Kelly 통합** (`risk/portfolio\\\\\\\_var.py`)
+* \[x] **Portfolio VaR v2.0 Kelly 통합** (`risk/portfolio\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_var.py`)
 
-  * `position\\\\\\\_limit = min(risk\\\\\\\_adj\\\\\\\_factor, kelly\\\\\\\_position\\\\\\\_limit)`
+  * `position\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_limit = min(risk\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_adj\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_factor, kelly\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_position\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_limit)`
   * Monte Carlo 10,000회 + Cholesky 분해 상관관계 반영
 * \[x] **Correlation Matrix** 실시간 갱신 → 포트폴리오 분산 최적화 ← Session 9 완료
 * \[x] Circuit Breaker 강화: 연속 손실 / 변동성 급등 / 유동성 위기 대응 ← Session 9 완료
@@ -110,7 +110,7 @@
 
 ### 2-6. 데이터 파이프라인
 
-* \[ ] **Feature Store 완성** (`orchestrator/feature\\\\\\\_store.py`)
+* \[ ] **Feature Store 완성** (`orchestrator/feature\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_store.py`)
 * \[ ] OHLCV → 기술적 지표 자동 계산 파이프라인
 * \[ ] 뉴스 감성 분석 실시간 반영 (VADER + KoNLP 앙상블)
 
@@ -122,7 +122,7 @@
 
 * \[x] **`@trace.traced` 데코레이터** — ModuleTracer, ENTER/EXIT/EXCEPTION 로깅
 * \[x] **TraceConfigManager** — Hot-reload, 모듈별 ON/OFF, trace\_config.json
-* \[x] **TracedService** 기반 클래스 — `\\\\\\\_\\\\\\\_init\\\\\\\_subclass\\\\\\\_\\\\\\\_` 자동 계측
+* \[x] **TracedService** 기반 클래스 — `\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_init\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_subclass\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_` 자동 계측
 * \[x] **Trace ID 전파**: HTTP→DB→Telegram 전체 체인 (trace\_propagation.py) ← Session 7 완료
 * \[ ] 성능 병목 자동 감지 → 슬로우 쿼리 알림
 * \[ ] 의사결정 경로 시각화 (Trace Tree)
@@ -136,7 +136,7 @@
 
 ### 3-3. 자기 최적화 루프
 
-* \[x] **A/B Testing Framework v1.0** (`application/analysis/ab\\\\\\\_framework.py`)
+* \[x] **A/B Testing Framework v1.0** (`application/analysis/ab\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_framework.py`)
 
   * 순수 Python Welch t-test (scipy 불필요)
   * Bonferroni 보정 + Cohen's d 효과 크기
@@ -144,13 +144,13 @@
   * bootstrap.py startup 통합 (strategy\_selection / entry\_timing 기본 실험)
 * \[x] **CalibrationTracker ↔ ABTest 연동** — regime별 캘리브레이션 A/B 비교 ✅
 
-  * `record\\\\\\\_ab\\\\\\\_result()`: ECE → ab\_metric (1.0 - ECE) 변환 → ABTest record\_result 피드백
-  * `calibration\\\\\\\_quality` A/B 실험: bootstrap.start\_ab\_framework() 자동 등록
+  * `record\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_ab\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_result()`: ECE → ab\_metric (1.0 - ECE) 변환 → ABTest record\_result 피드백
+  * `calibration\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_quality` A/B 실험: bootstrap.start\_ab\_framework() 자동 등록
   * regime별 독립 피드백 (trend / reversal / sideways 변형)
 * \[x] **PortfolioVaR.position\_limit → OrderExecutor 연결** — 동적 주문 크기 ✅
 
-  * `OrderExecutor.update\\\\\\\_position\\\\\\\_limit()`: VaR+Kelly 통합 한도 실시간 적용
-  * `\\\\\\\_position\\\\\\\_size\\\\\\\_check()` 개선: 절대 한도 1000주 × position\_limit 비율
+  * `OrderExecutor.update\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_position\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_limit()`: VaR+Kelly 통합 한도 실시간 적용
+  * `\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_position\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_size\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_check()` 개선: 절대 한도 1000주 × position\_limit 비율
   * 고위험(VaR≥5%) → 500주 이하, 저위험(<1.5%) → 1000주 허용
 * \[ ] **Automated Hyperparameter Tuning**: Optuna 기반
 * \[ ] **Model Drift Detection**: 모델 성능 저하 자동 감지 → 재학습 트리거
@@ -206,7 +206,7 @@
 3. 병목 감지 → 느린 쿼리 / 메모리 누수 / CPU 과부하
 4. 자동 수정 → 경고 제거 / 최적화 / 리팩토링
 5. 테스트 검증 → 단위/통합/회귀 테스트
-6. 커밋 \\\\\\\& 배포
+6. 커밋 \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\& 배포
 7. goto 1
 ```
 
@@ -234,7 +234,7 @@
 * ✅ `@trace.traced` BanditFeedbackBridge (on\_performance\_updated / force\_feedback / \_compute\_strategy\_rewards / get\_status)
 * ✅ CalibrationTracker v5.2.0: record\_ab\_result() ABTest ECE 피드백 연동
 * ✅ OrderExecutor v2.0: update\_position\_limit() position\_limit 동적 반영
-* ✅ bootstrap.start\_ab\_framework() `calibration\\\\\\\_quality` 실험 추가 등록
+* ✅ bootstrap.start\_ab\_framework() `calibration\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_quality` 실험 추가 등록
 * ✅ E2E 통합 테스트 (test\_e2e\_bootstrap\_dry\_run.py 19개)
 * ✅ CalibrationTracker v5.2.0 단위 테스트 (21개)
 * ✅ OrderExecutor position\_limit 단위 테스트 (20개)
@@ -298,7 +298,7 @@
 * \[x] Bug1: asyncio.sleep() 제거
 * \[x] Bug2: portfolio\_manager.start() 추가
 * \[x] Bug3: 배치 커밋 완성
-* \[x] **`\\\\\\\_get\\\\\\\_daily\\\\\\\_returns()` 실제 구현** (outcome 기반 수익률 계산)
+* \[x] **`\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_get\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_daily\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_returns()` 실제 구현** (outcome 기반 수익률 계산)
 * \[x] **trailing\_stops 종료 전 DB 저장** (프로세스 재시작 시 복구 가능)
 * \[x] **`app/bootstrap.py` 전면 재작성** (V10 진입점 통합)
 * \[x] **`app/main.py` 유일한 진입점** (scanner\_main.py Deprecated)
@@ -315,7 +315,7 @@
 
 ### 2-1. Signal Pipeline V10 완성
 
-* \[x] `application/analysis/signal\\\\\\\_pipeline.py` 전략 앙상블 완성 (v2.0)
+* \[x] `application/analysis/signal\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_pipeline.py` 전략 앙상블 완성 (v2.0)
 
   * \[x] 신뢰도 기반 동적 가중치: strategy.weight × confidence
   * \[x] 다수결 판정: consensus 기반 최종 Action
@@ -350,7 +350,7 @@
 
 ### 2-4. 데이터 파이프라인 강화
 
-* \[ ] **Feature Store 완성** (`orchestrator/feature\\\\\\\_store.py`)
+* \[ ] **Feature Store 완성** (`orchestrator/feature\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_store.py`)
 
   * TTL 기반 피처 캐싱
   * 피처 중요도 추적
@@ -363,7 +363,7 @@
 
 ### 3-1. 분산 트레이싱 완성 (observability/)
 
-* \[ ] **Span 자동 생성**: `@auto\\\\\\\_trace` 데코레이터 전면 적용
+* \[ ] **Span 자동 생성**: `@auto\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_trace` 데코레이터 전면 적용
 * \[x] **Trace ID 전파**: HTTP→DB→Telegram 전체 체인 (trace\_propagation.py) ← Session 7 완료
 * \[ ] 성능 병목 자동 감지 → 슬로우 쿼리 알림
 * \[ ] 의사결정 경로 시각화 (Trace Tree)
@@ -390,14 +390,14 @@
 
 * \[ ] **Event-Driven Architecture**: 전면 이벤트 버스로 결합도 제거
 
-  * `orchestrator/event\\\\\\\_bus.py` 고도화
+  * `orchestrator/event\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_bus.py` 고도화
   * Command / Event / Query 명확한 분리
 * \[ ] **CQRS 패턴**: 읽기/쓰기 DB 분리
 * \[ ] **Domain Event Sourcing**: 모든 상태 변화를 이벤트로 기록
 
 ### 4-2. 데이터베이스 현대화
 
-* \[ ] **SQLite → PostgreSQL 마이그레이션** (`data/postgres\\\\\\\_db.py` 완성)
+* \[ ] **SQLite → PostgreSQL 마이그레이션** (`data/postgres\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_db.py` 완성)
 
   * 연결 풀링 (asyncpg)
   * Read Replica 지원
@@ -446,7 +446,7 @@
 3. 병목 감지 → 느린 쿼리 / 메모리 누수 / CPU 과부하
 4. 자동 수정 → 경고 제거 / 최적화 / 리팩토링
 5. 테스트 검증 → 단위/통합/회귀 테스트
-6. 커밋 \\\\\\\& 배포
+6. 커밋 \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\& 배포
 7. goto 1
 ```
 
@@ -477,8 +477,8 @@
 
 ## ✅ 완료된 즉시 실행 항목
 
-1. \[x] `\\\\\\\_get\\\\\\\_daily\\\\\\\_returns()` 실제 구현 (outcome 기반)
-2. \[x] `trailing\\\\\\\_stops` DB 저장 로직 추가
+1. \[x] `\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_get\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_daily\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_returns()` 실제 구현 (outcome 기반)
+2. \[x] `trailing\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_stops` DB 저장 로직 추가
 3. \[x] V10 신규 모듈 테스트 추가 (domain, observability, signal\_pipeline)
 4. \[x] `requirements.txt` 업데이트
 5. \[x] Windows 인코딩 강제 설정
@@ -495,13 +495,13 @@
 
 
 
-\- ✅ `observability/model\\\\\\\_drift\\\\\\\_detector.py` v1.0 (PSI/KS 순수 Python, WinRateTracker, DriftLevel 4단계)
+\- ✅ `observability/model\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_drift\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_detector.py` v1.0 (PSI/KS 순수 Python, WinRateTracker, DriftLevel 4단계)
 
-\- ✅ `observability/root\\\\\\\_cause\\\\\\\_analyzer.py` v1.0 (우선순위 규칙 엔진, CauseCategory 6종, RecommendedAction 5종)
+\- ✅ `observability/root\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_cause\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_analyzer.py` v1.0 (우선순위 규칙 엔진, CauseCategory 6종, RecommendedAction 5종)
 
-\- ✅ `tests/unit/test\\\\\\\_model\\\\\\\_drift\\\\\\\_detector.py` (38개)
+\- ✅ `tests/unit/test\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_model\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_drift\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_detector.py` (38개)
 
-\- ✅ `tests/unit/test\\\\\\\_root\\\\\\\_cause\\\\\\\_analyzer.py` (37개)
+\- ✅ `tests/unit/test\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_root\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_cause\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_analyzer.py` (37개)
 
 \### Session 11 — Explainability Module + Decision Trace Tree ✅ 완료
 
@@ -509,13 +509,13 @@
 
 
 
-\- ✅ `observability/explainer\\\_v2.py` v2.0 (퍼뮤테이션 Shapley 근사, 로컬 random.Random 사용, try/except+fallback)
+\- ✅ `observability/explainer\\\\\\\\\\\\\\\_v2.py` v2.0 (퍼뮤테이션 Shapley 근사, 로컬 random.Random 사용, try/except+fallback)
 
-\- ✅ `observability/trace\\\_tree.py` v1.0 (TraceNode, critical\_path DFS, to\_text\_tree, deque 기반 LRU 축출)
+\- ✅ `observability/trace\\\\\\\\\\\\\\\_tree.py` v1.0 (TraceNode, critical\_path DFS, to\_text\_tree, deque 기반 LRU 축출)
 
-\- ✅ `tests/unit/test\\\_explainer\\\_v2.py` (42개)
+\- ✅ `tests/unit/test\\\\\\\\\\\\\\\_explainer\\\\\\\\\\\\\\\_v2.py` (42개)
 
-\- ✅ `tests/unit/test\\\_trace\\\_tree.py` (38개)
+\- ✅ `tests/unit/test\\\\\\\\\\\\\\\_trace\\\\\\\\\\\\\\\_tree.py` (38개)
 
 
 
@@ -525,15 +525,49 @@
 
 
 
-\- ✅ `orchestrator/feature\_store.py` v2.0: 순수 Python 기술지표(EMA/RSI/BB/MACD/ATR/Stochastic), TTL 캐시, FeatureValidator, FeatureLineage, BatchFeatureComputer
+\- ✅ `orchestrator/feature\\\\\\\_store.py` v2.0: 순수 Python 기술지표(EMA/RSI/BB/MACD/ATR/Stochastic), TTL 캐시, FeatureValidator, FeatureLineage, BatchFeatureComputer
 
-\- ✅ `orchestrator/pipeline\_manager.py` v2.0: 단계별 지연 추적, 지수 백오프 재시도, HealthCheck 연동 (main.py 레거시 호환 유지)
+\- ✅ `orchestrator/pipeline\\\\\\\_manager.py` v2.0: 단계별 지연 추적, 지수 백오프 재시도, HealthCheck 연동 (main.py 레거시 호환 유지)
 
-\- ✅ `tests/unit/test\_feature\_store\_v2.py` (42개)
+\- ✅ `tests/unit/test\\\\\\\_feature\\\\\\\_store\\\\\\\_v2.py` (42개)
 
-\- ✅ `tests/unit/test\_pipeline\_manager.py` (35개)
+\- ✅ `tests/unit/test\\\\\\\_pipeline\\\\\\\_manager.py` (35개)
 
 \- 🔧 자체 검증 과정에서 미사용 임포트 4건(`field`, `math`, `FeatureLineage`, `FeatureValidationResult`) 및 테스트 개수 불일치(25→35) 발견·수정
+
+
+
+\### Session 13 — Backtester 고도화 + Walk-Forward 자동화 ✅ 완료
+
+\*\*달성 테스트\*\*: 888 → 963 (+75)
+
+
+
+\- ✅ `validation/backtester.py` v9.0: Calmar/Sortino/Profit Factor/MAR, Rolling/Anchored WalkForward
+
+\- ✅ `tests/unit/test\\\_backtester\\\_v9.py` (45개), `tests/unit/test\\\_walk\\\_forward.py` (30개)
+
+\- 🔧 자체 검증: profit\_factor=inf → JSON 직렬화 오류 → 999.0 캡핑, stdev 단일값 → 0.0 안전 처리
+
+
+
+\### Session 14 — Event-Driven Architecture (EventBus v2.0) ✅ 완료
+
+\*\*달성 테스트\*\*: 963 → 1015 (+52)
+
+
+
+\- ✅ `orchestrator/event\_bus.py` v2.0: EventStore(trace\_id 조회/상한), DLQ, 백그라운드 재시도(큐 블로킹 제거)
+
+\- ✅ Priority는 `core.constants` 재사용 → 기존 모듈과의 하위 호환성 유지 (신규 클래스 중복 정의 방지)
+
+\- ✅ `EventMessage.trace\_id` 추가 → Session 7 분산 추적 체계와 연동
+
+\- ✅ `tests/unit/test\_event\_bus\_v2.py` (52개, 8개 클래스)
+
+\- 🔧 자체 검증: (1) Priority 중복 정의로 인한 KeyError 위험 제거, (2) 재시도 인라인 sleep으로 인한 큐 헤드-오브-라인 블로킹 제거, (3) retry\_tasks 메모리 누수 방지(add\_done\_callback), (4) 테스트 백오프 파라미터화로 타이밍 flakiness 제거, (5) 싱글톤 픽스처 전/후 reset으로 테스트 오염 방지
+
+\- 📌 참고: 이전 초안에서 제시된 "70개/1033" 수치는 실제 코드로 검증되지 않은 목표치였음. 본 세션은 실제로 작성·검증된 52개만 정직하게 반영.
 
 
 
