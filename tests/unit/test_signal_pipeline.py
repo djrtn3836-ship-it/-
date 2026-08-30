@@ -8,7 +8,7 @@ tests/unit/test_signal_pipeline.py - SignalPipeline V10 앙상블 단위 테스�
     - SignalPipeline._ensemble() - 신뢰도 기반 가중 앙상블
     - SignalPipeline._combine_scores() - 스코어 결합 + Action 결정
     - SignalPipeline._calc_signal_confidence() - SQI 기반 confidence
-    - SignalPipeline._collect_evidence() - 증거 수집
+    - SignalPipeline()._collect_evidence() - 증거 수집
     - SignalPipeline.process() - 통합 플로우 (mock DB)
 """
 
@@ -405,7 +405,7 @@ class TestCollectEvidence:
             score=0.75, confidence=0.8, action="BUY",
             consensus=0.9, sqi=0.72, details=["Trend:BUY(80%/c80%)"]
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.BUY, 0.75, ensemble, {"rsi": 55}, "Bullish"
         )
         assert len(pos) > 0
@@ -416,7 +416,7 @@ class TestCollectEvidence:
             score=0.2, confidence=0.8, action="SELL",
             consensus=0.9, sqi=0.72, details=[]
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.SELL, 0.2, ensemble, {}, "Bearish"
         )
         assert len(neg) > 0
@@ -427,7 +427,7 @@ class TestCollectEvidence:
             score=0.5, confidence=0.3, action="HOLD",
             consensus=0.4, sqi=0.12, details=[]
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.HOLD, 0.5, ensemble, {}, "Sideways"
         )
         assert any("SQI" in n for n in neg)

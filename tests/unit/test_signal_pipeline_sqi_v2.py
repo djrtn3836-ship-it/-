@@ -10,7 +10,7 @@ tests/unit/test_signal_pipeline_sqi_v2.py - SQI v2 단위 테스트
     - SignalPipeline._ensemble() with tech_data → SQI v2 계산
     - SignalPipeline._ensemble() without tech_data → sqi_v2 == sqi_v1 (fallback)
     - SignalPipeline._calc_signal_confidence() SQI v2 우선 사용
-    - SignalPipeline._collect_evidence() SQI v2 레이블
+    - SignalPipeline()._collect_evidence() SQI v2 레이블
     - process() 통합: tech_data 있을 때 sqi_v2 > 0
     - SQI v2 경계값 테스트 (HOLD 강제 기준)
 """
@@ -479,7 +479,7 @@ class TestCollectEvidenceSqiV2:
             consensus=0.9, sqi=0.50, details=["Trend:BUY"],
             sqi_v2=0.75
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.BUY, 0.75, ensemble, {"rsi": 55}, "Bullish"
         )
         # SQI_v2 레이블이 긍정 근거에 포함되어야 함
@@ -493,7 +493,7 @@ class TestCollectEvidenceSqiV2:
             consensus=0.9, sqi=0.72, details=["Trend:BUY"],
             sqi_v2=0.0
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.BUY, 0.75, ensemble, {"rsi": 55}, "Bullish"
         )
         has_sqi_v1 = any("SQI_v1" in p for p in pos)
@@ -506,7 +506,7 @@ class TestCollectEvidenceSqiV2:
             consensus=0.4, sqi=0.12, details=[],
             sqi_v2=0.10
         )
-        pos, neg = SignalPipeline._collect_evidence(
+        pos, neg = SignalPipeline()._collect_evidence(
             Action.HOLD, 0.5, ensemble, {}, "Sideways"
         )
         has_sqi_warn = any("SQI" in n for n in neg)
