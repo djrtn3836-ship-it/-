@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-application/analysis/hyperparameter_tuner.py - Optuna 기반 전략 파라미터 자동 튜닝 v1.0
+application/analysis/hyperparameter_tuner.py - Optuna 기반 전략 파라미터 자동 튜닝 v1.1
+
+v1.1 변경 (Session 15):
+    - apply_to_pipeline() 추가: 최적화 결과를 SignalPipeline에 즉시 반영
 
 개요:
     V10 Signal Pipeline의 핵심 파라미터들을 Optuna TPE 샘플러로 자동 최적화.
@@ -30,8 +33,7 @@ application/analysis/hyperparameter_tuner.py - Optuna 기반 전략 파라미터
     dataset = [HistoricalSample(action, actual_return, sqi, confidence), ...]
     tuner = HyperparameterTuner(n_trials=100)
     result = tuner.optimize(dataset)
-    print(result.best_params)
-    print(result.best_value)
+    tuner.apply_to_pipeline(signal_pipeline)   # ← 즉시 반영
 """
 
 import math
@@ -136,26 +138,12 @@ def _simulate_actions(
     sell_threshold: float,
     min_confidence: float,
 ) -> List[Dict[str, Any]]:
-    """파라미터 세트로 과거 샘플에 대한 행동을 재시뮬레이션합니다.
-
-    실제 파이프라인의 _combine_scores + HOLD 강제 로직을 경량 재현.
-
-    Args:
-        samples: 과거 샘플 목록
-        buy_threshold: BUY 판정 임계값
-        sell_threshold: SELL 판정 임계값
-        min_confidence: 최소 신뢰도 (이하 HOLD 강제)
-
-    Returns:
-        List[dict]: {action, actual_return} 목록
-    """
+    """파라미터 세트로 과거 샘플에 대한 행동을 재시뮬레이션합니다."""
     results = []
     for s in samples:
-        action = s.action  # 기본값: 원본 action 유지
-        # 신뢰도 미달 → HOLD 강제
+        action = s.action
         if s.confidence < min_confidence:
             action = "HOLD"
-        # 임계값 재판정
         elif s.score >= buy_threshold:
             action = "BUY"
         elif s.score <= sell_threshold:
@@ -169,20 +157,7 @@ def _simulate_actions(
 def compute_objective(
     simulated: List[Dict[str, Any]],
 ) -> float:
-    """시뮬레이션 결과로부터 목적 함수 값을 계산합니다.
-
-    목적 함수 (최대화):
-        objective = w_sr × sharpe_ratio
-                  + w_wr × win_rate
-                  - w_dd × max_drawdown
-                  - w_hold × hold_rate_penalty
-
-    Args:
-        simulated: _simulate_actions() 결과 목록
-
-    Returns:
-        float: 목적 함수 값 (클수록 좋음)
-    """
+    """시뮬레이션 결과로부터 목적 함수 값을 계산합니다."""
     if not simulated:
         return -1.0
 
@@ -190,16 +165,13 @@ def compute_objective(
     holds = [r for r in simulated if r["action"] == "HOLD"]
     total = len(simulated)
 
-    # ── 거래 없을 때 패널티 ─────────────────────────────────────
     if not trades:
         return -1.0
 
     returns = [t["actual_return"] for t in trades]
 
-    # ── 승률 ──────────────────────────────────────────────────
     win_rate = sum(1 for r in returns if r > 0) / len(returns)
 
-    # ── Sharpe Ratio (무위험 이자율 0 가정) ───────────────────
     n = len(returns)
     mean_r = sum(returns) / n
     if n > 1:
@@ -209,7 +181,6 @@ def compute_objective(
         std_r = 1e-9
     sharpe = mean_r / std_r
 
-    # ── 최대 낙폭 (누적 수익률 기준) ─────────────────────────
     cumulative = 0.0
     peak = 0.0
     max_drawdown = 0.0
@@ -221,11 +192,9 @@ def compute_objective(
         if dd > max_drawdown:
             max_drawdown = dd
 
-    # ── HOLD 비율 패널티 (너무 많이 HOLD 하면 감점) ──────────
     hold_rate = len(holds) / total
-    hold_penalty = max(0.0, hold_rate - 0.50)  # 50% 초과분만 패널티
+    hold_penalty = max(0.0, hold_rate - 0.50)
 
-    # ── 목적 함수 합산 ─────────────────────────────────────────
     objective = (
         _OBJ_SHARPE_W * sharpe
         + _OBJ_WIN_RATE_W * win_rate
@@ -272,18 +241,7 @@ class HyperparameterTuner:
         dataset: List[HistoricalSample],
         callbacks: Optional[List[Callable]] = None,
     ) -> TuningResult:
-        """주어진 데이터셋으로 하이퍼파라미터를 최적화합니다.
-
-        Args:
-            dataset: 과거 트레이드 샘플 목록 (최소 10개 권장)
-            callbacks: Optuna study에 추가할 콜백 목록 (None이면 없음)
-
-        Returns:
-            TuningResult: 최적 파라미터 및 성과 지표
-
-        Raises:
-            ValueError: dataset이 비어 있을 때
-        """
+        """주어진 데이터셋으로 하이퍼파라미터를 최적화합니다."""
         if not dataset:
             raise ValueError("dataset must not be empty")
 
@@ -291,7 +249,6 @@ class HyperparameterTuner:
         history: List[Dict[str, Any]] = []
 
         def _objective(trial: optuna.Trial) -> float:
-            # ── 파라미터 제안 ──────────────────────────────────
             buy_th = trial.suggest_float(
                 "buy_threshold",
                 PARAM_SPACE["buy_threshold"]["low"],
@@ -307,7 +264,6 @@ class HyperparameterTuner:
                 PARAM_SPACE["min_confidence"]["low"],
                 PARAM_SPACE["min_confidence"]["high"],
             )
-            # SQI v2 가중치 (합이 ~1이 되도록 정규화)
             mom_w = trial.suggest_float(
                 "sqi_v2_momentum_w",
                 PARAM_SPACE["sqi_v2_momentum_w"]["low"],
@@ -318,7 +274,6 @@ class HyperparameterTuner:
                 PARAM_SPACE["sqi_v2_confidence_w"]["low"],
                 PARAM_SPACE["sqi_v2_confidence_w"]["high"],
             )
-            # 전략 가중치
             trend_w = trial.suggest_float(
                 "trend_weight",
                 PARAM_SPACE["trend_weight"]["low"],
@@ -335,32 +290,25 @@ class HyperparameterTuner:
                 PARAM_SPACE["breakout_weight"]["high"],
             )
 
-            # ── buy > sell 제약 ─────────────────────────────────
             if buy_th <= sell_th:
                 return -2.0
 
-            # ── SQI v2 가중치 정규화 및 effective_min_confidence 조정 ──
-            # 합이 1이 되도록 정규화 후 consensus 가중치를 역산
             total_sqi_w = mom_w + conf_w
             if total_sqi_w > 0:
                 norm_conf_w = conf_w / total_sqi_w
             else:
                 norm_conf_w = 0.5
-            # 신뢰도 가중치가 높을수록 min_confidence를 소폭 상향 조정
             effective_min_conf = min_conf * (1.0 + 0.05 * (norm_conf_w - 0.5))
             effective_min_conf = max(0.30, min(0.60, effective_min_conf))
 
-            # ── 전략 가중치 정규화 → 지배적 전략 결정 ──────────
             total_strategy_w = trend_w + reversal_w + breakout_w
             if total_strategy_w > 0:
                 norm_trend_w = trend_w / total_strategy_w
             else:
                 norm_trend_w = 1 / 3
-            # 추세 전략 지배적이면 BUY 임계값을 소폭 낮춤 (더 공격적)
             adjusted_buy_th = buy_th - 0.02 * (norm_trend_w - 1 / 3)
             adjusted_buy_th = max(buy_th - 0.03, min(buy_th + 0.03, adjusted_buy_th))
 
-            # ── 시뮬레이션 및 목적 함수 계산 ──────────────────
             simulated = _simulate_actions(
                 dataset, adjusted_buy_th, sell_th, effective_min_conf
             )
@@ -406,6 +354,37 @@ class HyperparameterTuner:
         )
         return result
 
+    # ── 🆕 v1.1: SignalPipeline 연동 ────────────────────────────────
+
+    def apply_to_pipeline(
+        self,
+        pipeline: Any,   # 순환 임포트 방지를 위해 Any 사용 (실질 타입: SignalPipeline)
+        result: Optional[TuningResult] = None,
+    ) -> Dict[str, float]:
+        """최적화 결과를 SignalPipeline에 즉시 반영.
+
+        Args:
+            pipeline: update_hyperparameters()를 가진 SignalPipeline 인스턴스
+            result: 적용할 TuningResult (None이면 last_result 사용)
+
+        Returns:
+            dict: 실제 적용된 전체 하이퍼파라미터
+
+        Raises:
+            RuntimeError: result도 last_result도 없는 경우
+        """
+        r = result or self._last_result
+        if r is None:
+            raise RuntimeError(
+                "적용할 TuningResult가 없습니다. optimize()를 먼저 실행하세요."
+            )
+        applied = pipeline.update_hyperparameters(r.best_params)
+        logger.info(
+            "[HyperparameterTuner] 파이프라인 반영 완료: %s (best_value=%.4f, trials=%d)",
+            applied, r.best_value, r.n_trials,
+        )
+        return applied
+
     # ── 편의 메서드 ────────────────────────────────────────────────
 
     @property
@@ -433,15 +412,6 @@ def quick_tune(
     n_trials: int = 30,
     seed: int = 42,
 ) -> TuningResult:
-    """빠른 튜닝용 편의 함수.
-
-    Args:
-        dataset: 과거 트레이드 샘플 목록
-        n_trials: 탐색 횟수 (기본 30)
-        seed: 랜덤 시드
-
-    Returns:
-        TuningResult
-    """
+    """빠른 튜닝용 편의 함수."""
     tuner = HyperparameterTuner(n_trials=n_trials, seed=seed)
     return tuner.optimize(dataset)
