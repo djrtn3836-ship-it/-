@@ -1,31 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-application/analysis/signal_pipeline.py - V10 Strategy Orchestration Pipeline v2.1
+application/analysis/signal_pipeline.py - V10 Strategy Orchestration Pipeline v2.2
+
+변경 이력 (v2.2 - Session 15 패치, 최종):
+    - Strategy.weight가 읽기 전용 프로퍼티(setter 없음)인 실제 구현을 확인하고 반영
+    - 전략 가중치를 전략 객체에 직접 대입하지 않고 self._strategy_weights
+      (이름 기준 딕셔너리)로 완전히 분리 관리 → AttributeError 근본 해결
+    - _read_strategy_weights(): 초기화 시 전략 객체에서 가중치를 읽어 딕셔너리로 보관
+    - update_hyperparameters(): 전략 객체 대신 딕셔너리만 갱신
+    - get_hyperparameters(): 딕셔너리 우선 조회 + try/except 방어적 폴백
+    - _ensemble(): strategy_map(.weight 직접 접근) 제거, _strategy_weights 딕셔너리 사용
+    - _PARAM_TO_STRATEGY_TYPE 타입을 Dict[str, Type[Strategy]]로 개선 (mypy strict 대비)
+    - compute_sqi_v2() 독스트링 예제 수치를 실제 계산값(0.75 / 0.12)으로 교정
+      (원본에 있던 0.86 / 0.16은 검증 결과 오류였음 — 로직 자체는 변경 없음)
+    - domain/strategies/*.py의 실제 구현(읽기 전용 여부)에 완전히 독립적으로 동작
 
 변경 이력 (v2.1 - Session 15):
     - 하이퍼파라미터 8개 전체 동적화 (인스턴스 변수 + update/get API)
-    - update_hyperparameters(): buy/sell 임계값, min_confidence,
-      SQI v2 가중치 2개(momentum/confidence, consensus는 자동 계산),
-      전략 가중치 3개(trend/reversal/breakout)
-    - get_hyperparameters(): 현재 적용 중인 전체 파라미터 반환 (헬스체크/로깅용)
-    - _PARAM_TO_STRATEGY_TYPE: 클래스 타입(isinstance) 기반 전략 가중치 매칭
-      (전략의 .name이 "Trend"인지 "TrendStrategy"인지 구현에 따라 다를 수 있어
-       문자열 키 매칭은 실패 위험이 있으므로 타입 매칭으로 안전하게 처리)
     - compute_sqi_v2(): momentum_w/confidence_w/consensus_w 선택적 인자 추가
-      (기본값 = 기존 모듈 상수 → 하위 호환)
-    - _ensemble(): compute_sqi_v2() 호출 시 인스턴스 가중치 전달
-    - _combine_scores(): 모듈 상수 대신 self.buy_threshold/self.sell_threshold 사용
-    - process(): 모듈 상수 대신 self.min_confidence 사용
-    - _collect_evidence(): @staticmethod → 인스턴스 메서드로 전환,
-      self.buy_threshold/self.sell_threshold 참조 (표시 근거와 실제 판단 기준 일치)
+    - _combine_scores() / process(): 모듈 상수 대신 인스턴스 임계값 사용
+    - _collect_evidence(): @staticmethod → 인스턴스 메서드로 전환
 
 변경 이력 (v2.0):
-    - 신뢰도 기반 동적 가중치 앙상블 (confidence-weighted ensemble)
-    - 다수결 + 신뢰도 임계값 기반 최종 Action 판정
-    - Strategy.weight 프로퍼티 완전 활용
-    - Bollinger Band, MACD 계산을 _fetch_ohlcv에 추가
-    - Signal Quality Index (SQI) 도입
-    - 전략 합의도(consensus) 측정 및 로깅
+    - 신뢰도 기반 동적 가중치 앙상블, 다수결 판정, SQI v1/v2, Bollinger/MACD 추가
     - 타입 힌트 100% + Google Style Docstrings
 
 Architecture:
@@ -36,7 +33,7 @@ Architecture:
 import asyncio
 import math
 import time
-from typing import Dict, Any, Optional, Callable, List, Tuple
+from typing import Dict, Any, Optional, Callable, List, Tuple, Type
 
 from config.schema import get_config
 from core.logger import setup_logger
@@ -83,7 +80,7 @@ _SQI_V2_MAX = 1.0             # SQI v2 상한
 
 # ─── 전략 타입 → 파라미터 키 매핑 ────────────────────────────────────
 # 문자열 이름 매칭 대신 isinstance() 기반으로 안전하게 전략 가중치를 갱신합니다.
-_PARAM_TO_STRATEGY_TYPE: Dict[str, type] = {
+_PARAM_TO_STRATEGY_TYPE: Dict[str, Type[Strategy]] = {
     "trend_weight": TrendStrategy,
     "reversal_weight": ReversalStrategy,
     "breakout_weight": BreakoutStrategy,
@@ -132,10 +129,11 @@ class SignalPipeline(TracedService):
     기존 레거시 필터(Macro/Sector/Stock/Korean)와 신규 Domain Strategy를
     신뢰도 기반 앙상블로 결합해 최종 Signal을 생성합니다.
 
-    v2.1 신규:
-        하이퍼파라미터 8개를 인스턴스 변수로 관리하여 런타임 동적 갱신 가능.
-        HyperparameterTuner.apply_to_pipeline() 또는
-        update_hyperparameters() 직접 호출로 파라미터를 교체할 수 있습니다.
+    v2.2 전략 가중치 관리 방식:
+        Strategy.weight를 직접 수정하지 않고, self._strategy_weights 딕셔너리에
+        전략 이름(strategy.name) 기준으로 가중치를 보관합니다. 이 방식은
+        Strategy.weight가 읽기 전용 프로퍼티여도 안전하게 동작하며,
+        domain/strategies/*.py의 실제 구현 세부사항과 완전히 독립적입니다.
 
     Attributes:
         db_manager: 데이터베이스 관리자 (선택적)
@@ -196,15 +194,34 @@ class SignalPipeline(TracedService):
         self.sentiment_weight: float = config.trading.sentiment_weight
         self.ml_weight: float = config.trading.ml_weight
 
-        # ─── 🆕 v2.1: 동적 하이퍼파라미터 (초기값 = 모듈 상수) ───
-        # HyperparameterTuner.apply_to_pipeline() 또는
-        # update_hyperparameters()로 런타임에 갱신됩니다.
+        # ─── 동적 하이퍼파라미터 (초기값 = 모듈 상수) ────────────
         self.buy_threshold: float = _BUY_THRESHOLD
         self.sell_threshold: float = _SELL_THRESHOLD
         self.min_confidence: float = _MIN_CONFIDENCE
         self.sqi_v2_momentum_w: float = _SQI_V2_MOMENTUM_W
         self.sqi_v2_confidence_w: float = _SQI_V2_CONFIDENCE_W
         self.sqi_v2_consensus_w: float = _SQI_V2_CONSENSUS_W
+
+        # ─── 전략 가중치 딕셔너리 (v2.2 핵심 수정) ───────────────
+        # Strategy.weight가 읽기 전용 프로퍼티여도 안전하게 동작합니다.
+        # 키: strategy.name (예: "Trend", "Reversal", "Breakout")
+        self._strategy_weights: Dict[str, float] = self._read_strategy_weights()
+
+    def _read_strategy_weights(self) -> Dict[str, float]:
+        """전략 객체에서 초기 가중치를 읽어 이름 기준 딕셔너리로 반환.
+
+        Strategy.weight 접근이 실패하는 경우 기본값 0.33을 사용합니다.
+
+        Returns:
+            dict: {strategy.name: weight}
+        """
+        weights: Dict[str, float] = {}
+        for s in self.strategies:
+            try:
+                weights[s.name] = float(s.weight)
+            except Exception:
+                weights[s.name] = 0.33
+        return weights
 
     def set_realtime_price_provider(self, provider: Callable[[str], float]) -> None:
         """실시간 가격 제공자 설정.
@@ -217,7 +234,7 @@ class SignalPipeline(TracedService):
             self.atr_service.set_realtime_price_provider(provider)
 
     # ═══════════════════════════════════════════════════════════════
-    #  🆕 v2.1: HyperparameterTuner 연동 API
+    #  HyperparameterTuner 연동 API
     # ═══════════════════════════════════════════════════════════════
 
     def update_hyperparameters(self, params: Dict[str, float]) -> Dict[str, float]:
@@ -233,8 +250,10 @@ class SignalPipeline(TracedService):
             momentum_w + confidence_w > 1.0 → 비율 유지하며 합이 1.0이 되도록 정규화,
                                                consensus_w = 0.0
 
-        전략 가중치 반영 방식:
-            클래스 타입(isinstance)으로 매칭 → 이름 문자열 불일치 위험 없음
+        전략 가중치 반영 방식 (v2.2):
+            Strategy 객체는 절대 수정하지 않고, self._strategy_weights
+            딕셔너리만 갱신합니다. isinstance() 기반 매칭으로
+            전략 .name 문자열 표기 차이("Trend" vs "TrendStrategy" 등)와도 무관합니다.
 
         Args:
             params: 갱신할 파라미터 딕셔너리
@@ -277,13 +296,13 @@ class SignalPipeline(TracedService):
         self.sqi_v2_confidence_w = conf_w
         self.sqi_v2_consensus_w = cons_w
 
-        # ── 전략 가중치: 클래스 타입으로 안전하게 매칭 ───────────
+        # ── 전략 가중치: 딕셔너리만 갱신, 전략 객체는 불변 유지 ──
         for param_key, strategy_type in _PARAM_TO_STRATEGY_TYPE.items():
             if param_key not in params:
                 continue
             for s in self.strategies:
                 if isinstance(s, strategy_type):
-                    s.weight = params[param_key]
+                    self._strategy_weights[s.name] = float(params[param_key])
                     break
 
         result = self.get_hyperparameters()
@@ -294,6 +313,8 @@ class SignalPipeline(TracedService):
         """현재 적용 중인 전체 하이퍼파라미터 반환.
 
         헬스체크(/health 엔드포인트), 로깅, 튜닝 결과 비교에 사용합니다.
+        전략 가중치는 _strategy_weights 딕셔너리를 우선 조회하며,
+        딕셔너리에 없거나 접근이 실패하면 Strategy.weight 원본값을 폴백으로 사용합니다.
 
         Returns:
             dict: buy_threshold, sell_threshold, min_confidence,
@@ -304,7 +325,11 @@ class SignalPipeline(TracedService):
         for param_key, strategy_type in _PARAM_TO_STRATEGY_TYPE.items():
             for s in self.strategies:
                 if isinstance(s, strategy_type):
-                    weights[param_key] = s.weight
+                    try:
+                        fallback = float(s.weight)
+                    except Exception:
+                        fallback = 0.33
+                    weights[param_key] = self._strategy_weights.get(s.name, fallback)
                     break
         return {
             "buy_threshold": self.buy_threshold,
@@ -435,7 +460,17 @@ class SignalPipeline(TracedService):
     def _calc_base_score(
         self, ticker: str, price: float, regime: str, atr: float
     ) -> float:
-        """레거시 필터 가중 합산 스코어 계산."""
+        """레거시 필터 가중 합산 스코어 계산.
+
+        Args:
+            ticker: 종목 코드
+            price: 현재가
+            regime: 시장 레짐
+            atr: ATR 값
+
+        Returns:
+            float: 0~1 범위의 base score
+        """
         macro_score = self.macro_filter.check({"price": price, "regime": regime})
         sector_score = self.sector_filter.check({"ticker": ticker})
         stock_score = self.stock_filter.check(
@@ -459,7 +494,14 @@ class SignalPipeline(TracedService):
     async def _run_strategies(
         self, data: Dict[str, Any]
     ) -> List[StrategyResult]:
-        """도메인 전략을 asyncio.gather로 병렬 실행."""
+        """도메인 전략을 asyncio.gather로 병렬 실행.
+
+        Args:
+            data: 전략에 전달할 시장 데이터
+
+        Returns:
+            List[StrategyResult]: 유효한 전략 결과 목록 (예외 제외)
+        """
         raw_results = await asyncio.gather(
             *[s.analyze(data) for s in self.strategies],
             return_exceptions=True,
@@ -474,7 +516,7 @@ class SignalPipeline(TracedService):
         return valid
 
     # ═══════════════════════════════════════════════════════════════
-    #  Private: 신뢰도 기반 앙상블
+    #  Private: 신뢰도 기반 앙상블 (v2.2: _strategy_weights 사용)
     # ═══════════════════════════════════════════════════════════════
 
     def _ensemble(
@@ -484,9 +526,17 @@ class SignalPipeline(TracedService):
     ) -> EnsembleResult:
         """신뢰도 기반 가중 앙상블 + 다수결 판정 + SQI v2 계산.
 
-        v2.1: compute_sqi_v2() 호출 시 인스턴스 가중치
-        (self.sqi_v2_momentum_w, sqi_v2_confidence_w, sqi_v2_consensus_w)를
-        전달합니다. tech_data 없으면 sqi_v2 = sqi_v1 fallback.
+        v2.2: 전략 객체의 .weight를 직접 읽던 strategy_map 방식을 제거하고,
+        self._strategy_weights 딕셔너리에서 가중치를 조회합니다.
+        이 딕셔너리는 update_hyperparameters()로 튜닝된 값을 반영하므로,
+        전략 객체가 읽기 전용이어도 튜닝 결과가 정확히 앙상블에 적용됩니다.
+
+        Args:
+            results: 유효한 전략 결과 목록
+            tech_data: 기술 지표 딕셔너리 (SQI v2 계산에 사용, 선택적)
+
+        Returns:
+            EnsembleResult: 앙상블 집계 결과 (sqi_v2 포함)
         """
         if not results:
             return EnsembleResult(
@@ -494,14 +544,14 @@ class SignalPipeline(TracedService):
                 action="HOLD", consensus=0.0, sqi=0.0, sqi_v2=0.0, details=[]
             )
 
-        strategy_map: Dict[str, Strategy] = {s.name: s for s in self.strategies}
         weighted_scores: Dict[str, float] = {}
         vote_weights: Dict[str, float] = {"BUY": 0.0, "SELL": 0.0, "HOLD": 0.0}
         total_weight = 0.0
         details: List[str] = []
 
         for r in results:
-            base_w = strategy_map.get(r.name, r).weight if r.name in strategy_map else 0.33
+            # _strategy_weights 딕셔너리에서 조회 (튜닝값 반영, 객체는 불변)
+            base_w = self._strategy_weights.get(r.name, 0.33)
             combined_w = base_w * r.confidence
             weighted_scores[r.name] = combined_w
             total_weight += combined_w
@@ -552,9 +602,9 @@ class SignalPipeline(TracedService):
                 bb_pct=bb_pct,
                 confidence=avg_confidence,
                 consensus=consensus,
-                momentum_w=self.sqi_v2_momentum_w,       # 🆕 인스턴스 가중치
-                confidence_w=self.sqi_v2_confidence_w,   # 🆕 인스턴스 가중치
-                consensus_w=self.sqi_v2_consensus_w,     # 🆕 인스턴스 가중치
+                momentum_w=self.sqi_v2_momentum_w,
+                confidence_w=self.sqi_v2_confidence_w,
+                consensus_w=self.sqi_v2_consensus_w,
             )
         else:
             sqi_v2 = sqi
@@ -570,13 +620,21 @@ class SignalPipeline(TracedService):
         )
 
     # ═══════════════════════════════════════════════════════════════
-    #  Private: 최종 스코어 결합 (v2.1: 인스턴스 임계값 사용)
+    #  Private: 최종 스코어 결합 (인스턴스 임계값 사용)
     # ═══════════════════════════════════════════════════════════════
 
     def _combine_scores(
         self, base_score: float, ensemble: EnsembleResult
     ) -> Tuple[float, Action]:
-        """레거시 필터 스코어와 앙상블 스코어를 결합해 최종 Action 결정."""
+        """레거시 필터 스코어와 앙상블 스코어를 결합해 최종 Action 결정.
+
+        Args:
+            base_score: 레거시 필터 가중 합산 스코어 (0~1)
+            ensemble: 도메인 전략 앙상블 결과
+
+        Returns:
+            Tuple[float, Action]: (최종 스코어, 최종 Action)
+        """
         final_score = (
             base_score * self.base_weight
             + ensemble.score * self.strategy_weight
@@ -614,7 +672,17 @@ class SignalPipeline(TracedService):
     def _calc_signal_confidence(
         final_score: float, ensemble: EnsembleResult
     ) -> float:
-        """Signal 최종 confidence 계산."""
+        """Signal 최종 confidence 계산.
+
+        스코어 거리 + SQI를 결합해 신뢰도를 산정합니다.
+
+        Args:
+            final_score: 최종 결합 스코어 (0~1)
+            ensemble: 앙상블 결과
+
+        Returns:
+            float: 0.3~0.95 범위의 최종 confidence
+        """
         score_distance = abs(final_score - 0.5) * 2
         quality_index = ensemble.sqi_v2 if ensemble.sqi_v2 > 0 else ensemble.sqi
         raw = (score_distance * 0.6 + quality_index * 0.4)
@@ -630,9 +698,18 @@ class SignalPipeline(TracedService):
     ) -> Tuple[List[str], List[str]]:
         """증거 수집 - positives / negatives 리스트 생성.
 
-        v2.1: @staticmethod → 인스턴스 메서드로 전환.
         self.buy_threshold/self.sell_threshold를 참조하여
-        실제 판단 기준(튜닝된 값)과 표시 근거가 항상 일치하도록 수정.
+        실제 판단 기준(튜닝된 값)과 표시 근거가 항상 일치합니다.
+
+        Args:
+            action: 최종 Action
+            final_score: 최종 스코어
+            ensemble: 앙상블 결과 (sqi_v2 포함)
+            tech_data: 기술 지표 데이터
+            regime: 시장 레짐
+
+        Returns:
+            Tuple[List[str], List[str]]: (긍정 근거, 부정 근거)
         """
         positives: List[str] = []
         negatives: List[str] = []
@@ -666,7 +743,22 @@ class SignalPipeline(TracedService):
     # ═══════════════════════════════════════════════════════════════
 
     async def _fetch_ohlcv(self, ticker: str, period: int) -> Dict[str, Any]:
-        """DB에서 OHLCV를 조회해 기술 지표를 계산합니다."""
+        """DB에서 OHLCV를 조회해 기술 지표를 계산합니다.
+
+        계산 지표:
+            - EMA 5, 20, 60
+            - RSI 14
+            - Bollinger Bands (20일, 2σ)
+            - MACD (12-26-9)
+            - Volume Ratio (현재 / 평균)
+
+        Args:
+            ticker: 종목 코드
+            period: 조회 기간 (영업일 수)
+
+        Returns:
+            Dict[str, Any]: 기술 지표 딕셔너리 (데이터 부족 시 빈 dict)
+        """
         if not self.db_manager:
             return {}
 
@@ -721,7 +813,15 @@ class SignalPipeline(TracedService):
 # ═══════════════════════════════════════════════════════════════════
 
 def _ema(values: List[float], n: int) -> float:
-    """지수이동평균(EMA) 계산."""
+    """지수이동평균(EMA) 계산.
+
+    Args:
+        values: 종가 리스트
+        n: 기간
+
+    Returns:
+        float: 최신 EMA 값 (데이터 부족 시 마지막 값 반환)
+    """
     if not values:
         return 0.0
     if len(values) < n:
@@ -734,7 +834,15 @@ def _ema(values: List[float], n: int) -> float:
 
 
 def _rsi(values: List[float], n: int = 14) -> float:
-    """상대강도지수(RSI) 계산."""
+    """상대강도지수(RSI) 계산.
+
+    Args:
+        values: 종가 리스트
+        n: 기간 (기본 14)
+
+    Returns:
+        float: RSI (0~100), 데이터 부족 시 50 반환
+    """
     if len(values) < n + 1:
         return 50.0
     gains, losses = [], []
@@ -753,7 +861,17 @@ def _rsi(values: List[float], n: int = 14) -> float:
 def _bollinger_bands(
     values: List[float], n: int = 20, k: float = 2.0
 ) -> Tuple[float, float, float]:
-    """볼린저 밴드(Bollinger Bands) 계산."""
+    """볼린저 밴드(Bollinger Bands) 계산.
+
+    Args:
+        values: 종가 리스트
+        n: 이동평균 기간 (기본 20)
+        k: 표준편차 배수 (기본 2.0)
+
+    Returns:
+        Tuple[float, float, float]: (upper, middle, lower)
+            데이터 부족 시 last_price ± 5% 반환
+    """
     if not values:
         return 0.0, 0.0, 0.0
     last = values[-1]
@@ -773,7 +891,18 @@ def _macd(
     slow: int = 26,
     signal_period: int = 9,
 ) -> Tuple[float, float, float]:
-    """MACD 계산."""
+    """MACD (Moving Average Convergence/Divergence) 계산.
+
+    Args:
+        values: 종가 리스트
+        fast: 단기 EMA 기간 (기본 12)
+        slow: 장기 EMA 기간 (기본 26)
+        signal_period: Signal EMA 기간 (기본 9)
+
+    Returns:
+        Tuple[float, float, float]: (macd_line, signal_line, histogram)
+            데이터 부족 시 (0.0, 0.0, 0.0) 반환
+    """
     if len(values) < slow + signal_period:
         return 0.0, 0.0, 0.0
 
@@ -799,12 +928,20 @@ def _macd(
     return macd_line, signal_line, histogram
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════
 #  SQI v2 헬퍼 함수 (모듈 수준 - 재사용 가능)
-# ═══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════
 
 def _calc_momentum_score(rsi: float, macd_hist: float) -> float:
-    """RSI + MACD 히스토그램 기반 모멘텀 품질 스코어 계산."""
+    """RSI + MACD 히스토그램 기반 모멘텀 품질 스코어 계산.
+
+    Args:
+        rsi: RSI 값 (0~100)
+        macd_hist: MACD 히스토그램 값 (양수=상승, 음수=하락)
+
+    Returns:
+        float: 모멘텀 품질 스코어 (0~1)
+    """
     rsi_clamped = max(0.0, min(100.0, rsi))
     rsi_score = abs(rsi_clamped - 50.0) / 50.0
 
@@ -823,7 +960,16 @@ def _calc_bb_pct(
     bb_upper: float,
     bb_lower: float,
 ) -> float:
-    """Bollinger %B 계산 (볼린저 밴드 내 현재 위치)."""
+    """Bollinger %B 계산 (볼린저 밴드 내 현재 위치).
+
+    Args:
+        price: 현재가
+        bb_upper: 볼린저 상단 밴드
+        bb_lower: 볼린저 하단 밴드
+
+    Returns:
+        float: Bollinger %B (0~1, 범위 초과 시 clamp)
+    """
     band_width = bb_upper - bb_lower
     if band_width <= 0 or price <= 0:
         return 0.5
@@ -843,8 +989,16 @@ def compute_sqi_v2(
 ) -> float:
     """Signal Quality Index v2 계산.
 
-    v2.1: momentum_w/confidence_w/consensus_w 선택적 인자 추가.
-          기본값 = 모듈 상수이므로 기존 호출 코드와 완전 하위 호환.
+    기존 SQI v1 = confidence × consensus 에서
+    모멘텀·거래량·변동성 3개 차원을 추가한 복합 스코어.
+
+    공식:
+        base = (momentum_w × momentum_score
+               + conf_w × confidence
+               + cons_w × consensus)
+        volume_boost  = clamp(0.7 + 0.3 × ln(max(volume_ratio, 0.01) + 1), 0.7, 1.3)
+        volatility_pn = 1.0 - 0.4 × |bb_pct - 0.5| × 2  → [0.6, 1.0]
+        sqi_v2 = clamp(base × volume_boost × volatility_pn, 0.0, 1.0)
 
     Args:
         momentum_score: RSI+MACD 기반 모멘텀 품질 (0~1)
@@ -861,9 +1015,9 @@ def compute_sqi_v2(
 
     Examples:
         >>> round(compute_sqi_v2(0.6, 1.5, 0.5, 0.8, 0.9), 2)
-        0.86
+        0.75
         >>> round(compute_sqi_v2(0.1, 0.3, 0.02, 0.3, 0.3), 2)
-        0.16
+        0.12
     """
     base = (
         momentum_w * max(0.0, min(1.0, momentum_score))
