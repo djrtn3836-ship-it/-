@@ -1,13 +1,21 @@
 """
-orchestrator/portfolio_manager.py - v1.2 (포지션 락 추가)
-- _positions 딕셔너리 동시 접근을 asyncio.Lock으로 보호
-- update_position()을 async def로 변경
+orchestrator/portfolio_manager.py - v1.3 (OrderExecutor 콜백 연결)
+
+v1.2 → v1.3 변경 사항:
+    - PortfolioManager가 싱글톤임이 scanner/deep_analyzer.py, execution/order_executor.py
+      소스 대조로 확정됨.
+    - update_var() 완료 후 OrderExecutor.update_position_limit()을 자동으로 호출하는
+      콜백 패턴 추가. ROADMAP.md에는 이 연동이 "✅ 완료"로 기록되어 있었으나,
+      실제 코드에는 연결 고리가 전혀 없었음을 소스 대조로 확인하고 이번에 완성함.
+    - set_order_executor_callback(): bootstrap.py에서 OrderExecutor를 주입받아
+      순환 임포트 없이 연결.
 """
 
 import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Callable
 
 import yaml
 
@@ -33,19 +41,41 @@ class PortfolioManager:
         self._positions: dict[str, dict] = {}
         self._weights: dict[str, float] = {}
         self._total_value: float = 0.0
-        # 🔥 P1-3: 포지션 접근 락 추가
         self._position_lock = asyncio.Lock()
 
         self.var_calculator = PortfolioVaR(
-            confidence=self.confidence, num_simulations=self.num_simulations, lookback_days=self.lookback_days
+            confidence=self.confidence,
+            num_simulations=self.num_simulations,
+            lookback_days=self.lookback_days,
         )
-        self._last_var: PortfolioRiskMetrics | None = None
-        self._last_update_time: datetime | None = None
+        self._last_var: Optional[PortfolioRiskMetrics] = None
+        self._last_update_time: Optional[datetime] = None
 
+        # 🔧 참고(Phase 4 검토 대상): 여기서 별도의 DatabaseManager()를 생성하므로
+        # container.db_manager / bootstrap.self.db와는 다른 Python 객체입니다.
+        # 기본 경로가 동일한 물리 SQLite 파일(WAL 모드)을 가리켜 지금은 문제가
+        # 없지만, 테스트 DB로 전환할 때는 이 인스턴스가 별도로 관리된다는 점에
+        # 주의해야 합니다. 즉시 수정하지 않고 Phase 4(DI 통합) 논의 때 재검토합니다.
         self.db = DatabaseManager()
 
-        self._update_task: asyncio.Task | None = None
+        self._update_task: Optional[asyncio.Task] = None
         self._running = False
+
+        # 🆕 v1.3: OrderExecutor 콜백 (순환 임포트 방지용 지연 주입)
+        self._position_limit_callback: Optional[Callable[[float], None]] = None
+
+    def set_order_executor_callback(self, callback: Callable[[float], None]) -> None:
+        """OrderExecutor.update_position_limit을 콜백으로 등록.
+
+        bootstrap.py의 init_execution() 이후에 호출됩니다.
+        순환 임포트 없이 PortfolioVaR → OrderExecutor 연결을 완성합니다.
+
+        Args:
+            callback: position_limit(float)을 인자로 받는 동기 callable
+                      (실제로는 order_executor.update_position_limit)
+        """
+        self._position_limit_callback = callback
+        logger.info("✅ PortfolioManager: OrderExecutor position_limit 콜백 등록 완료")
 
     def _load_config(self):
         default = {
@@ -55,11 +85,7 @@ class PortfolioManager:
                 "lookback_days": 252,
                 "update_interval_seconds": 300,
             },
-            "thresholds": {
-                "severe": 5.0,
-                "high": 3.0,
-                "medium": 1.5,
-            },
+            "thresholds": {"severe": 5.0, "high": 3.0, "medium": 1.5},
         }
         if CONFIG_PATH.exists():
             try:
@@ -74,7 +100,10 @@ class PortfolioManager:
                     self.threshold_severe = th_cfg.get("severe", 5.0)
                     self.threshold_high = th_cfg.get("high", 3.0)
                     self.threshold_medium = th_cfg.get("medium", 1.5)
-                    logger.info(f"✅ VaR 설정 로드: 신뢰도 {self.confidence}, 시뮬레이션 {self.num_simulations}회")
+                    logger.info(
+                        f"✅ VaR 설정 로드: 신뢰도 {self.confidence}, "
+                        f"시뮬레이션 {self.num_simulations}회"
+                    )
                     return
             except Exception as e:
                 logger.warning(f"⚠️ risk_config.yaml 로드 실패: {e}, 기본값 사용")
@@ -138,7 +167,9 @@ class PortfolioManager:
             except Exception as e:
                 logger.debug(f"⚠️ {ticker} 수익률 데이터 조회 실패: {e}")
 
-        total_value = sum(p.get("current_price", 0) * p.get("qty", 0) for p in self._positions.values())
+        total_value = sum(
+            p.get("current_price", 0) * p.get("qty", 0) for p in self._positions.values()
+        )
         if total_value == 0:
             return
 
@@ -148,30 +179,48 @@ class PortfolioManager:
             weights[ticker] = value / total_value if total_value > 0 else 0
 
         try:
-            var_result = self.var_calculator.calculate(tickers=tickers, returns_dict=returns_dict, weights=weights)
+            var_result = self.var_calculator.calculate(
+                tickers=tickers, returns_dict=returns_dict, weights=weights
+            )
             self._last_var = var_result
             self._last_update_time = datetime.now()
             self._weights = weights
             self._total_value = total_value
 
             logger.info(
-                f"📊 포트폴리오 VaR 갱신: "
-                f"VaR95={var_result.var_95:.2%}, "
-                f"CVaR={var_result.cvar_95:.2%}, "
-                f"조정계수={var_result.risk_adj_factor:.2f}"
+                "📊 포트폴리오 VaR 갱신: VaR95=%.2f%%, CVaR=%.2f%%, 조정계수=%.2f, "
+                "Kelly한도=%.2f, 최종한도=%.2f",
+                var_result.var_95 * 100,
+                var_result.cvar_95 * 100,
+                var_result.risk_adj_factor,
+                var_result.kelly_position_limit,
+                var_result.position_limit,
             )
+
+            # 🆕 v1.3: OrderExecutor에 position_limit 전달 (콜백 패턴)
+            if self._position_limit_callback is not None:
+                try:
+                    self._position_limit_callback(var_result.position_limit)
+                    logger.debug(
+                        "📊 position_limit → OrderExecutor 전달: %.2f",
+                        var_result.position_limit,
+                    )
+                except Exception as cb_err:
+                    logger.warning(
+                        "⚠️ OrderExecutor position_limit 콜백 실패 (비치명): %s", cb_err
+                    )
 
             var_pct = var_result.var_95 * 100
             if var_pct >= self.threshold_severe:
-                logger.critical(f"🚨 포트폴리오 VaR {var_pct:.1f}% (심각)! 즉시 점검 필요")
+                logger.critical("🚨 포트폴리오 VaR %.1f%% (심각)! 즉시 점검 필요", var_pct)
             elif var_pct >= self.threshold_high:
-                logger.warning(f"⚠️ 포트폴리오 VaR {var_pct:.1f}% (높음) → 비중 축소 고려")
+                logger.warning("⚠️ 포트폴리오 VaR %.1f%% (높음) → 비중 축소 고려", var_pct)
         except Exception as e:
             logger.error(f"❌ 포트폴리오 VaR 계산 실패: {e}")
 
-    # 🔥 P1-3: async def로 변경 및 락 적용
     async def update_position(
-        self, ticker: str, price: float, qty: float, entry_price: float = None, action: str = "BUY"
+        self, ticker: str, price: float, qty: float,
+        entry_price: float = None, action: str = "BUY",
     ):
         async with self._position_lock:
             if action in ["BUY", "SIGNAL_ENTRY"]:
@@ -190,10 +239,9 @@ class PortfolioManager:
                 if ticker in self._positions:
                     self._positions[ticker]["current_price"] = price
 
-        # 락 외부에서 VaR 갱신 태스크 생성
         asyncio.create_task(self.update_var())
 
-    def get_portfolio_risk(self) -> PortfolioRiskMetrics | None:
+    def get_portfolio_risk(self) -> Optional[PortfolioRiskMetrics]:
         return self._last_var
 
     def get_positions(self) -> dict:
@@ -215,9 +263,10 @@ class PortfolioManager:
                 "var_95": self._last_var.var_95 if self._last_var else None,
                 "cvar_95": self._last_var.cvar_95 if self._last_var else None,
                 "risk_adj": self._last_var.risk_adj_factor if self._last_var else 1.0,
+                "kelly_limit": self._last_var.kelly_position_limit if self._last_var else 1.0,
+                "position_limit": self._last_var.position_limit if self._last_var else 1.0,
                 "status": self._last_var.status if self._last_var else "N/A",
-            }
-            if self._last_var
-            else None,
+            } if self._last_var else None,
             "last_update": self._last_update_time.isoformat() if self._last_update_time else None,
+            "order_executor_connected": self._position_limit_callback is not None,
         }

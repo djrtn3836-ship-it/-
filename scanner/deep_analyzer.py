@@ -87,12 +87,18 @@ class DeepAnalyzer:
             window=config.get_int("risk_var_lookback_days", 252),
         )
 
+                # 🔧 v7.7.1: PortfolioManager는 싱글톤(orchestrator/portfolio_manager.py의
+        # __new__ 확인 완료)이며, app/bootstrap.py의 init_container()가
+        # container.initialize() 내부에서 이미 start()를 호출합니다.
+        # 여기서 asyncio.create_task()로 재차 시작을 시도하면 이미 실행 중인
+        # 루프에 대해 즉시 반환되는 불필요한 태스크가 매번 생성되므로 제거하고
+        # 참조만 보관합니다.
+        # (주의: DeepAnalyzer를 V10 bootstrap 흐름 밖에서 단독 생성해 사용하는
+        # 코드 경로가 있다면, 그 호출부에서 명시적으로
+        # `await analyzer.portfolio_manager.start()`를 호출해야 합니다.)
         self.portfolio_manager = PortfolioManager()
-        try:
-            asyncio.create_task(self.portfolio_manager.start())
-            logger.info("✅ PortfolioManager 백그라운드 갱신 시작됨")
-        except RuntimeError:
-            logger.warning("⚠️ 이벤트 루프 없음, PortfolioManager 시작 보류")
+        logger.debug("PortfolioManager 싱글톤 참조 획득 (시작/종료는 컨테이너가 전담)")
+
 
     def _load_calibration_config(self):
         default = {

@@ -1,8 +1,17 @@
 """
-scheduler/macro_collector.py - v2.2 (순환 참조 제거)
-- _send_alert()에서 scanner_main 동적 import 제거 → 콜백 패턴으로 변경
-- set_alert_callback() 함수 추가
-- 기존 데이터 수집 로직 100% 유지
+scheduler/macro_collector.py - v2.3 (데이터 타입 안전성 강화)
+
+v2.2 → v2.3 변경 사항:
+    - CRITICAL 버그 수정: _fetch_yahoo()가 5일 수익률(%) 계산을 요청받았지만
+      데이터가 1일치만 반환된 경우(휴일/API 지연 등), 퍼센트가 아닌 원본 지수/가격을
+      그대로 반환하던 문제 수정 (kospi_drop=1071.85 같은 비정상 값의 실제 발생 원인)
+    - as_trend 플래그로 "추세(%) 요청"과 "현재가 요청"을 명확히 분리
+    - 추세 요청 시 데이터가 부족하면 0.0이 아닌 None을 반환하여, 기존에 이미
+      존재하던 "수집 실패 → 이전 캐시값 유지" 로직이 자연스럽게 작동하도록 함.
+      0.0을 반환하면 "0% 변동"이라는 거짓 데이터로 이전 값을 덮어써 버리는
+      또 다른 문제가 생기므로 None이 더 안전한 선택임
+    - 기존 데이터 수집 로직/심볼(^KS200 등)은 100% 유지 — 심볼 변경 등 추가적인
+      변경은 이번 버그 수정과 무관한 별도 판단 사항으로 분리함
 """
 
 import asyncio
@@ -27,7 +36,7 @@ _alert_callback: Callable[[str, str], None] | None = None
 
 
 def set_alert_callback(func: Callable[[str, str], None]) -> None:
-    """scanner_main에서 알림 함수를 등록"""
+    """scanner_main/bootstrap에서 알림 함수를 등록"""
     global _alert_callback
     _alert_callback = func
 
@@ -71,7 +80,12 @@ _LAST_ALERT_TIME: float = 0
 _ALERT_COOLDOWN = 1800
 
 
-def _fetch_yahoo(symbol: str, period: str = "5d") -> float | None:
+def _fetch_yahoo(symbol: str, period: str = "5d", as_trend: bool = False) -> float | None:
+    """
+    as_trend=True: 반드시 수익률(%)만 반환. 계산 불가 시 None
+                   (이전 버전은 원본 가격을 그대로 반환하는 버그가 있었음)
+    as_trend=False: 최신 종가(절대값)를 그대로 반환
+    """
     try:
         import yfinance as yf
 
@@ -79,10 +93,17 @@ def _fetch_yahoo(symbol: str, period: str = "5d") -> float | None:
         hist = ticker.history(period=period)
         if hist.empty:
             return None
-        if period == "5d" and len(hist) >= 2:
+
+        if as_trend:
+            if len(hist) < 2:
+                logger.debug(f"{symbol}: 추세 계산용 데이터 부족 ({len(hist)}행) → None 반환")
+                return None
             old = hist["Close"].iloc[0]
             latest = hist["Close"].iloc[-1]
-            return (latest - old) / old * 100
+            if old == 0:
+                return None
+            return float((latest - old) / old * 100)
+
         return float(hist["Close"].iloc[-1])
     except Exception as e:
         logger.debug(f"Yahoo Finance 오류 ({symbol}): {e}")
@@ -149,23 +170,23 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
     debug_tower.log("SYSTEM", "MACRO_FETCH_START", {})
 
     data = _cached_macro if _cached_macro else MacroData()
-    _ = False
     loop = asyncio.get_running_loop()
 
     try:
-        kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d")
+        # 🔧 as_trend=True 명시 — 데이터 부족 시 None 반환 (이전 값 유지)
+        kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d", True)
         if kospi is not None:
             data.kospi_trend = kospi
             logger.info(f"   ✅ KOSPI: {kospi:.2f}%")
         else:
-            logger.warning("   ⚠️ KOSPI 수집 실패, 이전값 유지")
+            logger.warning(f"   ⚠️ KOSPI 수집 실패/데이터 부족, 이전값 유지 ({data.kospi_trend:.2f}%)")
 
-        usd = await loop.run_in_executor(None, _fetch_yahoo, "KRW=X", "1d")
+        usd = await loop.run_in_executor(None, _fetch_yahoo, "KRW=X", "1d", False)
         if usd and usd > 0:
             data.usdkrw = usd
             logger.info(f"   ✅ USD/KRW: {usd:.2f}")
 
-        vix = await loop.run_in_executor(None, _fetch_yahoo, "^VIX", "1d")
+        vix = await loop.run_in_executor(None, _fetch_yahoo, "^VIX", "1d", False)
         if vix and vix > 0:
             data.vix = vix
             data.vkospi = vix * 0.8
@@ -177,7 +198,7 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
                 data.vkospi = vix_fallback * 0.8
                 logger.info(f"   ✅ VIX (FRED Fallback): {vix_fallback:.2f}")
 
-        bond = await loop.run_in_executor(None, _fetch_yahoo, "^TNX", "1d")
+        bond = await loop.run_in_executor(None, _fetch_yahoo, "^TNX", "1d", False)
         if bond and bond > 0:
             data.bond_3y = bond
             logger.info(f"   ✅ US 10Y: {bond:.2f}%")
@@ -187,22 +208,22 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
                 data.bond_3y = bond_fallback
                 logger.info(f"   ✅ US 10Y (FRED Fallback): {bond_fallback:.2f}%")
 
-        spx = await loop.run_in_executor(None, _fetch_yahoo, "^GSPC", "5d")
+        spx = await loop.run_in_executor(None, _fetch_yahoo, "^GSPC", "5d", True)
         if spx is not None:
             data.spx_trend = spx
             logger.info(f"   ✅ S&P 500: {spx:.2f}%")
 
-        ndx = await loop.run_in_executor(None, _fetch_yahoo, "^NDX", "5d")
+        ndx = await loop.run_in_executor(None, _fetch_yahoo, "^NDX", "5d", True)
         if ndx is not None:
             data.ndx_trend = ndx
             logger.info(f"   ✅ 나스닥: {ndx:.2f}%")
 
-        sox = await loop.run_in_executor(None, _fetch_yahoo, "^SOX", "5d")
+        sox = await loop.run_in_executor(None, _fetch_yahoo, "^SOX", "5d", True)
         if sox is not None:
             data.sox_trend = sox
             logger.info(f"   ✅ SOX: {sox:.2f}%")
 
-        oil = await loop.run_in_executor(None, _fetch_yahoo, "CL=F", "1d")
+        oil = await loop.run_in_executor(None, _fetch_yahoo, "CL=F", "1d", False)
         if oil and oil > 0:
             data.oil_price = oil
             logger.info(f"   ✅ WTI: ${oil:.2f}")
@@ -221,7 +242,6 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
         _cached_macro = data
         _last_fetch_time = time.time()
         _consecutive_failures = 0
-        _ = True
 
         collector_status.record_success("macro_collector", data.to_dict())
         logger.info("📊 글로벌 거시 데이터 수집 완료")
