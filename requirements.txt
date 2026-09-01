@@ -40,14 +40,17 @@ APScheduler>=3.10.0
 
 # ---- DB ----
 aiosqlite>=0.19.0
+asyncpg>=0.29.0   # Phase 4: PostgreSQL (DATABASE_URL 설정 시 활성화, 미설정 시 무해)
 
 # ---- 유틸리티 ----
 pytest>=7.0.0
-yfinance>=0.2.28  # 해외 주식 참고용
+pytest-asyncio>=0.23.0   # pyproject.toml asyncio_mode 설정 실사용 확인
+yfinance>=0.2.28
 
 # ---- 코드 품질 ----
 pyflakes>=3.0.0
 mypy>=1.0.0
+optuna>=3.0.0   # application/analysis/hyperparameter_tuner.py 실사용 확인
 
 # ============================================================
 # 📌 추가 설치 권장 (선택)

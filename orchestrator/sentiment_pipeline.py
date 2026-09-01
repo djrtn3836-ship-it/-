@@ -1,28 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-orchestrator/sentiment_pipeline.py - 뉴스 감성 분석 파이프라인 v1.0.2
+orchestrator/sentiment_pipeline.py - 뉴스 감성 분석 파이프라인 v1.0.3
 
-v1.0.2 변경 (Hotfix):
-    - CRITICAL: _fetch_news()가 존재하지 않는 NewsCrawler.get_news()를 호출하던
-      버그 수정. scanner/deep_analyzer.py의 _get_sentiment_score()에서 실제
-      호출부(get_news_with_sentiment(ticker, limit=, cache_seconds=))를 근거로
-      확정하고, 튜플 (news_list, sentiment_score) 언패킹으로 수정.
-      이 버그는 Session 16에서 NewsCrawler 소스를 확인하지 못한 채 인터페이스를
-      가정했던 결과이며, 실제 운영 로그(AttributeError)로 드러난 것을 이번에 수정함.
-    - 뉴스 항목의 실제 스키마(dict vs 객체)는 여전히 미확인 상태이므로 두 경우 모두
-      방어적으로 처리. 존재 여부가 확인되지 않은 get_news() 폴백 분기는 추가하지 않음
-      (근거 없는 추측성 코드를 배제하는 것이 이 프로젝트의 원칙).
-    - 신규: _safe_timestamp() 헬퍼 추가. published_at 필드가 datetime/문자열 등
-      예측 불가한 타입으로 들어와도 크래시 없이 안전하게 float로 정규화.
+v1.0.3 변경 (data/news_crawler.py 실제 소스 확인 완료):
+    - CRITICAL: 실제 응답 스키마 확정 (dict, 키: title/summary/link/pub_date/source).
+      이전 버전에서 사용하던 content/description/published_at 키는 존재하지 않아
+      뉴스 본문이 항상 빈 문자열로 들어가고 있었음.
+    - pub_date(RFC 2822 문자열, 예: "Wed, 01 Jan 2025 12:00:00 +0900")를
+      email.utils.parsedate_to_datetime()로 안전하게 파싱, 실패 시 현재 시각 폴백.
+    - 방어적 dict/객체 이중 분기 제거 (스키마가 dict로 확정됨에 따라 불필요).
+    - 미사용 typing.Any 임포트 제거 (pyflakes 0 유지).
+    - 발견했으나 미적용(의도적 보수적 결정): NewsCrawler.get_news_with_sentiment()는
+      내부적으로 core/sentiment_analyzer.py(소스 미확인)로 이미 감성 점수를
+      계산해 반환하지만, 그 값을 신뢰하기 전까지는 Session 16의 검증된
+      NewsSentimentAnalyzer(68개 단위 테스트)만 판단에 사용합니다.
+      크롤러 자체 점수는 디버그 로그로만 노출합니다.
+    - 현재 .env에 NAVER_CLIENT_ID/SECRET이 없어 NewsCrawler는 항상 비활성
+      ([], 0.0 즉시 반환)이므로, 이 기능은 현재 항상 중립(0.5)을 안전하게 반환합니다.
 
-v1.0.1 변경:
-    - Tuple 타입힌트 typing 미임포트로 인한 NameError 수정.
+v1.0.2 이전 이력: get_news()→get_news_with_sentiment() 핫픽스(v1.0.2),
+Tuple 임포트 수정(v1.0.1), Session 16 최초 구현(v1.0.0).
 """
 
 import asyncio
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from email.utils import parsedate_to_datetime
+from typing import Dict, List, Optional, Tuple
 
 from core.logger import setup_logger
 from data.news_sentiment import (
@@ -56,18 +60,19 @@ def _is_market_hours() -> bool:
     return True
 
 
-def _safe_timestamp(value: Any) -> float:
-    """다양한 타입을 방어적으로 float 타임스탬프로 변환.
+def _parse_pub_date(pub_date_str: Optional[str]) -> float:
+    """네이버 뉴스 API의 pub_date(RFC 2822 문자열)를 epoch float로 변환.
 
-    NewsCrawler.get_news_with_sentiment()가 반환하는 뉴스 항목의 날짜 필드
-    실제 타입(datetime 객체, ISO 문자열, epoch 등)이 확인되지 않았으므로,
-    무엇이 들어오든 크래시 없이 안전한 기본값(현재 시각)으로 폴백합니다.
+    예: "Wed, 01 Jan 2025 12:00:00 +0900"
+    파싱 실패 또는 빈 문자열이면 현재 시각으로 안전하게 폴백합니다.
     """
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, datetime):
-        return value.timestamp()
-    return time.time()
+    if not pub_date_str:
+        return time.time()
+    try:
+        dt = parsedate_to_datetime(pub_date_str)
+        return dt.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return time.time()
 
 
 class SentimentPipeline(TracedService):
@@ -147,52 +152,37 @@ class SentimentPipeline(TracedService):
     async def _fetch_news(self, ticker: str) -> List[NewsItem]:
         """NewsCrawler에서 뉴스를 가져와 NewsItem 리스트로 변환.
 
-        🔥 v1.0.2 Hotfix: scanner/deep_analyzer.py의 실제 호출부로 확정된
-        get_news_with_sentiment(ticker, limit=, cache_seconds=)를 사용합니다.
-        반환값은 (news_list, sentiment_score) 튜플이며, 여기서는 news_list만
-        사용해 자체 NewsSentimentAnalyzer(한국어 키워드 앙상블)로 재분석합니다.
-
-        뉴스 항목 개별 원소의 실제 스키마(dict/객체)는 data/news_crawler.py
-        소스 없이는 확정할 수 없으므로 두 경우 모두 방어적으로 처리합니다.
-        존재가 확인되지 않은 get_news() 폴백은 근거 없는 추측이므로 넣지 않았습니다.
+        확정된 실제 스키마 (data/news_crawler.py v6.3.0 소스 확인):
+            dict, 키: title / summary / link / pub_date / source
         """
         if self._crawler is None:
             return []
         try:
-            raw_result = await self._crawler.get_news_with_sentiment(
+            raw_news, crawler_sentiment = await self._crawler.get_news_with_sentiment(
                 ticker, limit=self._max_news, cache_seconds=_CRAWLER_CACHE_SECONDS
             )
-
-            if isinstance(raw_result, tuple) and len(raw_result) >= 1:
-                raw_news = raw_result[0]
-            else:
-                raw_news = raw_result
-
             if not raw_news:
                 return []
 
+            if crawler_sentiment:
+                logger.debug(
+                    "NewsCrawler 자체 감성점수(참고용, 판단에 미반영): "
+                    "%s=%.3f (core/sentiment_analyzer.py 미검증)",
+                    ticker, crawler_sentiment,
+                )
+
             news_items: List[NewsItem] = []
             for item in raw_news:
-                if isinstance(item, dict):
-                    news_items.append(NewsItem(
-                        title=item.get("title", ""),
-                        content=item.get("content", item.get("description", item.get("summary", ""))),
-                        source=item.get("source", item.get("publisher", "unknown")),
-                        published_at=_safe_timestamp(
-                            item.get("published_at", item.get("date"))
-                        ),
-                        url=item.get("url", item.get("link", "")),
-                    ))
-                elif hasattr(item, "title"):
-                    news_items.append(NewsItem(
-                        title=getattr(item, "title", ""),
-                        content=getattr(item, "content", getattr(item, "description", "")),
-                        source=getattr(item, "source", "unknown"),
-                        published_at=_safe_timestamp(getattr(item, "published_at", None)),
-                        url=getattr(item, "url", ""),
-                    ))
-                else:
+                if not isinstance(item, dict):
                     logger.debug(f"알 수 없는 뉴스 항목 타입 무시 ({ticker}): {type(item)}")
+                    continue
+                news_items.append(NewsItem(
+                    title=item.get("title", ""),
+                    content=item.get("summary", ""),
+                    source=item.get("source", "naver_api_hub"),
+                    published_at=_parse_pub_date(item.get("pub_date")),
+                    url=item.get("link", ""),
+                ))
             return news_items
 
         except Exception as e:
