@@ -3,12 +3,12 @@
 domain/models/signal.py - V10 Domain Models (Signal, Decision, Action)
 - Pure domain models with no external dependencies
 - Immutable dataclasses with validation
-- Action enum for buy/sell/hold/error
+- mypy --strict 준수 (Session 20): dict → Dict[str, Any], __post_init__ -> None 명시
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import time
 
 
@@ -21,7 +21,6 @@ class Action(str, Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "Action":
-        """Convert string to Action (case-insensitive)"""
         upper = value.upper()
         for member in cls:
             if member.value == upper:
@@ -30,38 +29,18 @@ class Action(str, Enum):
 
     @property
     def is_trade(self) -> bool:
-        """Whether this action is a trade (BUY or SELL)"""
         return self in (Action.BUY, Action.SELL)
 
     @property
     def label(self) -> str:
-        """Human-readable label"""
         return {
-            "BUY": "Buy",
-            "SELL": "Sell",
-            "HOLD": "Hold",
-            "ERROR": "Error"
+            "BUY": "Buy", "SELL": "Sell", "HOLD": "Hold", "ERROR": "Error"
         }.get(self.value, self.value)
 
 
 @dataclass(frozen=True)
 class Signal:
-    """
-    Strategy analysis result (immutable)
-
-    Attributes:
-        ticker: Stock code (6 digits)
-        action: Final action (BUY/SELL/HOLD/ERROR)
-        score: Composite score (0~1)
-        confidence: Confidence level (0~1)
-        price: Current price
-        entry_price: Entry price (for BUY/SELL)
-        atr: Average True Range (for risk management)
-        positives: List of positive reasons
-        negatives: List of negative reasons
-        trace_id: Trace ID for correlation
-        timestamp: Creation timestamp
-    """
+    """Strategy analysis result (immutable)"""
     ticker: str
     action: Action
     score: float
@@ -74,8 +53,7 @@ class Signal:
     trace_id: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
 
-    def __post_init__(self):
-        """Validate fields after initialization"""
+    def __post_init__(self) -> None:
         if not self.ticker or len(self.ticker) != 6:
             raise ValueError(f"Invalid ticker: {self.ticker}")
         if not (0 <= self.score <= 1):
@@ -83,66 +61,39 @@ class Signal:
         if not (0 <= self.confidence <= 1):
             raise ValueError(f"Invalid confidence: {self.confidence}")
         if self.action == Action.ERROR:
-            return  # ERROR 시그널은 price 검증 면제 (price=0.0 허용)
+            return
         if self.price <= 0:
             raise ValueError(f"Invalid price: {self.price}")
 
     @classmethod
     def error(cls, ticker: str, message: str, trace_id: Optional[str] = None) -> "Signal":
-        """Create an error signal"""
         return cls(
-            ticker=ticker,
-            action=Action.ERROR,
-            score=0.0,
-            confidence=0.0,
-            price=0.0,
-            negatives=[message],
-            trace_id=trace_id,
+            ticker=ticker, action=Action.ERROR, score=0.0, confidence=0.0,
+            price=0.0, negatives=[message], trace_id=trace_id,
         )
 
     @property
     def is_trade(self) -> bool:
-        """Whether this signal is a trade (BUY or SELL)"""
         return self.action.is_trade
 
     @property
     def action_label(self) -> str:
-        """Human-readable action label"""
         return self.action.label
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary (serialization)"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            "ticker": self.ticker,
-            "action": self.action.value,
-            "action_label": self.action_label,
-            "score": self.score,
-            "confidence": self.confidence,
-            "price": self.price,
-            "entry_price": self.entry_price,
-            "atr": self.atr,
-            "positives": self.positives,
-            "negatives": self.negatives,
-            "trace_id": self.trace_id,
-            "timestamp": self.timestamp,
+            "ticker": self.ticker, "action": self.action.value,
+            "action_label": self.action_label, "score": self.score,
+            "confidence": self.confidence, "price": self.price,
+            "entry_price": self.entry_price, "atr": self.atr,
+            "positives": self.positives, "negatives": self.negatives,
+            "trace_id": self.trace_id, "timestamp": self.timestamp,
         }
 
 
 @dataclass(frozen=True)
 class Decision:
-    """
-    Final decision (Signal + additional information)
-
-    Attributes:
-        signal: Original Signal
-        risk_adjusted_score: Risk-adjusted score
-        recommended_quantity: Recommended quantity (from PortfolioManager)
-        stop_loss: Stop loss price
-        take_profit_1: First take profit (ATR x 3)
-        take_profit_2: Second take profit (ATR x 5)
-        take_profit_3: Third take profit (ATR x 7)
-        max_hold_hours: Maximum hold time in hours
-    """
+    """Final decision (Signal + additional information)"""
     signal: Signal
     risk_adjusted_score: float
     recommended_quantity: int = 0
@@ -152,8 +103,7 @@ class Decision:
     take_profit_3: float = 0.0
     max_hold_hours: float = 2.0
 
-    def __post_init__(self):
-        """Validate fields after initialization"""
+    def __post_init__(self) -> None:
         if not (0 <= self.risk_adjusted_score <= 1):
             raise ValueError(f"Invalid risk_adjusted_score: {self.risk_adjusted_score}")
 
@@ -187,7 +137,6 @@ class Decision:
 
     @property
     def risk_reward_ratio(self) -> float:
-        """Risk-Reward Ratio (based on TP1)"""
         if self.stop_loss <= 0 or self.take_profit_1 <= 0:
             return 0.0
         if self.signal.action == Action.BUY:
@@ -195,8 +144,7 @@ class Decision:
         else:
             return (self.price - self.take_profit_1) / (self.stop_loss - self.price)
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary (Telegram display)"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             **self.signal.to_dict(),
             "risk_adjusted_score": self.risk_adjusted_score,

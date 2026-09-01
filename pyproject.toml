@@ -16,16 +16,36 @@ requires-python = ">=3.12"
 
 [tool.mypy]
 python_version = "3.12"
-strict = false
+strict = false                     # 전역은 그대로 유지 (레거시 대량 오류 방지)
 ignore_missing_imports = true
-warn_return_any = false           # 🔥 Any 반환 경고 비활성화
-warn_unused_ignores = false       # 🔥 불필요한 경고 제거
+warn_return_any = false
+warn_unused_ignores = false
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 warn_no_return = true
-warn_redundant_casts = false      # 🔥 캐스트 경고 비활성화
-explicit_package_bases = true     # 🔥 logger 중복 오류 해결 (가장 중요)
+warn_redundant_casts = false
+explicit_package_bases = true
 exclude = ["tests/", "venv/", "logs/", "docs/", "fonts/"]
+
+# ─── Session 20: 실제 검증·수정 완료된 모듈만 strict 적용 ──────────────────
+# 다른 모듈(ab_framework, shadow_mode, hyperparameter_tuner 등)은 아직
+# mypy strict로 직접 검증하지 않았으므로 근거 없는 포함을 피하고,
+# 향후 세션에서 실제 확인 후 추가합니다.
+[[tool.mypy.overrides]]
+module = ["domain.models.signal", "domain.strategies.base"]
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "telegram.*", "aiohttp.*", "websockets.*", "yfinance.*",
+    "apscheduler.*", "numpy.*", "scipy.*", "sklearn.*",
+    "xgboost.*", "pandas.*", "yaml.*", "dotenv.*", "psutil.*",
+    "reportlab.*", "asyncpg.*", "optuna.*",
+]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
