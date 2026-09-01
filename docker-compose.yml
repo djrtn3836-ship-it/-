@@ -1,0 +1,31 @@
+# docker-compose.yml - V10 로컬 개발 인프라 (Compose V2는 version 키 불필요)
+# 실행: docker-compose up -d
+# 중지: docker-compose down
+# 데이터 완전 삭제: docker-compose down -v
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: v10_quant_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quant_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_pass
+      TZ: Asia/Seoul
+    ports:
+      # 🔒 127.0.0.1로 한정 — 로컬 전용 시스템이므로 외부 네트워크 노출 및
+      # 다른 프로젝트와의 포트 충돌 위험을 원천 차단합니다.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - v10_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant_user -d quant_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  v10_postgres_data:
+    driver: local
