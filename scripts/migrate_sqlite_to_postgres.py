@@ -145,13 +145,14 @@ async def migrate_ohlcv(sconn: Any, pool: Any, dry_run: bool, batch_size: int) -
             async with conn.transaction():
                 await conn.executemany(
                     """INSERT INTO ohlcv (ticker, date, open, high, low, close, volume)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7)
+                       VALUES ($1, $2::DATE, $3, $4, $5, $6, $7)
                        ON CONFLICT (ticker, date) DO NOTHING""",
                     [(r["ticker"], r["date"], r["open"], r["high"],
                       r["low"], r["close"], r["volume"]) for r in batch],
                 )
             logger.info(f"ohlcv 진행: {min(i + batch_size, len(rows))}/{len(rows)}")
     return len(rows)
+
 
 
 async def migrate_portfolio_positions(sconn: Any, pool: Any, dry_run: bool) -> int:
