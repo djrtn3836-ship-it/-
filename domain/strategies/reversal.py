@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-domain/strategies/reversal.py - V10 Reversal Strategy v2.0
+domain/strategies/reversal.py - V10 Reversal Strategy v2.0.1
 
-개선 사항 (v2.0):
-    - Stochastic Oscillator (%K/%D) 통합
-    - Bollinger Band %B (가격 위치 정규화) 활용
-    - RSI Divergence 준거 (이전보다 정밀한 임계값)
-    - 다중 신호 합의 시 confidence 보너스
-    - Google Style Docstrings 100%
+v2.0 → v2.0.1 (Session 21):
+    - reasons: List[str] 타입 어노테이션 명시 (mypy strict 준수)
+    - 로직 변경 없음
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from domain.strategies.base import Strategy, StrategyResult
 
@@ -72,7 +69,7 @@ class ReversalStrategy(Strategy):
         score: float = 0.5
         confidence: float = 0.5
         action: str = "HOLD"
-        reasons = []
+        reasons: List[str] = []  # 🔧 mypy strict: List[str] 명시
         buy_signals: int = 0
         sell_signals: int = 0
 
@@ -102,11 +99,9 @@ class ReversalStrategy(Strategy):
         if bb_lower > 0 and price > 0:
             bb_width = bb_upper - bb_lower
             if bb_width > 0:
-                # %B = (price - lower) / (upper - lower)  [0=하단, 1=상단]
                 pct_b = (price - bb_lower) / bb_width
 
                 if pct_b <= 0.05:
-                    # 하단 터치 → 강한 반등 신호
                     score += 0.28
                     confidence += 0.10
                     if action == "HOLD":
@@ -120,7 +115,6 @@ class ReversalStrategy(Strategy):
                     buy_signals += 1
                     reasons.append(f"볼린저 하단 근접 (%B={pct_b:.2f})")
                 elif pct_b >= 0.95:
-                    # 상단 터치 → 강한 조정 신호
                     score -= 0.28
                     confidence += 0.10
                     if action == "HOLD":
@@ -135,7 +129,7 @@ class ReversalStrategy(Strategy):
                     reasons.append(f"볼린저 상단 근접 (%B={pct_b:.2f})")
 
         # ── 3. Stochastic %K/%D 크로스 ───────────────────────────
-        if stoch_k != 50 or stoch_d != 50:  # 기본값이 아닌 경우만 처리
+        if stoch_k != 50 or stoch_d != 50:
             if stoch_k < 20 and stoch_d < 20:
                 score += 0.12
                 confidence += 0.08
@@ -150,16 +144,18 @@ class ReversalStrategy(Strategy):
                 if action == "HOLD":
                     action = "SELL"
                 reasons.append(f"Stochastic 과매수 (%K={stoch_k:.0f})")
-            # %K가 %D를 상향 돌파 (저점 권에서) → 골든크로스
             elif stoch_k > stoch_d and stoch_k < 50:
                 score += 0.06
                 buy_signals += 1
-                reasons.append(f"Stochastic 저점 골든크로스 ({stoch_k:.0f}>{stoch_d:.0f})")
-            # %K가 %D를 하향 돌파 (고점 권에서) → 데드크로스
+                reasons.append(
+                    f"Stochastic 저점 골든크로스 ({stoch_k:.0f}>{stoch_d:.0f})"
+                )
             elif stoch_k < stoch_d and stoch_k > 50:
                 score -= 0.06
                 sell_signals += 1
-                reasons.append(f"Stochastic 고점 데드크로스 ({stoch_k:.0f}<{stoch_d:.0f})")
+                reasons.append(
+                    f"Stochastic 고점 데드크로스 ({stoch_k:.0f}<{stoch_d:.0f})"
+                )
 
         # ── 4. 다중 신호 합의 보너스 ─────────────────────────────
         if buy_signals >= 2:
@@ -169,7 +165,6 @@ class ReversalStrategy(Strategy):
             confidence += 0.08
             reasons.append(f"다중 매도 신호 합의 ({sell_signals}개)")
 
-        # 신호가 상충 → HOLD
         if buy_signals > 0 and sell_signals > 0:
             action = "HOLD"
             confidence -= 0.10
@@ -180,7 +175,6 @@ class ReversalStrategy(Strategy):
         score = max(0.0, min(1.0, score))
         confidence = max(0.30, min(0.90, confidence))
 
-        # 약한 신호 → HOLD
         if abs(score - 0.5) < 0.12:
             action = "HOLD"
 

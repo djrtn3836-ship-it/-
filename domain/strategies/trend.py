@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-domain/strategies/trend.py - V10 Trend Following Strategy v2.0
+domain/strategies/trend.py - V10 Trend Following Strategy v2.0.1
 
-개선 사항 (v2.0):
-    - MACD 크로스오버 신호 통합 (MACD > Signal → 매수 모멘텀)
-    - EMA 정배열/역배열에 MACD 확인 시 confidence 보너스
-    - RSI 필터 정밀화 (70/65 → 70/60 구간 조정)
-    - regime 파라미터 활용 (Bullish 시 BUY bias)
-    - Google Style Docstrings 100%
+v2.0 → v2.0.1 (Session 21):
+    - reasons: List[str] 타입 어노테이션 명시 (mypy strict 준수)
+    - 로직 변경 없음
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from domain.strategies.base import Strategy, StrategyResult
 
@@ -83,7 +80,7 @@ class TrendStrategy(Strategy):
         score: float = 0.5
         confidence: float = 0.5
         action: str = "HOLD"
-        reasons = []
+        reasons: List[str] = []  # 🔧 mypy strict: List[str] 명시
 
         # ── 1. EMA 정배열/역배열 판정 ─────────────────────────────
         if ema5 > 0 and ema20 > 0 and ema60 > 0:
@@ -91,16 +88,12 @@ class TrendStrategy(Strategy):
                 score += 0.28
                 confidence += 0.20
                 action = "BUY"
-                reasons.append(
-                    f"EMA 정배열 ({ema5:.0f}>{ema20:.0f}>{ema60:.0f})"
-                )
+                reasons.append(f"EMA 정배열 ({ema5:.0f}>{ema20:.0f}>{ema60:.0f})")
             elif ema5 < ema20 < ema60:
                 score -= 0.28
                 confidence += 0.20
                 action = "SELL"
-                reasons.append(
-                    f"EMA 역배열 ({ema5:.0f}<{ema20:.0f}<{ema60:.0f})"
-                )
+                reasons.append(f"EMA 역배열 ({ema5:.0f}<{ema20:.0f}<{ema60:.0f})")
             elif ema5 > ema20:
                 score += 0.14
                 confidence += 0.10
@@ -120,7 +113,6 @@ class TrendStrategy(Strategy):
                 action = "HOLD"
                 confidence -= 0.15
         elif rsi > 60 and action == "BUY":
-            # 약한 과매수 경계: confidence 소폭 감소
             confidence -= 0.05
             reasons.append(f"RSI 주의구간 ({rsi:.0f})")
         elif rsi < 30:
@@ -136,12 +128,10 @@ class TrendStrategy(Strategy):
         # ── 3. MACD 크로스오버 확인 (보조 신호) ──────────────────
         if macd != 0.0 or macd_signal != 0.0:
             if macd > macd_signal and macd_hist > 0:
-                # 골든 크로스 → BUY 방향 강화
                 score += 0.08
                 confidence += 0.08
                 reasons.append(f"MACD 골든크로스 (hist={macd_hist:+.1f})")
             elif macd < macd_signal and macd_hist < 0:
-                # 데드 크로스 → SELL 방향 강화
                 score -= 0.08
                 confidence += 0.08
                 reasons.append(f"MACD 데드크로스 (hist={macd_hist:+.1f})")
