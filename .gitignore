@@ -37,3 +37,21 @@ config/calibration_config.json
 # 리포트 및 테스트 임시 파일
 reports/
 tests/invalid_path/
+
+# .gitignore에 추가 권장
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*.db-shm
+data/*.db-wal
+project_packed.txt
+
+pack_project.py
+project_packed.txt
+*.db-shm
+*.db-wal
+data/*.db-shm
+data/*.db-wal
+
