@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""tests/unit/test_container_db_switching.py - AppContainer DB 스위칭 테스트"""
+"""tests/unit/test_container_db_switching.py - AppContainer DB 스위칭 테스트
+
+Session 25 수정:
+    - test_shutdown_calls_close: performance_tracker.stop()이 async 메서드이므로
+      patch()가 기본 생성하는 MagicMock으로는 await가 불가능합니다(TypeError).
+      mock_pt.stop을 AsyncMock으로 명시 지정. core/container.py의 shutdown()
+      구현 자체는 원래부터 올바르므로 프로덕션 코드는 변경하지 않습니다.
+"""
 
 import asyncio
 import pytest
@@ -104,13 +111,19 @@ class TestContainerDbSwitching:
             asyncio.run(container.initialize())
 
     def test_shutdown_calls_close(self):
-        """shutdown()이 db_manager.close()를 호출."""
+        """shutdown()이 db_manager.close()를 호출.
+
+        🔥 Session 25 핵심 수정: performance_tracker.stop()은 async 메서드이므로,
+        patch()가 기본으로 만드는 MagicMock으로는 await가 불가능합니다.
+        mock_pt.stop을 AsyncMock으로 명시적으로 지정해야 합니다.
+        """
         container = mod.AppContainer()
         mock_db = AsyncMock()
         container._db_manager = mock_db
         container._kiwoom = AsyncMock()
         container._portfolio_manager = AsyncMock()
 
-        with patch("core.container.performance_tracker"):
+        with patch("core.container.performance_tracker") as mock_pt:
+            mock_pt.stop = AsyncMock()  # ← 이 한 줄이 핵심 수정
             asyncio.run(container.shutdown())
         mock_db.close.assert_awaited_once()

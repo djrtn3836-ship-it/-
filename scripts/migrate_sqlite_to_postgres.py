@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-scripts/migrate_sqlite_to_postgres.py - v1.0.0 (Session 22)
+scripts/migrate_sqlite_to_postgres.py - v1.0.1 (Session 22 → Session 25 수정)
+
+Session 25 수정:
+    - migrate_decisions(): ON CONFLICT (id) → ON CONFLICT (id, created_at)
+      Session 23에서 decisions 테이블의 PK가 (id, created_at) 복합키로
+      재설계되면서(TimescaleDB 하이퍼테이블 규칙 충족을 위해 id 단독 UNIQUE 제거),
+      기존 ON CONFLICT (id) 절이 PostgreSQL 오류 42P10
+      ("there is no unique or exclusion constraint matching the
+      ON CONFLICT specification")을 발생시키는 회귀가 있었음을 발견하고 수정.
+      나머지 5개 테이블의 ON CONFLICT 절은 실제 PK/UNIQUE와 일치함을 대조 확인.
 
 SQLite(data/decisions.db) → PostgreSQL 데이터 마이그레이션 스크립트.
 ⚠️ 실제 운영 데이터로 검증되지 않은 초안입니다. --dry-run으로 건수를 먼저
@@ -18,8 +27,8 @@ SQLite(data/decisions.db) → PostgreSQL 데이터 마이그레이션 스크립�
 
 설계 원칙:
     - 모든 INSERT는 ON CONFLICT로 idempotent 처리 → 중단 후 재실행 안전
-    - decisions.id는 decision_outcomes.decision_id의 FK 대상이므로 원본
-      SQLite id를 보존하여 INSERT, 이후 BIGSERIAL 시퀀스를 setval()로 동기화
+    - decisions.id는 원본 SQLite id를 보존하여 INSERT, 이후 BIGSERIAL
+      시퀀스를 setval()로 동기화
     - JSON 컬럼은 SQLite에 이미 json.dumps()된 TEXT로 저장되어 있어 재직렬화
       없이 그대로 전달 (asyncpg는 사전 직렬화된 JSON 문자열을 jsonb에 직접 전달 가능)
     - ⚠️ 타임스탬프 가정: SQLite의 CURRENT_TIMESTAMP는 기본적으로 UTC를
@@ -82,7 +91,10 @@ async def migrate_decisions(sconn: Any, pool: Any, dry_run: bool) -> int:
                         ml_score, risk_adjustment_factor, strategy_scores,
                         trace_id, created_at)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-                       ON CONFLICT (id) DO NOTHING""",
+                       ON CONFLICT (id, created_at) DO NOTHING""",
+                    # 🔥 수정됨: ON CONFLICT (id) → ON CONFLICT (id, created_at)
+                    # decisions PK가 Session 23 이후 복합키(id, created_at)이므로
+                    # id 단독 지정 시 42P10 오류 발생
                     r["id"], r["ticker"], r["action"], r["score"], r["confidence"],
                     r["price_at_decision"], r["positives"], r["negatives"],
                     r["counterfactuals"], r["sentiment_score"], r["ml_score"],
@@ -152,7 +164,6 @@ async def migrate_ohlcv(sconn: Any, pool: Any, dry_run: bool, batch_size: int) -
                 )
             logger.info(f"ohlcv 진행: {min(i + batch_size, len(rows))}/{len(rows)}")
     return len(rows)
-
 
 
 async def migrate_portfolio_positions(sconn: Any, pool: Any, dry_run: bool) -> int:
