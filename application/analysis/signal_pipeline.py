@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-application/analysis/signal_pipeline.py - V10 Strategy Orchestration Pipeline v2.2
+application/analysis/signal_pipeline.py - V10 Strategy Orchestration Pipeline v2.3
+
+변경 이력 (v2.3 - Session 26 완결):
+    - mypy strict 잔여 2개 오류 정밀 수정 (실제 mypy 출력의 줄 번호를 직접 대조하여 확정):
+      1. __init__의 db_manager 파라미터에 Any 타입 힌트 추가 [no-untyped-def, line 152]
+      2. _calc_base_score의 score 계산 전체를 float()으로 명시 캐스팅
+         [no-any-return, line 488 — 실제로는 compute_sqi_v2가 아니라 이 메서드였음]
+    - 그 외 로직/구조는 v2.2와 100% 동일 (회귀 위험 최소화를 위해 불필요한 변경 배제)
+    - _run_strategies()의 asyncio.gather() 관련 사전 예측 수정은 실제 mypy 결과에
+      해당 오류가 없어 불필요함이 확인되어 적용하지 않음
 
 변경 이력 (v2.2 - Session 15 패치, 최종):
     - Strategy.weight가 읽기 전용 프로퍼티(setter 없음)인 실제 구현을 확인하고 반영
@@ -151,7 +160,7 @@ class SignalPipeline(TracedService):
 
     def __init__(
         self,
-        db_manager=None,
+        db_manager: Any = None,  # 🔧 Session 26 수정: mypy strict [no-untyped-def] 해결
         atr_service: Optional[AtrService] = None,
         realtime_price_provider: Optional[Callable[[str], float]] = None,
         strategies: Optional[List[Strategy]] = None,
@@ -479,11 +488,14 @@ class SignalPipeline(TracedService):
         korean_score = self.korean_filter.check({"ticker": ticker})
         weights = self.weighter.calculate({"regime": regime})
 
-        score = (
-            macro_score["score"] * weights.get("trend_weight", 0.3)
-            + sector_score["score"] * weights.get("risk_weight", 0.2)
-            + stock_score["score"] * weights.get("flow_weight", 0.4)
-            + korean_score["score"] * 0.1
+        # 🔧 Session 26 수정: mypy strict [no-any-return] 해결
+        # Dict[str, Any] 인덱싱/get() 결과가 Any로 전파되어 발생하던 오류를
+        # 각 항을 float()으로 명시 캐스팅하여 확정적으로 해결
+        score: float = (
+            float(macro_score["score"]) * float(weights.get("trend_weight", 0.3))
+            + float(sector_score["score"]) * float(weights.get("risk_weight", 0.2))
+            + float(stock_score["score"]) * float(weights.get("flow_weight", 0.4))
+            + float(korean_score["score"]) * 0.1
         )
         return max(0.0, min(1.0, score))
 
