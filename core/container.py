@@ -1,26 +1,32 @@
+# -*- coding: utf-8 -*-
 """
-core/container.py - v1.3 (Phase 4: PostgreSQL 스위칭 + 자동 폴백)
+core/container.py - v1.4 (Session 27: Redis 캐시 레이어 통합)
 
-v1.2 → v1.3 변경 사항 (교차검증으로 발견한 문제 반영):
-    - db_manager 프로퍼티가 infrastructure/database/postgres_manager.py의
-      get_active_db_manager()를 재사용하도록 단순화했습니다. POSTGRES_ENABLED
-      판정 로직(asyncpg 설치 여부 + DATABASE_URL 존재 여부)을 이곳에 다시
-      구현하지 않아, 두 판정 로직이 서로 어긋나는 것을 원천적으로 방지합니다.
-    - 🔥 CRITICAL: initialize()의 performance_tracker.initialize(self.db_manager)
-      호출을 절대 제거하지 않고 보존합니다.
-      검증: app/bootstrap.py의 start_performance_tracker() 독스트링에
-      "performance_tracker.initialize(db)는 container.initialize() 내부에서
-      이미 호출되었으므로 재호출하지 않습니다"라고 명시되어 있습니다. 이 호출을
-      제거하면 PerformanceTracker._initialized가 False로 남아 start()가
-      `if self._running or not self._initialized: return`에 걸려 조용히
-      no-op되고, 성과 추적 백그라운드 루프가 영원히 시작되지 않는 심각한
-      회귀가 발생합니다. (검토 과정에서 이 회귀를 실제로 만드는 초안을
-      발견하여 이번 버전에서 명시적으로 방지합니다.)
-    - 🆕 initialize()에 PostgreSQL 연결 실패 시 SQLite 자동 폴백을 추가했습니다.
-      DATABASE_URL은 설정되어 있지만 실제 서버가 응답하지 않는 경우
-      (Docker 미기동, 방화벽 등) 시스템 전체가 크래시하는 대신 안전하게
-      SQLite로 전환되어 최소한의 로컬 운영이 계속되도록 합니다.
-    - get_db_type() / is_postgres_active() 헬스체크·상태조회용 헬퍼 추가.
+v1.3 → v1.4 변경 사항:
+    - db_manager 프로퍼티: Redis가 활성화되어 있으면 CachedDbManager로
+      래핑하여 get_ohlcv() 호출에 Redis 캐시 계층을 추가합니다. Redis가
+      비활성화되어 있거나 연결에 실패하면 원본 DatabaseManager/PostgresManager를
+      그대로 반환하여 기존 동작에 전혀 영향을 주지 않습니다.
+    - initialize(): redis_cache.init()을 DB 초기화보다 먼저 수행합니다.
+      Redis 초기화 실패는 시스템 시작을 절대 막지 않습니다(비활성 모드로 계속 진행).
+    - shutdown(): redis_cache.close() 추가.
+    - is_postgres_active() / get_db_type(): CachedDbManager로 래핑된 경우에도
+      내부 원본 DB 타입을 올바르게 판별하도록 CachedDbManager.raw_db
+      프로퍼티를 사용 (private 속성 직접 접근 지양).
+    - 🔥 v1.3에서 확립된 절대 규칙 유지: performance_tracker.initialize() 호출은
+      절대 제거하지 않습니다(제거 시 PerformanceTracker 영구 미시작 회귀 발생).
+
+Session 27 설계 노트 (왜 db_manager 계층에서만 캐싱하는가):
+    orchestrator/feature_store.py는 app/bootstrap.py의 실제 부트스트랩
+    시퀀스 어디에도 인스턴스화되지 않는 것으로 확인되었습니다(analytics/
+    daily_monitor.py에서만 참조되며, DailyMonitor 자체도 Bootstrapper에서
+    호출되지 않음). 반면 application/analysis/signal_pipeline.py의
+    _fetch_ohlcv()는 self.db_manager.get_ohlcv()를 직접 호출하며, 이
+    db_manager는 AppContainer가 실제로 생산(bootstrap.py init_container())
+    하는 인스턴스입니다. 따라서 Redis 캐시를 db_manager 계층에 추가하는 것이
+    실제 운영 파이프라인에 효과가 있는 유일한 지점이며, feature_store.py를
+    수정하는 것은(실제 연동 여부가 재확인되기 전까지는) 실질적 효과가
+    없는 작업일 위험이 있어 이번 세션 범위에서 제외합니다.
 """
 
 from dataclasses import dataclass, field
@@ -37,11 +43,13 @@ from scanner.deep_analyzer import DeepAnalyzer
 from orchestrator.portfolio_manager import PortfolioManager
 from analytics.performance_tracker import performance_tracker
 from execution.order_executor import OrderExecutor
+from infrastructure.cache.redis_cache import get_redis_cache, RedisCache
+from infrastructure.cache.cached_db_manager import CachedDbManager
 
 
 @dataclass
 class AppContainer:
-    """애플리케이션 의존성 컨테이너 (v1.3: PostgreSQL 스위칭 + 자동 폴백)"""
+    """애플리케이션 의존성 컨테이너 (v1.4: Redis 캐시 레이어 통합)"""
 
     _db_manager: Any | None = field(default=None, init=False)
     _kiwoom: KiwoomConnectorV512 | None = field(default=None, init=False)
@@ -49,6 +57,7 @@ class AppContainer:
     _portfolio_manager: PortfolioManager | None = field(default=None, init=False)
     _deep_analyzer: DeepAnalyzer | None = field(default=None, init=False)
     _order_executor: OrderExecutor | None = field(default=None, init=False)
+    _redis_cache: RedisCache | None = field(default=None, init=False)
 
     config: dict = field(default_factory=dict)
 
@@ -60,18 +69,25 @@ class AppContainer:
     def db_manager(self) -> Any:
         """DATABASE_URL 설정 여부에 따라 PostgresManager 또는 SQLite DatabaseManager 반환.
 
-        infrastructure/database/postgres_manager.py의 get_active_db_manager()를
-        그대로 재사용합니다(단일 진실 소스). 두 클래스는 동일한 public API를
-        가지므로 상위 코드(bootstrap.py 등)는 어떤 DB가 활성화되어 있는지
-        전혀 알 필요 없이 투명하게 동작합니다.
+        Redis가 활성화되어 있으면(REDIS_URL 설정 + 연결 성공) CachedDbManager로
+        래핑하여 get_ohlcv() 호출에 캐시 계층을 추가합니다. Redis가 비활성화되어
+        있으면 원본 DB 매니저를 그대로 반환합니다(기존 동작과 100% 동일).
         """
         if self._db_manager is None:
             try:
                 from infrastructure.database.postgres_manager import get_active_db_manager
-                self._db_manager = get_active_db_manager()
+                raw_db = get_active_db_manager()
             except ImportError as e:
-                self._db_manager = DatabaseManager()
+                raw_db = DatabaseManager()
                 logger.warning(f"postgres_manager 모듈 임포트 실패({e}) → SQLite 강제 사용")
+
+            cache = self._redis_cache or get_redis_cache()
+            if cache.is_active:
+                self._db_manager = CachedDbManager(raw_db, cache)
+                logger.info("db_manager: CachedDbManager (Redis 활성)")
+            else:
+                self._db_manager = raw_db
+                logger.info("db_manager: 직접 DB (Redis 비활성 또는 미연결)")
         return self._db_manager
 
     @property
@@ -122,7 +138,7 @@ class AppContainer:
 
     @classmethod
     def create_test(cls, tmp_path: Any = None) -> "AppContainer":
-        """테스트용 컨테이너 — 항상 SQLite 사용 (DATABASE_URL과 무관, 결정론적 테스트 보장)."""
+        """테스트용 컨테이너 — 항상 SQLite 사용, Redis 비활성 (결정론적 테스트 보장)."""
         container = cls()
         if tmp_path:
             container._db_manager = DatabaseManager(db_path=tmp_path / "test.db")
@@ -133,7 +149,19 @@ class AppContainer:
     # ============================================================
 
     async def initialize(self):
-        """DI 컨테이너 초기화 (v1.3: Postgres 연결 실패 시 SQLite 자동 폴백)."""
+        """DI 컨테이너 초기화 (v1.4: Redis 초기화 추가).
+
+        Redis 초기화는 db_manager 프로퍼티가 처음 접근되기 전에 완료되어야
+        CachedDbManager 래핑 여부가 올바르게 결정됩니다. Redis 연결 실패는
+        시스템 시작을 절대 막지 않으며, 비활성 모드로 계속 진행합니다.
+        """
+        self._redis_cache = get_redis_cache()
+        redis_ok = await self._redis_cache.init()
+        if redis_ok:
+            logger.info("✅ Redis 캐시 레이어 활성화됨")
+        else:
+            logger.info("ℹ️ Redis 비활성 → 직접 DB 조회 모드로 계속 진행")
+
         try:
             await self.db_manager.init_db()
         except Exception as e:
@@ -142,7 +170,11 @@ class AppContainer:
                     f"❌ PostgreSQL 연결 실패({e}) → SQLite로 자동 폴백합니다. "
                     f"Docker 컨테이너가 실행 중인지 확인하세요 (docker-compose up -d)."
                 )
-                self._db_manager = DatabaseManager()
+                raw_sqlite = DatabaseManager()
+                if self._redis_cache and self._redis_cache.is_active:
+                    self._db_manager = CachedDbManager(raw_sqlite, self._redis_cache)
+                else:
+                    self._db_manager = raw_sqlite
                 await self._db_manager.init_db()
             else:
                 raise
@@ -155,25 +187,36 @@ class AppContainer:
 
         await self.order_executor.initialize()
         await self.portfolio_manager.start()
-        logger.info("✅ DI 컨테이너 초기화 완료")
+        logger.info("✅ DI 컨테이너 초기화 완료 (v1.4)")
 
     async def shutdown(self):
         await self.portfolio_manager.stop()
         await self.kiwoom.disconnect()
         await self.db_manager.close()
         await performance_tracker.stop()
+        if self._redis_cache:
+            await self._redis_cache.close()
         logger.info("🛑 DI 컨테이너 종료 완료")
 
     # ============================================================
     # 상태 조회 (헬스체크 / Telegram 상태 명령어용)
     # ============================================================
 
+    def _resolve_raw_db_type(self) -> str:
+        """CachedDbManager로 래핑된 경우에도 내부 원본 DB 타입을 정확히 판별."""
+        if self._db_manager is None:
+            return "None"
+        if isinstance(self._db_manager, CachedDbManager):
+            return type(self._db_manager.raw_db).__name__
+        return type(self._db_manager).__name__
+
     def is_postgres_active(self) -> bool:
         """PostgreSQL이 실제로 활성화되어 있는지 반환 (캐시된 인스턴스 기준, 재생성 없음)."""
-        if self._db_manager is None:
-            return False
-        return type(self._db_manager).__name__ == "PostgresManager"
+        return self._resolve_raw_db_type() == "PostgresManager"
 
     def get_db_type(self) -> str:
-        """현재 사용 중인 DB 타입 반환."""
-        return "PostgreSQL" if self.is_postgres_active() else "SQLite"
+        """현재 사용 중인 DB 타입 반환 (Redis 캐시 적용 여부 포함)."""
+        base = "PostgreSQL" if self.is_postgres_active() else "SQLite"
+        if isinstance(self._db_manager, CachedDbManager):
+            return f"{base} + Redis"
+        return base

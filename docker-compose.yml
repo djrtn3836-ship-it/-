@@ -26,6 +26,25 @@ services:
       retries: 5
       start_period: 30s
 
+  # 🔥 Session 27: Redis 캐시 레이어 (선택적, REDIS_URL 미설정 시 시스템 전체 무영향)
+  redis:
+    image: redis:7-alpine
+    container_name: v10_quant_redis
+    restart: unless-stopped
+    ports:
+      # 🔒 127.0.0.1로 한정 — postgres와 동일한 이유
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - v10_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   v10_postgres_data:
+    driver: local
+  v10_redis_data:
     driver: local

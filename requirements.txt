@@ -15,7 +15,7 @@ pytimekr>=0.4.0  # 한국 공휴일
 
 # ---- V10 신규 의존성 ----
 pydantic>=2.0.0          # config/schema.py - 설정 스키마
-cachetools>=7.0.0        # infrastructure/market_data 캐싱
+cachetools>=7.0.0        # infrastructure/market_data 캐싱, orchestrator/feature_store L1 캐시
 
 # ---- 데이터 처리 ----
 pandas>=2.0.0
@@ -42,6 +42,10 @@ APScheduler>=3.10.0
 aiosqlite>=0.19.0
 asyncpg>=0.29.0   # Phase 4: PostgreSQL (DATABASE_URL 설정 시 활성화, 미설정 시 무해)
 
+# ---- 캐시 (Session 27) ----
+redis>=5.0.0      # infrastructure/cache/redis_cache.py - REDIS_URL 설정 시 활성화, 미설정 시 무해
+hiredis>=2.2.0    # redis 응답 파싱 C 가속 (선택, 미설치 시 순수 Python 파서로 자동 대체)
+
 # ---- 유틸리티 ----
 pytest>=7.0.0
 pytest-asyncio>=0.23.0   # pyproject.toml asyncio_mode 설정 실사용 확인
@@ -58,4 +62,5 @@ optuna>=3.0.0   # application/analysis/hyperparameter_tuner.py 실사용 확인
 # GPU 가속 사용 시: pip install torch --index-url https://download.pytorch.org/whl/cu118
 # KoBERT 사용 시: pip install git+https://github.com/SKTBrain/KoBERT.git
 # PostgreSQL 사용 시: pip install asyncpg
+# Redis 캐시 사용 시: pip install redis hiredis (docker-compose up -d로 로컬 Redis 실행)
 # ============================================================
