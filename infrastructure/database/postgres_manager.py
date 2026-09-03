@@ -1,24 +1,10 @@
-
----
-
-**Session 23 — TimescaleDB 하이퍼테이블 전환 (기술 검증 포함)**
-
-두 방향의 설계안을 검토하는 과정에서 실제로 실행하면 실패하는 코드 패턴 하나를 발견했습니다. TimescaleDB의 규칙은 "**PK만이 아니라 하이퍼테이블에 존재하는 모든 UNIQUE 제약(단독 인덱스 포함)이 파티션 컬럼을 포함해야 한다**"는 것입니다. 이에 따라:
-
-- `decisions`에 복합 PK `(id, created_at)`를 두면서, `id` 단독에 대해 별도의 `UNIQUE INDEX`나 `UNIQUE` 제약을 추가로 만들면, 그 단독 제약이 `created_at`을 포함하지 않으므로 `create_hypertable()` 호출이 실패합니다. 따라서 `id` 단독의 DB 차원 유일성 보장은 포기하고(BIGSERIAL 시퀀스 특성상 실질적으로는 유일함), FK도 함께 포기하는 것이 유일하게 동작하는 설계입니다.
-- 같은 이유로 `decision_outcomes`(PK가 `decision_id` 단독)는 `updated_at` 기준 하이퍼테이블로 전환할 수 없습니다. 이 테이블은 시계열 최적화가 크게 필요하지 않은 소규모 결과 테이블이므로 일반 테이블로 유지합니다.
-- `ohlcv`는 기존에 `id BIGSERIAL PRIMARY KEY` 단독 PK가 있었는데, 이를 제거하고 PK를 `(ticker, date)`로 재설계하면 파티션 컬럼(`date`)이 PK에 포함되어 규칙을 만족합니다. `ohlcv.id`를 참조하는 코드가 없음을 `db_manager.py`, 마이그레이션 스크립트, `feature_store.py` 호출부 전체와 대조해 확인했습니다.
-
-**`infrastructure/database/postgres_manager.py` 전체 수정 코드 (v1.1.0)**
-
-```python
 # -*- coding: utf-8 -*-
 """
 infrastructure/database/postgres_manager.py - PostgreSQL 비동기 매니저 v1.1.0
 
 v1.0.0 → v1.1.0 (Session 23 — TimescaleDB 하이퍼테이블 전환 + PK 재설계):
 
-    🔥 검증된 사실: TimescaleDB는 PK뿐 아니라 테이블에 존재하는 모든 UNIQUE
+    검증된 사실: TimescaleDB는 PK뿐 아니라 테이블에 존재하는 모든 UNIQUE
     제약(단독 인덱스 포함)이 파티션 컬럼을 포함해야 한다는 규칙을 가집니다.
     이에 따라:
     - decisions: PK를 (id, created_at) 복합으로만 유지. id 단독에 대한
@@ -26,13 +12,11 @@ v1.0.0 → v1.1.0 (Session 23 — TimescaleDB 하이퍼테이블 전환 + PK 재
       호출이 실패함).
     - decision_outcomes: 하이퍼테이블로 전환하지 않고 일반 테이블 유지
       (PK=decision_id 단독이라 파티션 컬럼 포함 불가). decisions(id)가
-      더 이상 단독 UNIQUE 제약을 갖지 않으므로 FK도 생성하지 않음 →
+      더 이상 단독 UNIQUE 제약을 갖지 않으므로 FK도 생성하지 않음 -
       애플리케이션 레벨(save_outcome/get_outcome)에서 무결성 관리.
     - ohlcv: 기존 id BIGSERIAL 단독 PK 제거, PK를 (ticker, date)로 재설계.
-      date를 TEXT → DATE로 변경(기존 UNIQUE(ticker,date) 제약이 이미
-      파티션 컬럼을 포함하므로 규칙 위반 없음). id 미참조 확인 완료.
-    - create_hypertable() 호출에 migrate_data => TRUE 추가
-      (확장 설치 전 이미 데이터가 있는 테이블도 안전하게 전환).
+      date를 TEXT -> DATE로 변경. id 미참조 확인 완료.
+    - create_hypertable() 호출에 migrate_data => TRUE 추가.
 """
 
 import json
@@ -71,7 +55,7 @@ class PostgresManager:
 
         if not POSTGRES_ENABLED:
             reason = "asyncpg 미설치" if not _ASYNCPG_AVAILABLE else "DATABASE_URL 미설정"
-            logger.info(f"PostgresManager: {reason} → 비활성 대기 모드")
+            logger.info(f"PostgresManager: {reason} -> 비활성 대기 모드")
 
     @property
     def is_available(self) -> bool:
@@ -98,18 +82,18 @@ class PostgresManager:
             )
             await self._create_schema()
             self._initialized = True
-            logger.info("✅ PostgresManager v1.1.0 초기화 완료 (TimescaleDB 하이퍼테이블)")
+            logger.info("PostgresManager v1.1.0 초기화 완료 (TimescaleDB 하이퍼테이블)")
         except Exception as e:
-            logger.critical(f"❌ PostgreSQL 연결/초기화 실패: {e}")
+            logger.critical(f"PostgreSQL 연결/초기화 실패: {e}")
             raise
 
     async def _create_schema(self) -> None:
         async with self._write_pool.acquire() as conn:
             try:
                 await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
-                logger.info("✅ TimescaleDB 확장 활성화")
+                logger.info("TimescaleDB 확장 활성화")
             except Exception as e:
-                logger.debug(f"TimescaleDB 확장 미지원 환경 — 무시: {e}")
+                logger.debug(f"TimescaleDB 확장 미지원 환경 - 무시: {e}")
 
             async with conn.transaction():
                 await conn.execute("""
@@ -132,9 +116,6 @@ class PostgresManager:
                         PRIMARY KEY (id, created_at)
                     );
 
-                    -- 일반 테이블 유지 (하이퍼테이블 아님). FK 미설정
-                    -- (decisions.id가 단독 UNIQUE 제약을 갖지 않으므로 참조 불가) —
-                    -- save_outcome/get_outcome에서 애플리케이션 레벨 무결성 관리.
                     CREATE TABLE IF NOT EXISTS decision_outcomes (
                         decision_id BIGINT PRIMARY KEY,
                         price_after_1d REAL,
@@ -152,7 +133,6 @@ class PostgresManager:
                         updated_at  TIMESTAMPTZ DEFAULT NOW()
                     );
 
-                    -- id 단독 PK 제거, PK를 (ticker, date)로 재설계 (파티션 컬럼 포함).
                     CREATE TABLE IF NOT EXISTS ohlcv (
                         ticker      TEXT NOT NULL,
                         date        DATE NOT NULL,
@@ -186,15 +166,13 @@ class PostgresManager:
                 ]:
                     await conn.execute(idx_sql)
 
-            # 하이퍼테이블 전환: decisions(created_at), ohlcv(date)만 대상.
-            # decision_outcomes는 파티션 미포함 단독 PK라 전환 대상에서 제외.
             for table, col in [("decisions", "created_at"), ("ohlcv", "date")]:
                 try:
                     await conn.execute(
                         f"SELECT create_hypertable('{table}', '{col}', "
                         f"if_not_exists => TRUE, migrate_data => TRUE);"
                     )
-                    logger.info(f"✅ {table} 하이퍼테이블 전환 완료 (파티션: {col})")
+                    logger.info(f"{table} 하이퍼테이블 전환 완료 (파티션: {col})")
                 except Exception as e:
                     logger.debug(f"하이퍼테이블 전환 스킵/무시 ({table}): {e}")
 
@@ -206,9 +184,7 @@ class PostgresManager:
         if self._read_pool and self._read_pool is not self._write_pool:
             await self._read_pool.close()
         self._initialized = False
-        logger.info("🛑 PostgresManager 커넥션 풀 종료 완료")
-
-    # ─── OHLCV ──────────────────────────────────────────────────
+        logger.info("PostgresManager 커넥션 풀 종료 완료")
 
     async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict) -> None:
         if not self._initialized:
@@ -253,8 +229,6 @@ class PostgresManager:
         result = [dict(r) for r in rows]
         result.reverse()
         return result
-
-    # ─── Decisions ──────────────────────────────────────────────
 
     async def save_decision(self, analysis: dict) -> None:
         if not self._initialized:
@@ -313,8 +287,6 @@ class PostgresManager:
             )
         return [dict(r) for r in rows]
 
-    # ─── Portfolio / Trailing Stops ───────────────────────────────
-
     async def get_positions(self) -> List[Dict]:
         if not self._initialized:
             return []
@@ -364,7 +336,7 @@ class PostgresManager:
             return {}
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch("SELECT ticker, state_json FROM trailing_stop_states ORDER BY saved_at DESC")
-        result = {}
+        result: Dict[str, dict] = {}
         for row in rows:
             try:
                 val = row["state_json"]
@@ -378,8 +350,6 @@ class PostgresManager:
             return
         async with self._write_pool.acquire() as conn:
             await conn.execute("DELETE FROM trailing_stop_states")
-
-    # ─── Outcomes / Feedback / Weights ───────────────────────────
 
     async def save_outcome(self, outcome: dict) -> None:
         if not self._initialized:
