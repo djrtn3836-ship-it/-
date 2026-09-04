@@ -1,25 +1,31 @@
+# -*- coding: utf-8 -*-
 """
-scheduler/macro_collector.py - v2.3 (데이터 타입 안전성 강화)
+scheduler/macro_collector.py - v2.4 (Session 30: mypy strict 적용)
 
-v2.2 → v2.3 변경 사항:
-    - CRITICAL 버그 수정: _fetch_yahoo()가 5일 수익률(%) 계산을 요청받았지만
-      데이터가 1일치만 반환된 경우(휴일/API 지연 등), 퍼센트가 아닌 원본 지수/가격을
-      그대로 반환하던 문제 수정 (kospi_drop=1071.85 같은 비정상 값의 실제 발생 원인)
-    - as_trend 플래그로 "추세(%) 요청"과 "현재가 요청"을 명확히 분리
-    - 추세 요청 시 데이터가 부족하면 0.0이 아닌 None을 반환하여, 기존에 이미
-      존재하던 "수집 실패 → 이전 캐시값 유지" 로직이 자연스럽게 작동하도록 함.
-      0.0을 반환하면 "0% 변동"이라는 거짓 데이터로 이전 값을 덮어써 버리는
-      또 다른 문제가 생기므로 None이 더 안전한 선택임
-    - 기존 데이터 수집 로직/심볼(^KS200 등)은 100% 유지 — 심볼 변경 등 추가적인
-      변경은 이번 버그 수정과 무관한 별도 판단 사항으로 분리함
+v2.3 -> v2.4 변경 사항 (실제 mypy 오류 2건을 줄 번호 기준으로 정밀 대조하여 수정):
+    - MacroData.to_dict(): 반환 타입 dict -> dict[str, Any] 명시 [type-arg]
+    - _alert_callback/set_alert_callback: 콜백 타입을 Callable[[str, str], None]에서
+      Callable[[str, str], Awaitable[None]]로 정정.
+      실제로 등록되는 콜백(app/bootstrap.py의 _send_error_alert, scanner_main.py의
+      send_error_alert)은 모두 async def이므로 호출 시 코루틴(Awaitable[None])을
+      반환합니다. 기존 타입 선언은 "동기 함수가 None을 반환한다"고 잘못 기술하고
+      있었고, _send_alert()가 이를 await하면서 "Incompatible types in await
+      (actual type None, expected type Awaitable[Any])" 오류가 발생했습니다.
+      Callable[..., Any]로 폭넓게 완화하거나 호출부에서 cast()로 경고만 억제하는
+      대신, 실제 계약을 정확히 타입으로 표현했습니다. 이렇게 하면 향후 누군가
+      실수로 동기 함수를 set_alert_callback()에 전달할 경우 mypy가 즉시 타입
+      오류로 잡아내어, "동기 함수 등록 → await 시 런타임 크래시"라는 잠재적
+      회귀를 사전에 차단합니다.
+    - 로직/동작 100% 무변경 — 데이터 수집 로직/심볼은 v2.3과 완전히 동일
 """
 
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import requests
 
@@ -32,11 +38,13 @@ logger = setup_logger("macro_collector")
 # ============================================================
 # 콜백 패턴 (순환 참조 제거)
 # ============================================================
-_alert_callback: Callable[[str, str], None] | None = None
+# 🔧 Session 30: 실제로 등록되는 콜백은 항상 async def이므로
+# Callable[[str, str], Awaitable[None]]로 정확히 명시 (await 호환 + 오용 방지)
+_alert_callback: Callable[[str, str], Awaitable[None]] | None = None
 
 
-def set_alert_callback(func: Callable[[str, str], None]) -> None:
-    """scanner_main/bootstrap에서 알림 함수를 등록"""
+def set_alert_callback(func: Callable[[str, str], Awaitable[None]]) -> None:
+    """scanner_main/bootstrap에서 알림 함수를 등록 (반드시 async def 함수여야 함)"""
     global _alert_callback
     _alert_callback = func
 
@@ -56,7 +64,7 @@ class MacroData:
     ktb_3y: float = 3.0
     last_update: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "kospi_trend": self.kospi_trend,
             "usdkrw": self.usdkrw,
@@ -173,7 +181,6 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
     loop = asyncio.get_running_loop()
 
     try:
-        # 🔧 as_trend=True 명시 — 데이터 부족 시 None 반환 (이전 값 유지)
         kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d", True)
         if kospi is not None:
             data.kospi_trend = kospi
