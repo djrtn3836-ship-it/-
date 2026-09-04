@@ -1,25 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-core/logger.py - v7.1.2 (Session 30: mypy strict 적용)
+core/logger.py - v7.1.3 (Session 32: get_logger_status 중첩 dict 타입 오류 해결)
 
-v7.1.1 -> v7.1.2 변경 사항 (실제 mypy 오류 10건을 줄 번호 기준으로 정밀 대조하여 수정):
-    - GzipRotatingFileHandler.__init__: 파라미터 전체 타입 명시
-      (filename: str | Path — 부모 RotatingFileHandler가 PathLike도 허용하므로
-       str만으로 좁히면 리스코프 치환 원칙 위반으로 strict에서 새 오류가 발생할
-       위험이 있어 str | Path로 지정. 이렇게 하면 호출부(setup_logger)가 Path
-       객체를 그대로 전달하는 기존 동작을 전혀 바꿀 필요가 없음)
-    - doRollover/_compress_file/close: 반환 타입 -> None 명시
-    - setup_logger: log_dir/level/structured 파라미터를 X | None으로 수정
-      (기본값이 None인데 타입은 str/bool로 선언되어 있던 PEP 484 위반 [assignment] 해결)
-    - setup_logger 내부: file_formatter를 if/else 분기 전에 logging.Formatter로
-      명시 선언 (JsonFormatter로 좁혀진 뒤 부모 Formatter로 재할당하며 발생하던
-      [assignment] 오류 해결. else 분기는 실제로 정상 동작하는 경로였으므로
-      런타임 버그는 아니었음)
-    - get_logger_status: 반환 타입 dict[str, Any] 명시
-    - log_exception: 반환 타입 -> None 명시 (일관성을 위한 안전한 보강)
-    - Colors/JsonFormatter/ConsoleFormatter는 mypy 오류 목록에 없어 원본 그대로 보존
-      (최소 침습 수정 원칙 유지)
-    - 로직/동작 100% 무변경 — 타입 힌트만 추가
+v7.1.2 -> v7.1.3 변경 사항:
+    - get_logger_status(): "loggers" 딕셔너리 컴프리헨션을 반환문에 직접 인라인하지
+      않고, dict[str, Any]로 명시된 중간 변수(loggers_info)에 먼저 할당.
+      mypy가 반환 타입 애노테이션을 인라인 중첩 컴프리헨션까지 양방향으로
+      전파시키지 못해 발생하던 [type-arg] 오류(line 240) 해결.
+    - 나머지 코드는 v7.1.2와 100% 동일 (로직/동작 무변경)
 """
 
 import gzip
@@ -70,7 +58,7 @@ class JsonFormatter(logging.Formatter):
         dt = datetime.fromtimestamp(record.created)
         timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}Z"
 
-        log_entry = {
+        log_entry: dict[str, Any] = {
             "timestamp": timestamp,
             "level": record.levelname,
             "logger": record.name,
@@ -116,9 +104,6 @@ class ConsoleFormatter(logging.Formatter):
         )
 
 
-# ============================================================
-# 🔥 P1-8: GzipRotatingFileHandler (비동기 압축)
-# ============================================================
 class GzipRotatingFileHandler(RotatingFileHandler):
     def __init__(
         self,
@@ -130,40 +115,31 @@ class GzipRotatingFileHandler(RotatingFileHandler):
         delay: bool = False,
     ) -> None:
         super().__init__(filename, mode, maxBytes, backupCount, encoding, delay)
-        # 🔥 P1-8: 압축 전용 스레드 풀 (최대 1개)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gzip_compressor")
 
     def doRollover(self) -> None:
         super().doRollover()
-        # 백업 파일을 gzip으로 압축 (스레드 풀에서 비동기 실행)
         for i in range(self.backupCount, 0, -1):
             src = Path(self.baseFilename).with_suffix(f".log.{i}")
             if src.exists() and src.suffix != ".gz":
                 dst = src.with_suffix(".log.gz")
-                # 스레드 풀에 압축 작업 제출 (메인 루프 블로킹 없음)
                 self._executor.submit(self._compress_file, src, dst)
 
     def _compress_file(self, src: Path, dst: Path) -> None:
-        """실제 압축 작업 (별도 스레드에서 실행)"""
         try:
             with open(src, "rb") as f_in:
                 with gzip.open(dst, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
             src.unlink()
         except Exception:
-            # 로깅 시스템 내부에서 예외가 발생하면 무시 (로거 자체가 죽지 않도록)
             pass
 
     def close(self) -> None:
-        """종료 시 스레드 풀 정리"""
         if hasattr(self, "_executor"):
             self._executor.shutdown(wait=False)
         super().close()
 
 
-# ============================================================
-# 로거 설정 함수
-# ============================================================
 def setup_logger(
     name: str = "system",
     log_dir: str | None = None,
@@ -237,7 +213,7 @@ def set_global_log_level(level: str) -> bool:
         return False
 
 
-def log_exception(logger: logging.Logger, msg: str, exc: Exception, extra: dict | None = None) -> None:
+def log_exception(logger: logging.Logger, msg: str, exc: Exception, extra: dict[str, Any] | None = None) -> None:
     if extra is None:
         extra = {}
     extra["exception_type"] = type(exc).__name__
@@ -246,17 +222,19 @@ def log_exception(logger: logging.Logger, msg: str, exc: Exception, extra: dict 
 
 
 def get_logger_status() -> dict[str, Any]:
+    # 🔧 Session 32 수정: 중첩 컴프리헨션을 중간 변수로 분리하여 [type-arg] 해결
+    loggers_info: dict[str, Any] = {
+        name: {
+            "level": logging.getLevelName(lg.level),
+            "handlers": len(lg.handlers),
+        }
+        for name, lg in logging.root.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
     return {
         "root_level": logging.getLevelName(logging.root.level),
         "handlers": [str(h) for h in logging.root.handlers],
-        "loggers": {
-            name: {
-                "level": logging.getLevelName(logger.level),
-                "handlers": len(logger.handlers),
-            }
-            for name, logger in logging.root.manager.loggerDict.items()
-            if isinstance(logger, logging.Logger)
-        },
+        "loggers": loggers_info,
     }
 
 

@@ -1,14 +1,14 @@
+# -*- coding: utf-8 -*-
 """
-collector/collector_status.py - v1.0 FINAL (데이터 수집기 통합 상태 관리)
-- 각 수집기의 마지막 성공 시간, 연속 실패 횟수, 데이터 신선도 추적
-- 수집 실패 시 중앙화된 경고 및 재시도 트리거
-- Telegram 알림과 연동
+collector/collector_status.py - v1.1 (Session 32: mypy strict 적용)
+- 전체 메서드 반환 타입/제네릭 타입 명시, 로직/동작 100% 무변경
 """
 
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,34 +25,32 @@ class CollectorStatus:
     total_failures: int = 0
     last_error: str | None = None
     is_healthy: bool = True
-    data_freshness_seconds: int | None = None  # 데이터 유효 TTL
-    last_data: dict | None = None
+    data_freshness_seconds: int | None = None
+    last_data: dict[str, Any] | None = None
 
 
 class CollectorStatusManager:
     """수집기 상태 관리자 (싱글톤)"""
 
-    _instance = None
+    _instance: "CollectorStatusManager | None" = None
 
-    def __new__(cls):
+    def __new__(cls) -> "CollectorStatusManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
 
-    def _init(self):
+    def _init(self) -> None:
         self._collectors: dict[str, CollectorStatus] = {}
         self._alert_cooldown: dict[str, float] = {}
-        self._alert_cooldown_seconds = 1800  # 30분
+        self._alert_cooldown_seconds: int = 1800
 
-    def register(self, name: str, freshness_seconds: int | None = None):
-        """수집기 등록"""
+    def register(self, name: str, freshness_seconds: int | None = None) -> None:
         if name not in self._collectors:
             self._collectors[name] = CollectorStatus(name=name, data_freshness_seconds=freshness_seconds)
             logger.info(f"📊 수집기 등록: {name} (신선도: {freshness_seconds}s)")
 
-    def record_success(self, name: str, data: dict | None = None):
-        """성공 기록"""
+    def record_success(self, name: str, data: dict[str, Any] | None = None) -> None:
         if name not in self._collectors:
             self.register(name)
         status = self._collectors[name]
@@ -66,8 +64,7 @@ class CollectorStatusManager:
             status.last_data = data
         logger.debug(f"✅ {name} 수집 성공 (총 {status.total_success}회)")
 
-    def record_failure(self, name: str, error: str):
-        """실패 기록"""
+    def record_failure(self, name: str, error: str) -> None:
         if name not in self._collectors:
             self.register(name)
         status = self._collectors[name]
@@ -80,15 +77,12 @@ class CollectorStatusManager:
         logger.warning(f"⚠️ {name} 수집 실패 ({status.consecutive_failures}회 연속): {error}")
 
     def get_status(self, name: str) -> CollectorStatus | None:
-        """특정 수집기 상태 조회"""
         return self._collectors.get(name)
 
     def get_all_status(self) -> dict[str, CollectorStatus]:
-        """모든 수집기 상태 조회"""
         return self._collectors
 
     def is_fresh(self, name: str) -> bool:
-        """데이터가 신선한지 확인 (TTL 기준)"""
         status = self._collectors.get(name)
         if not status or not status.last_success:
             return False
@@ -98,33 +92,27 @@ class CollectorStatusManager:
         return elapsed < status.data_freshness_seconds
 
     def should_retry(self, name: str) -> bool:
-        """재시도가 필요한지 확인 (백오프 포함)"""
         status = self._collectors.get(name)
         if not status or not status.last_attempt:
             return True
-        # 연속 실패 횟수에 따른 백오프: 2^failures 초 (최대 60초)
         backoff = min(2 ** (status.consecutive_failures - 1), 60)
         elapsed = (datetime.now() - status.last_attempt).total_seconds()
-        return elapsed >= backoff
+        return bool(elapsed >= backoff)
 
     def should_alert(self, name: str) -> bool:
-        """경고를 보낼지 확인 (쿨다운)"""
         now = time.time()
-        last_alert = self._alert_cooldown.get(name, 0)
+        last_alert = self._alert_cooldown.get(name, 0.0)
         if now - last_alert < self._alert_cooldown_seconds:
             return False
         status = self._collectors.get(name)
         if not status:
             return False
-        # 3회 연속 실패 시 경고
-        return status.consecutive_failures >= 3
+        return bool(status.consecutive_failures >= 3)
 
-    def mark_alert_sent(self, name: str):
-        """경고 전송 기록"""
+    def mark_alert_sent(self, name: str) -> None:
         self._alert_cooldown[name] = time.time()
 
-    def get_summary(self) -> dict:
-        """전체 상태 요약"""
+    def get_summary(self) -> dict[str, Any]:
         total = len(self._collectors)
         healthy = sum(1 for s in self._collectors.values() if s.is_healthy)
         fresh = sum(1 for s in self._collectors.values() if self.is_fresh(s.name))
@@ -147,5 +135,4 @@ class CollectorStatusManager:
         }
 
 
-# 전역 인스턴스
 collector_status = CollectorStatusManager()
