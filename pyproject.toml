@@ -43,11 +43,13 @@ module = [
     "filters.dynamic_weighter",
     "application.analysis.atr_service",
     "application.analysis.signal_pipeline",
+    "config.schema",
 ]
 strict = true
 warn_return_any = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+
 
 
 
