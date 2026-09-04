@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-data/db_manager.py - v7.0.0 (Session 28: CQRS 패턴 초석)
+data/db_manager.py - v7.0.1 (Session 31: mypy 타입 보강)
 
-v6.2.0 → v7.0.0 변경 사항:
-    - CQRS(Command Query Responsibility Segregation) 패턴 적용
-    - SQLite 커넥션을 읽기 전용(_read_conn)과 쓰기 전용(_write_conn)으로 분리
-    - 읽기 커넥션은 URI 파라미터 `?mode=ro`를 사용하여 락(Lock) 경합 방지
-      (파일 미존재/OS 제약 시 일반 연결로 자동 폴백, 예외를 삼키지 않고 로그만 남김)
-    - _execute_read(): 모든 읽기 쿼리를 전담하며, 원본 _execute_with_retry의
-      "database is locked" 재시도 로직을 100% 보존하고 dict 리스트로 자동 변환
-    - _execute_batched(): 기존과 동일하되 반환값을 제거 (원본에서도 어떤 호출부도
-      반환값을 사용하지 않음을 전체 대조로 확인 → 안전한 변경)
-    - get_outcome(): fetchone() → _execute_read()[0] 패턴으로 치환 (동작 동일)
-    - ⚠️ 적용 전 grep으로 _execute_with_retry 외부 참조 여부를 반드시 확인할 것
+v7.0.0 → v7.0.1 변경 사항:
+    - 모든 async 메서드에 반환 타입 명시 (-> None, -> list[dict[str, Any]] 등)
+    - tuple/dict/list 제네릭 타입 인자 전면 명시
+    - _execute_batched()의 params 타입을 tuple[Any, ...] | dict[str, Any]로 확장
+      (save_outcome()이 named placeholder(:key) 바인딩을 위해 dict를 전달하는데,
+       기존에는 params가 tuple로만 선언되어 있어 실제 타입 불일치가 있었음.
+       aiosqlite는 dict/tuple 둘 다 허용하므로 동작 자체는 항상 정상이었음)
+    - _execute_read()의 last_error를 Exception | None으로 명시하고,
+      루프 종료 후 raise를 None-safe하게 정리 (raise None 방지)
+    - asyncio.wait_for()는 원본 그대로 보존 (해당 위치에 실제 오류 없음 확인)
+    - 로직/동작 100% 무변경 — 타입 힌트만 추가
 """
 
 import asyncio
@@ -20,6 +20,7 @@ import json
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -37,13 +38,12 @@ MAX_RETRIES = 2
 
 
 class DatabaseManager:
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, db_path: Path = DB_PATH) -> None:
         if isinstance(db_path, str):
             db_path = Path(db_path)
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # CQRS: 읽기/쓰기 커넥션 분리
         self._write_conn: aiosqlite.Connection | None = None
         self._read_conn: aiosqlite.Connection | None = None
 
@@ -93,9 +93,14 @@ class DatabaseManager:
                 raise
         return self._read_conn
 
-    async def _execute_read(self, query: str, params: tuple = (), retries: int = MAX_RETRIES) -> list[dict]:
+    async def _execute_read(
+        self,
+        query: str,
+        params: tuple[Any, ...] = (),
+        retries: int = MAX_RETRIES,
+    ) -> list[dict[str, Any]]:
         """읽기 전용 쿼리 실행 (원본 재시도 로직 100% 보존 + dict 리스트 자동 변환)."""
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
                 conn = await self._get_read_conn()
@@ -111,10 +116,20 @@ class DatabaseManager:
                 raise
             except Exception:
                 raise
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("_execute_read: 도달 불가 경로 (재시도 루프 예외 없이 종료)")
 
-    async def _execute_batched(self, query: str, params: tuple = ()) -> None:
-        """쓰기 전용 배치 쿼리 실행 (원본과 동일 동작, 반환값 미사용 확인되어 제거)."""
+    async def _execute_batched(
+        self,
+        query: str,
+        params: tuple[Any, ...] | dict[str, Any] = (),
+    ) -> None:
+        """쓰기 전용 배치 쿼리 실행.
+
+        params는 위치 기반(tuple) 및 named placeholder(:key) 기반(dict) 바인딩을
+        모두 지원합니다 — save_outcome()이 dict를 전달하는 실제 사용 패턴을 정확히 반영.
+        """
         conn = await self._get_write_conn()
         await conn.execute(query, params)
         self._pending_writes += 1
@@ -125,14 +140,14 @@ class DatabaseManager:
             self._pending_writes = 0
             self._last_commit_time = now
 
-    async def _flush_pending(self):
+    async def _flush_pending(self) -> None:
         if self._pending_writes > 0:
             conn = await self._get_write_conn()
             await conn.commit()
             self._pending_writes = 0
             logger.debug("배치 커밋 플러시 완료")
 
-    async def init_db(self):
+    async def init_db(self) -> None:
         conn = await self._get_write_conn()
 
         await conn.executescript("""
@@ -235,10 +250,10 @@ class DatabaseManager:
         await conn.commit()
         await self.analyze_db()
 
-        logger.info("DB 초기화 완료 (v7.0.0 - CQRS 적용)")
+        logger.info("DB 초기화 완료 (v7.0.1 - CQRS + 타입 보강)")
         debug_tower.log("SYSTEM", "DB_INIT_DONE", {})
 
-    async def analyze_db(self):
+    async def analyze_db(self) -> None:
         now = datetime.now()
         if (now - self._last_analyze) < self._analyze_interval:
             return
@@ -251,7 +266,7 @@ class DatabaseManager:
         except Exception as e:
             logger.debug(f"ANALYZE 실패: {e}")
 
-    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict):
+    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict[str, Any]) -> None:
         debug_tower.log(ticker, "DB_SAVE_OHLCV", {"date": date})
         await self._execute_batched(
             """INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
@@ -260,7 +275,7 @@ class DatabaseManager:
              ohlcv.get("low", 0.0), ohlcv.get("close", 0.0), ohlcv.get("volume", 0)),
         )
 
-    async def save_ohlcv_batch(self, records: list[tuple]) -> int:
+    async def save_ohlcv_batch(self, records: list[tuple[Any, ...]]) -> int:
         if not records:
             return 0
         conn = await self._get_write_conn()
@@ -273,7 +288,7 @@ class DatabaseManager:
         logger.debug(f"OHLCV 배치 저장 완료: {len(records)}개 레코드")
         return len(records)
 
-    async def get_ohlcv(self, ticker: str, period: int = 14) -> list[dict]:
+    async def get_ohlcv(self, ticker: str, period: int = 14) -> list[dict[str, Any]]:
         debug_tower.log(ticker, "DB_GET_OHLCV", {"period": period})
         result = await self._execute_read(
             "SELECT date, open, high, low, close, volume FROM ohlcv WHERE ticker = ? ORDER BY date DESC LIMIT ?",
@@ -282,7 +297,7 @@ class DatabaseManager:
         result.reverse()
         return result
 
-    async def get_ohlcv_range(self, ticker: str, start_date: str, end_date: str) -> list[dict]:
+    async def get_ohlcv_range(self, ticker: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
         return await self._execute_read(
             """SELECT date, open, high, low, close, volume
                FROM ohlcv
@@ -291,11 +306,11 @@ class DatabaseManager:
             (ticker, start_date, end_date),
         )
 
-    async def save_decision(self, analysis: dict):
+    async def save_decision(self, analysis: dict[str, Any]) -> None:
         inject_trace_id(analysis, key="trace_id")
         features = analysis.pop("features", {})
         strategy_scores = analysis.get("strategy_result")
-        combined_json = {}
+        combined_json: dict[str, Any] = {}
         if strategy_scores:
             combined_json["scores"] = strategy_scores
         if features:
@@ -323,12 +338,12 @@ class DatabaseManager:
             ),
         )
 
-    async def get_decisions_by_date(self, date_str: str) -> list[dict]:
+    async def get_decisions_by_date(self, date_str: str) -> list[dict[str, Any]]:
         return await self._execute_read(
             "SELECT * FROM decisions WHERE DATE(created_at) = ? ORDER BY created_at DESC", (date_str,)
         )
 
-    async def get_decisions_by_date_range(self, start_date: str, end_date: str) -> list[dict]:
+    async def get_decisions_by_date_range(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
         return await self._execute_read(
             """SELECT * FROM decisions
                WHERE DATE(created_at) >= ? AND DATE(created_at) <= ?
@@ -336,36 +351,36 @@ class DatabaseManager:
             (start_date, end_date),
         )
 
-    async def save_position(self, ticker: str, entry_price: float, current_price: float, qty: int):
+    async def save_position(self, ticker: str, entry_price: float, current_price: float, qty: int) -> None:
         await self._execute_batched(
             """INSERT OR REPLACE INTO portfolio_positions (ticker, entry_price, current_price, qty, entry_time, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (ticker, entry_price, current_price, qty),
         )
 
-    async def delete_position(self, ticker: str):
+    async def delete_position(self, ticker: str) -> None:
         await self._execute_batched("DELETE FROM portfolio_positions WHERE ticker = ?", (ticker,))
 
-    async def get_positions(self) -> list[dict]:
+    async def get_positions(self) -> list[dict[str, Any]]:
         return await self._execute_read("SELECT * FROM portfolio_positions ORDER BY ticker")
 
-    async def get_weights(self) -> dict:
+    async def get_weights(self) -> dict[str, float]:
         rows = await self._execute_read("SELECT factor_name, weight FROM feedback_weights")
-        weights = {row["factor_name"]: row["weight"] for row in rows}
+        weights: dict[str, float] = {row["factor_name"]: row["weight"] for row in rows}
         default_factors = ["momentum", "volume", "volatility", "macro", "sector"]
         for f in default_factors:
             if f not in weights:
                 weights[f] = 1.0
         return weights
 
-    async def update_weight(self, factor_name: str, new_weight: float):
+    async def update_weight(self, factor_name: str, new_weight: float) -> None:
         await self._execute_batched(
             """INSERT OR REPLACE INTO feedback_weights (factor_name, weight, updated_at)
                VALUES (?, ?, CURRENT_TIMESTAMP)""",
             (factor_name, new_weight),
         )
 
-    async def save_outcome(self, outcome: dict):
+    async def save_outcome(self, outcome: dict[str, Any]) -> None:
         await self._execute_batched(
             """INSERT OR REPLACE INTO decision_outcomes
                (decision_id, price_after_1d, price_after_5d, return_1d, return_5d, is_correct)
@@ -373,13 +388,13 @@ class DatabaseManager:
             outcome,
         )
 
-    async def get_outcome(self, decision_id: int) -> dict | None:
+    async def get_outcome(self, decision_id: int) -> dict[str, Any] | None:
         rows = await self._execute_read(
             "SELECT * FROM decision_outcomes WHERE decision_id = ?", (decision_id,)
         )
         return rows[0] if rows else None
 
-    async def get_feedback_stats(self, days: int = 30) -> dict:
+    async def get_feedback_stats(self, days: int = 30) -> dict[str, Any]:
         rows = await self._execute_read(
             """SELECT d.action, o.return_1d, o.is_correct
                FROM decisions d
@@ -402,7 +417,7 @@ class DatabaseManager:
             "sample_count": total, "avg_return": round(avg_ret, 3),
         }
 
-    async def get_strategy_outcomes(self, days: int = 30) -> list[dict]:
+    async def get_strategy_outcomes(self, days: int = 30) -> list[dict[str, Any]]:
         rows = await self._execute_read(
             """SELECT d.id as decision_id, d.ticker, d.action, d.strategy_scores,
                       o.return_1d, o.is_correct
@@ -413,7 +428,7 @@ class DatabaseManager:
                ORDER BY d.created_at DESC""",
             (f"-{days} days",),
         )
-        result = []
+        result: list[dict[str, Any]] = []
         for r in rows:
             raw = r.get("strategy_scores") or "{}"
             try:
@@ -424,7 +439,7 @@ class DatabaseManager:
             result.append(r)
         return result
 
-    async def save_trailing_stops(self, states: dict[str, dict]) -> int:
+    async def save_trailing_stops(self, states: dict[str, dict[str, Any]]) -> int:
         if not states:
             return 0
         try:
@@ -445,14 +460,14 @@ class DatabaseManager:
             logger.error("❌ trailing_stop_states 저장 실패: %s", e)
             return 0
 
-    async def load_trailing_stops(self) -> dict[str, dict]:
+    async def load_trailing_stops(self) -> dict[str, dict[str, Any]]:
         try:
             rows = await self._execute_read(
                 "SELECT ticker, state_json FROM trailing_stop_states ORDER BY saved_at DESC"
             )
             if not rows:
                 return {}
-            result = {}
+            result: dict[str, dict[str, Any]] = {}
             for row in rows:
                 try:
                     result[row["ticker"]] = json.loads(row["state_json"])
@@ -473,7 +488,7 @@ class DatabaseManager:
         except Exception as e:
             logger.warning("trailing_stop_states 초기화 실패: %s", e)
 
-    async def close(self):
+    async def close(self) -> None:
         await self._flush_pending()
         if self._write_conn:
             await self._write_conn.close()

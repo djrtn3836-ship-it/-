@@ -1,18 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-config/schema.py - V10 통합 설정 스키마 v1.1.0 (Session 29: mypy strict 적용)
-
-변경 이력 (v1.1.0):
-    - Field(default_factory=XxxConfig) → Field(default=XxxConfig())로 수정
-      (Pydantic v2: default_factory에 클래스 타입을 직접 전달하면 mypy 타입 불일치 발생.
-       default=XxxConfig()는 Pydantic v2가 BaseModel 기본값을 인스턴스 생성 시마다
-       자동 복사하므로 인스턴스 간 상태 공유 문제 없음)
-    - yaml_data: Dict[str, Any] 명시 (var-annotated 오류 해결)
-    - env_overrides: Dict[str, Any] 명시 (dict 값 타입이 첫 대입값(bool)으로 좁혀져
-      이후 int/float/str 대입이 실패하고, 이 오류가 AppConfig(**yaml_data) 호출로
-      전파되어 발생하던 연쇄 오류 근본 해결)
-    - get() 반환 타입 AppConfig 명시 + None 가드 추가 (return-value 오류 해결)
-    - _load_config() -> None, __init__() -> None, __new__() -> "ConfigManager" 명시
+config/schema.py - V10 통합 설정 스키마 v1.1.0 (Session 29/31: mypy strict 적용)
 """
 
 import os
@@ -90,7 +78,6 @@ class AppConfig(BaseModel):
     rate_limit_capacity: int = Field(5, ge=1, le=20)
     rate_limit_refill: float = Field(5.0, ge=1.0, le=10.0)
 
-    # 🔧 Session 29 수정: default_factory=XxxConfig(클래스 자체) -> default=XxxConfig()(인스턴스)
     trading: TradingConfig = Field(default=TradingConfig())
     risk: RiskConfig = Field(default=RiskConfig())
     scheduler: SchedulerConfig = Field(default=SchedulerConfig())
@@ -102,21 +89,21 @@ class ConfigManager:
     _instance: Optional["ConfigManager"] = None
     _config: Optional[AppConfig] = None
 
-    def __new__(cls) -> "ConfigManager":  # 🔧 반환 타입 명시
+    def __new__(cls) -> "ConfigManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self) -> None:  # 🔧 반환 타입 명시
+    def __init__(self) -> None:
         if self._config is not None:
             return
         load_dotenv(override=True)
         self._load_config()
 
-    def _load_config(self) -> None:  # 🔧 반환 타입 명시
+    def _load_config(self) -> None:
         """YAML + .env 통합 로드"""
         yaml_path = Path(__file__).parent / "config.yaml"
-        yaml_data: Dict[str, Any] = {}  # 🔧 타입 명시 (var-annotated 해결)
+        yaml_data: Dict[str, Any] = {}
         if yaml_path.exists():
             try:
                 with open(yaml_path, encoding="utf-8") as f:
@@ -126,9 +113,6 @@ class ConfigManager:
             except Exception as e:
                 print(f"⚠️ YAML 로드 실패: {e}")
 
-        # 🔧 Dict[str, Any] 명시 - 첫 대입값(bool)으로 dict 타입이 좁혀져
-        # 이후 int/float/str 대입이 실패하고 AppConfig(**yaml_data) 호출까지
-        # 오류가 전파되던 연쇄 문제의 근본 해결
         env_overrides: Dict[str, Any] = {}
         for key in yaml_data.keys():
             env_key = key.upper()
@@ -157,8 +141,7 @@ class ConfigManager:
             print(f"⚠️ 설정 검증 실패: {e}, 기본값 사용")
             self._config = AppConfig()
 
-    def get(self) -> AppConfig:  # 🔧 반환 타입 명시
-        # 🔧 None 가드 + assert - "AppConfig | None" 반환 오류 해결
+    def get(self) -> AppConfig:
         if self._config is None:
             self._load_config()
         assert self._config is not None, "AppConfig 초기화 실패"

@@ -58,23 +58,28 @@ disallow_incomplete_defs = true
 # ─── 외부 패키지 임포트 무시 (단일 블록으로 병합) ──────────────────────────────
 [[tool.mypy.overrides]]
 module = [
-    "telegram.*",
-    "aiohttp.*",
-    "websockets.*",
-    "yfinance.*",
-    "apscheduler.*",
-    "numpy.*",
-    "scipy.*",
-    "sklearn.*",
-    "xgboost.*",
-    "pandas.*",
-    "yaml.*",
-    "dotenv.*",
-    "psutil.*",
-    "reportlab.*",
-    "asyncpg.*",
-    "optuna.*",
+    "domain.models.signal",
+    "domain.strategies.base",
+    "domain.strategies.trend",
+    "domain.strategies.reversal",
+    "domain.strategies.breakout",
+    "filters.macro_filter",
+    "filters.sector_filter",
+    "filters.stock_filter",
+    "filters.korean_special_filter",
+    "filters.dynamic_weighter",
+    "application.analysis.atr_service",
+    "application.analysis.signal_pipeline",
+    "config.schema",
+    "core.logger",
+    "scheduler.macro_collector",
+    "data.db_manager",
 ]
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
 ignore_missing_imports = true
 
 [tool.ruff]
