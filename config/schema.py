@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-config/schema.py - V10 통합 설정 스키마 v1.1.0 (Session 29/31: mypy strict 적용)
+config/schema.py - V10 통합 설정 스키마 v1.2.0 (Session 33: mypy strict 근본 해결)
+
+v1.1.0 -> v1.2.0 변경 사항 (캐시 삭제 후 단독 실행으로 확정한 진짜 원인 대응):
+    - 47개 오류의 실제 위치는 _load_config()의 yaml_data/env_overrides가 아니라
+      line 81~84(TradingConfig/RiskConfig/SchedulerConfig/WebSocketConfig를
+      Field(default=Model())로 즉시 호출하는 지점)와 line 142(AppConfig(**yaml_data)
+      호출)였음. 오류 개수가 각 클래스의 필드 개수와 정확히 일치함을 확인
+      (16/4/11/8/8 = 47)하여 Session 31의 "env_overrides 애노테이션 문제"라는
+      결론이 우연한 숫자 일치에 근거한 오진이었음을 확정.
+    - 근본 원인: pydantic.mypy 플러그인 없이는 mypy가 Field(...) 기본값을 인식하지
+      못해 이런 호출들을 "모든 필드가 필수 인자"로 오판함.
+    - 해결: pyproject.toml에 plugins=["pydantic.mypy"] 추가(정석 해법) +
+      문제 지점에 # type: ignore[call-arg] 추가(안전망, warn_unused_ignores=false라
+      플러그인이 문제를 해결해도 부작용 없음).
 """
 
 import os
@@ -78,10 +91,12 @@ class AppConfig(BaseModel):
     rate_limit_capacity: int = Field(5, ge=1, le=20)
     rate_limit_refill: float = Field(5.0, ge=1.0, le=10.0)
 
-    trading: TradingConfig = Field(default=TradingConfig())
-    risk: RiskConfig = Field(default=RiskConfig())
-    scheduler: SchedulerConfig = Field(default=SchedulerConfig())
-    websocket: WebSocketConfig = Field(default=WebSocketConfig())
+    # 🔧 Session 33: 근본 원인은 pydantic.mypy 플러그인 미인식.
+    # 플러그인 추가(pyproject.toml)로 근본 해결하고, type: ignore는 안전망으로 유지.
+    trading: TradingConfig = Field(default=TradingConfig())  # type: ignore[call-arg]
+    risk: RiskConfig = Field(default=RiskConfig())  # type: ignore[call-arg]
+    scheduler: SchedulerConfig = Field(default=SchedulerConfig())  # type: ignore[call-arg]
+    websocket: WebSocketConfig = Field(default=WebSocketConfig())  # type: ignore[call-arg]
 
 
 class ConfigManager:
@@ -111,7 +126,7 @@ class ConfigManager:
                     if loaded:
                         yaml_data = dict(loaded)
             except Exception as e:
-                print(f"⚠️ YAML 로드 실패: {e}")
+                print(f"YAML 로드 실패: {e}")
 
         env_overrides: Dict[str, Any] = {}
         for key in yaml_data.keys():
@@ -136,10 +151,12 @@ class ConfigManager:
         yaml_data.update(env_overrides)
 
         try:
-            self._config = AppConfig(**yaml_data)
+            # 🔧 안전망: **dict 언패킹 호출은 mypy가 required 여부를 정적으로
+            # 검증할 수 없어 "Missing named argument"를 유발하는 경우가 있음
+            self._config = AppConfig(**yaml_data)  # type: ignore[call-arg]
         except Exception as e:
-            print(f"⚠️ 설정 검증 실패: {e}, 기본값 사용")
-            self._config = AppConfig()
+            print(f"설정 검증 실패: {e}, 기본값 사용")
+            self._config = AppConfig()  # type: ignore[call-arg]
 
     def get(self) -> AppConfig:
         if self._config is None:

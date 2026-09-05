@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-observability/trace_config.py - V10 Unified debug tracing config manager
-- Global ON/OFF and per-module ON/OFF
-- Hot-reload support with 1-second file watch on config/trace_config.json
-- Real-time debug mode switching without redeployment
+observability/trace_config.py - V10 Unified debug tracing config manager v1.1
+(Session 33: mypy strict 적용 — 반환 타입/제네릭 타입 명시, 로직 무변경)
 """
 
 import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 TRACE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "trace_config.json"
 
@@ -19,7 +17,7 @@ TRACE_CONFIG_PATH = Path(__file__).parent.parent / "config" / "trace_config.json
 class TraceConfig:
     """Tracing config data class"""
     global_enabled: bool = True
-    module_overrides: dict[str, bool] = field(default_factory=dict)
+    module_overrides: Dict[str, bool] = field(default_factory=dict)
 
 
 class TraceConfigManager:
@@ -32,7 +30,7 @@ class TraceConfigManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if hasattr(self, "_initialized"):
             return
         self._initialized = True
@@ -49,7 +47,7 @@ class TraceConfigManager:
             return
         try:
             raw_data = TRACE_CONFIG_PATH.read_text(encoding="utf-8")
-            data = json.loads(raw_data)
+            data: Dict[str, Any] = json.loads(raw_data)
             self._config = TraceConfig(**data)
             self._last_mtime = TRACE_CONFIG_PATH.stat().st_mtime
         except (json.JSONDecodeError, OSError) as e:
@@ -102,7 +100,7 @@ class TraceConfigManager:
         self._config.module_overrides[module_name] = enabled
         self._save()
 
-    def get_status(self) -> dict:
+    def get_status(self) -> Dict[str, Any]:
         self._maybe_reload()
         return {
             "global_enabled": self._config.global_enabled,
@@ -110,7 +108,7 @@ class TraceConfigManager:
         }
 
 
-_config_manager = TraceConfigManager()
+_config_manager: TraceConfigManager = TraceConfigManager()
 
 
 def get_trace_manager() -> TraceConfigManager:

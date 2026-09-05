@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-observability/auto_trace.py - V10 Auto-instrumentation utilities
-- TracedService base class for automatic method tracing
-- auto_trace_module() for module-level function tracing
+observability/auto_trace.py - V10 Auto-instrumentation utilities v1.1
+(Session 33: mypy strict 적용 — 반환 타입/제네릭 타입 명시, 로직 무변경)
 """
 
 import inspect
 import sys
 import types
-from typing import Optional, Set, Type
+from typing import Any, Callable, Optional, Set, Type
 
 from observability.tracer import get_tracer
 
 
 class TracedService:
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         tracer = get_tracer(cls.__module__)
         for name, member in inspect.getmembers(cls, predicate=callable):
@@ -49,8 +48,8 @@ def auto_trace_module(module_name: str, exclude: Optional[Set[str]] = None) -> N
         setattr(module, name, tracer.traced(attr))
 
 
-def trace_class(module_name: Optional[str] = None):
-    def decorator(cls: Type) -> Type:
+def trace_class(module_name: Optional[str] = None) -> Callable[[Type[Any]], Type[Any]]:
+    def decorator(cls: Type[Any]) -> Type[Any]:
         target_module = module_name or cls.__module__
         tracer = get_tracer(target_module)
         for name, member in inspect.getmembers(cls, predicate=callable):

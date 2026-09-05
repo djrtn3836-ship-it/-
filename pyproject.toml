@@ -26,6 +26,7 @@ disallow_incomplete_defs = false
 warn_no_return = true
 warn_redundant_casts = false
 explicit_package_bases = true
+plugins = ["pydantic.mypy"]
 exclude = ["tests/", "venv/", "logs/", "docs/", "fonts/"]
 
 # ─── Session 20/21: 실제 검증·수정 완료된 모듈만 strict 적용 ──────────────────
