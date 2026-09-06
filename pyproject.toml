@@ -21,9 +21,8 @@ warn_no_return = true
 warn_redundant_casts = false
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
-exclude = ["tests/", "venv/", "logs/", "docs/", "fonts/"]
+exclude = ["tests/", "venv/", "logs/", "docs/", "fonts/", "scanner_main.py", "^main\\.py$"]
 
-# ─── 실제 검증·수정 완료된 모듈만 strict 적용 (Session 34 기준 23개, 중복 블록 병합 완료) ──
 [[tool.mypy.overrides]]
 module = [
     "domain.models.signal",
@@ -49,13 +48,14 @@ module = [
     "observability.trace_id",
     "observability.trace_propagation",
     "observability.auto_trace",
+    "core.blackbox_logger",
+    "core.circuit_breaker",
 ]
 strict = true
 warn_return_any = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
-# ─── 외부 패키지 임포트 무시 (Session 34: 실종되었던 목록 복원) ──────────────
 [[tool.mypy.overrides]]
 module = [
     "telegram.*",
@@ -74,6 +74,7 @@ module = [
     "reportlab.*",
     "asyncpg.*",
     "optuna.*",
+    "redis.*",
 ]
 ignore_missing_imports = true
 

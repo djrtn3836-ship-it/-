@@ -1,20 +1,18 @@
+# -*- coding: utf-8 -*-
 """
-Circuit Breaker v5.1.2 — Claude 피드백 반영 (대상별 차등 임계값)
+core/circuit_breaker.py - v5.1.3 (Session 35: mypy strict 적용, 로직 무변경)
 
-변경사항:
-1. 대상별 장애 패턴에 따른 차등 임계값 적용
-2. Kiwoom TR: 3회/30초 (일시적 네트워크 지연)
-3. Kiwoom 실시간: 5회/60초 (연결 유지 중요)
-4. DART API: 3회/120초 (일일 한도 도달)
-5. 뉴스 크롤러: 3회/60초 (외부 서비스 의존)
+주의: protect() 데코레이터는 원본부터 항상 async_wrapper를 반환합니다
+(동기 함수를 감싸도 호출 시 코루틴을 반환하는 기존 동작을 그대로 보존).
 """
 
-import asyncio  # ✅ 추가됨
+import asyncio
 import functools
 import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Callable, Dict, Optional, TypeVar, cast
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +25,11 @@ class CircuitState(Enum):
 
 @dataclass
 class CBConfig:
-    """Circuit Breaker 설정 (대상별 차등)"""
-
     failure_threshold: int = 3
     timeout: float = 30.0
     half_open_max_calls: int = 3
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.failure_threshold < 1:
             raise ValueError("failure_threshold must be >= 1")
         if self.timeout < 1.0:
@@ -42,8 +38,7 @@ class CBConfig:
             raise ValueError("half_open_max_calls must be >= 1")
 
 
-# 대상별 Circuit Breaker 설정
-CIRCUIT_BREAKER_CONFIGS = {
+CIRCUIT_BREAKER_CONFIGS: Dict[str, CBConfig] = {
     "kiwoom_tr": CBConfig(failure_threshold=3, timeout=30.0, half_open_max_calls=2),
     "kiwoom_realtime": CBConfig(failure_threshold=5, timeout=60.0, half_open_max_calls=3),
     "dart_api": CBConfig(failure_threshold=3, timeout=120.0, half_open_max_calls=2),
@@ -51,22 +46,24 @@ CIRCUIT_BREAKER_CONFIGS = {
     "default": CBConfig(failure_threshold=3, timeout=30.0, half_open_max_calls=3),
 }
 
+F = TypeVar("F", bound=Callable[..., Any])
+
 
 class CircuitBreaker:
-    def __init__(self, name: str, config: CBConfig | None = None):
+    def __init__(self, name: str, config: Optional[CBConfig] = None) -> None:
         self.name = name
         self.config = config or CIRCUIT_BREAKER_CONFIGS.get(name, CIRCUIT_BREAKER_CONFIGS["default"])
         self.state = CircuitState.CLOSED
         self.failure_count = 0
-        self.last_failure_time = 0.0
+        self.last_failure_time: float = 0.0
         self.half_open_calls = 0
-        self._last_error: Exception | None = None
+        self._last_error: Optional[Exception] = None
         self._total_failures = 0
         self._total_successes = 0
 
-    def protect(self, func):
+    def protect(self, func: F) -> F:
         @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             if self.state == CircuitState.OPEN:
                 elapsed = time.time() - self.last_failure_time
                 if elapsed > self.config.timeout:
@@ -111,9 +108,9 @@ class CircuitBreaker:
                     logger.warning(f"[{self.name}] 실패 ({self.failure_count}/{self.config.failure_threshold})")
                 raise
 
-        return async_wrapper
+        return cast(F, async_wrapper)
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "state": self.state.value,

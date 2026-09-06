@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-config/schema.py - V10 통합 설정 스키마 v1.2.1 (Session 34: 잔여 ignore 정리)
+config/schema.py - V10 통합 설정 스키마 v1.2.2 (Session 35: 잔여 구문 오류 완전 제거)
 
-v1.2.0 -> v1.2.1 변경 사항:
-    - pydantic.mypy 플러그인이 완벽하게 동작하여 Field(default=Model()) 및
-      AppConfig(**yaml_data) 호출의 47개 [call-arg] 오류가 근본적으로
-      전부 해결됨을 확인.
-    - 이에 따라 안전망으로 추가했던 # type: ignore[call-arg] 주석 6개가
-      더 이상 억제할 오류가 없어 [unused-ignore] 경고를 유발하므로 제거.
-    - 로직/동작 100% 무변경
+pydantic.mypy 플러그인이 정상 동작하므로 type: ignore 주석이 전혀 필요 없습니다.
+로직/동작 100% 무변경, 타입 힌트만 유지.
 """
 
 import os
@@ -86,8 +81,6 @@ class AppConfig(BaseModel):
     rate_limit_capacity: int = Field(5, ge=1, le=20)
     rate_limit_refill: float = Field(5.0, ge=1.0, le=10.0)
 
-    # pydantic.mypy 플러그인이 Field() 기본값을 정확히 인식하므로
-    # type: ignore 주석이 더 이상 필요 없음 (v1.2.0의 안전망 제거)
     trading: TradingConfig = Field(default=TradingConfig())
     risk: RiskConfig = Field(default=RiskConfig())
     scheduler: SchedulerConfig = Field(default=SchedulerConfig())
