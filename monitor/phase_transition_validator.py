@@ -1,7 +1,8 @@
+# -*- coding: utf-8 -*-
 """
-Phase Transition Validator v5.1.2 — Claude 피드백 반영
+monitor/phase_transition_validator.py - v5.1.3 (Session 36: mypy strict 적용)
 
-Shadow → Paper 전환 7대 MUST 조건 자동 검증
+Shadow -> Paper 전환 7대 MUST 조건 자동 검증
 - 최소 Shadow 기간: 28일
 - 최소 신호 수: 50건
 - 승률: 50% 이상
@@ -11,11 +12,18 @@ Shadow → Paper 전환 7대 MUST 조건 자동 검증
 - 시스템 다운타임: 2시간 이하
 
 하나라도 미충족 시 자동 "Shadow 2주 연장"
+
+app/bootstrap.py가 실제로 import하는 라이브 파일입니다
+(analytics/phase_transition_validator.py는 동일 구조의 미사용 중복 파일로
+pyproject.toml exclude에서 처리됨).
+
+로직/동작 100% 무변경, 타입 힌트만 추가.
 """
 
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +44,11 @@ class PhaseTransitionCriteria:
 class PhaseTransitionValidator:
     """Phase 전환 검증기 (자동 Go/No-Go 판정)"""
 
-    def __init__(self, criteria: PhaseTransitionCriteria | None = None):
-        self.criteria = criteria or PhaseTransitionCriteria()
-        self._validation_history: list[dict] = []
+    def __init__(self, criteria: Optional[PhaseTransitionCriteria] = None) -> None:
+        self.criteria: PhaseTransitionCriteria = criteria or PhaseTransitionCriteria()
+        self._validation_history: List[Dict[str, Any]] = []
 
-    def validate(self, shadow_data: dict) -> dict:
+    def validate(self, shadow_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Shadow Mode 데이터 기반 Phase 전환 검증
 
@@ -66,8 +74,8 @@ class PhaseTransitionValidator:
                 'extend_days': int
             }
         """
-        results = {}
-        details = {}
+        results: Dict[str, bool] = {}
+        details: Dict[str, Any] = {}
 
         # 1. 최소 기간 검증
         start = datetime.fromisoformat(shadow_data.get("start_date", "2026-08-12"))
@@ -111,12 +119,17 @@ class PhaseTransitionValidator:
         downtime = shadow_data.get("downtime_hours", 0.0)
         passed_downtime = downtime <= self.criteria.max_downtime_hours
         results["max_downtime"] = passed_downtime
-        details["max_downtime"] = {"actual": f"{downtime:.1f}h", "required": f"{self.criteria.max_downtime_hours:.1f}h"}
+        details["max_downtime"] = {
+            "actual": f"{downtime:.1f}h",
+            "required": f"{self.criteria.max_downtime_hours:.1f}h",
+        }
 
         # 8. 종합 판정
         all_passed = all(results.values())
         failed_items = [k for k, v in results.items() if not v]
 
+        recommendation: str
+        extend_days: int
         if all_passed:
             recommendation = "✅ Phase 2 (Paper Portfolio) 진입 승인"
             extend_days = 0
@@ -145,14 +158,16 @@ class PhaseTransitionValidator:
             "failed_items": failed_items,
             "recommendation": recommendation,
             "extend_days": extend_days,
-            "next_review_date": (datetime.now() + timedelta(days=extend_days)).isoformat() if not all_passed else None,
+            "next_review_date": (
+                (datetime.now() + timedelta(days=extend_days)).isoformat() if not all_passed else None
+            ),
         }
 
-    def get_history(self) -> list[dict]:
+    def get_history(self) -> List[Dict[str, Any]]:
         """검증 이력 반환"""
         return self._validation_history
 
-    def get_summary(self) -> dict:
+    def get_summary(self) -> Dict[str, Any]:
         """검증 요약 반환"""
         if not self._validation_history:
             return {"status": "no_validation", "message": "아직 검증 실행되지 않음"}

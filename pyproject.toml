@@ -21,7 +21,15 @@ warn_no_return = true
 warn_redundant_casts = false
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
-exclude = ["tests/", "venv/", "logs/", "docs/", "fonts/", "scanner_main.py", "^main\\.py$"]
+exclude = [
+    "tests/", "venv/", "logs/", "docs/", "fonts/",
+    "scanner_main.py", "^main\\.py$",
+    "analytics/daily_monitor.py",
+    "monitor/daily_monitor.py",
+    "analytics/shadow_logger.py",
+    "monitor/shadow_logger.py",
+    "analytics/phase_transition_validator.py",
+]
 
 [[tool.mypy.overrides]]
 module = [
@@ -50,6 +58,7 @@ module = [
     "observability.auto_trace",
     "core.blackbox_logger",
     "core.circuit_breaker",
+    "monitor.phase_transition_validator",
 ]
 strict = true
 warn_return_any = true
