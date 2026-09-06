@@ -4,17 +4,17 @@ $content = @'
 
 
 
-> 최종 갱신: Session 35
+> 최종 갱신: Session 36
 
 > 기준 버전: V10 DDD 아키텍처
 
 > 현재 진입점: python app/main.py
 
-> 테스트 상태: 1095/1095 passed
+> 테스트 상태: 1095/1095 passed (재검증 필요)
 
 > signal\_pipeline.py 의존성 체인 mypy strict: 0 errors (달성 완료)
 
-> 전체 코드베이스 mypy (.): 978개 오류 확인, 순차 정리 중
+> 전체 코드베이스 mypy (.): 902개에서 감소 예정, 실측 필요
 
 
 
@@ -22,37 +22,29 @@ $content = @'
 
 
 
-\## Session 35 핵심 발견
+\## Session 36 핵심 조치
 
 
 
-phase\_transition\_validator.py, shadow\_logger.py, daily\_monitor.py의 mypy
+1\. 중복 파일 3쌍(daily\_monitor.py, phase\_transition\_validator.py,
 
-오류가 모두 2배 또는 4배 단위로만 나타나는 이상 패턴을 확인함. 원인은
+&#x20;  shadow\_logger.py, 각 monitor/analytics 경로)의 오류 개수가 2배수/4배수
 
-monitor/ 디렉터리(legacy)와 analytics/ 디렉터리(V10)에 동일 파일명이
+&#x20;  패턴을 보이는 것을 근거로 두 경로가 동일 구조의 중복 파일임을 확정.
 
-중복 존재하기 때문. app/bootstrap.py는 monitor.phase\_transition\_validator를
+&#x20;  app/bootstrap.py의 실제 import 문으로 monitor/phase\_transition\_validator.py만
 
-사용하는 것으로 확인됨(실제 라이브 파일). shadow\_logger는 app/bootstrap.py
+&#x20;  라이브임을 확인.
 
-어디에도 import되지 않아 죽은 코드일 가능성이 높음.
+2\. pyproject.toml exclude에 5개 죽은 코드 파일 추가
 
-\-> 재작성 전 파일 위치 확인 필수, 이번 세션에서는 보류.
+&#x20;  (daily\_monitor.py x2, shadow\_logger.py x2, analytics/phase\_transition\_validator.py)
 
+3\. monitor/phase\_transition\_validator.py mypy strict 완료 (로직 무변경)
 
+4\. scanner/deep\_analyzer.py는 실제 파일 내용 미확보로 이번 세션에서 보류
 
-\## Session 35 완료 작업
-
-
-
-\- config/schema.py: type:ignore 주석 전면 제거 (구문 오류 해결)
-
-\- pyproject.toml: override 블록 재병합, 외부 패키지 목록 복원,
-
-&#x20; scanner\_main.py/main.py exclude 추가
-
-\- core/blackbox\_logger.py, core/circuit\_breaker.py: mypy strict 완료
+&#x20;  (추측 기반 재작성의 위험성 - schema.py/postgres\_manager.py 사고 재발 방지)
 
 
 
@@ -62,19 +54,23 @@ monitor/ 디렉터리(legacy)와 analytics/ 디렉터리(V10)에 동일 파일�
 
 \- FeatureStore 처리 방향 미결정
 
-\- shadow\_logger.py 죽은 코드 여부 확정 및 처리 방향 결정 필요
+\- daily\_monitor.py 두 경로의 실제 내용 차이 여부 미확인 (오류 패턴이
 
-\- phase\_transition\_validator.py 중복 파일(monitor/ vs analytics/) 정리 필요
-
-
-
-\## 다음 우선순위 (Session 36\~)
+&#x20; 2배수가 아니라서 동일 파일이 아닐 가능성 있음, 확인 필요)
 
 
 
-1\. monitor/ vs analytics/ 중복 파일 확인 결과에 따른 처리
+\## 다음 우선순위 (Session 37\~)
 
-2\. weekly\_pdf.py, bootstrap.py, deep\_analyzer.py 등 대형 파일 mypy strict
+
+
+1\. scanner/deep\_analyzer.py 전체 내용 확보 후 mypy strict 적용
+
+&#x20;  (반드시 실제 파일을 먼저 받은 뒤에만 작업)
+
+2\. mypy . 잔여 오류 상위 파일(kiwoom\_connector.py, weekly\_pdf.py, bootstrap.py,
+
+&#x20;  telegram\_commands.py, dart\_connector.py 등) 순차 공략
 
 3\. Phase 4 마지막 항목 또는 Phase 5 진입 검토
 
