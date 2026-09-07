@@ -1,8 +1,12 @@
+# -*- coding: utf-8 -*-
 """
-DART Connector v5.4.1 (async 래퍼 추가)
-- get_financials_async(), get_company_info_async(), search_notices_async() 신규
-- 기존 sync 메서드는 그대로 유지 (하위 호환성)
-- telegram_commands.py 등에서 비동기 호출 가능
+data/dart_connector.py - v5.4.2 (Session 39: mypy strict 적용)
+- 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
+- get_company_info_sync(): warn_return_any=true 위반(Any 직접 반환) 방지를 위해
+  return dict(data)로 감쌈 (search_notices_sync의 list() 래핑과 동일한 원리).
+  내용은 완전히 동일하나 얕은 복사본을 반환하는 점만 원본과 차이 있음(무해함).
+- _load_cache(): len(self._corp_code_map)이 Optional[Dict] 타입에 대해
+  [Sized] 오류를 유발할 수 있어 len(self._corp_code_map or {})로 방어.
 """
 
 import asyncio
@@ -13,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import requests
@@ -44,17 +49,17 @@ class DisclosureAnalysis:
     content: str = ""
     risk_score: int = 0
     risk_level: RiskLevel = RiskLevel.NORMAL
-    matched_patterns: list[str] = field(default_factory=list)
-    discount_rate: float | None = None
-    funding_purpose: str | None = None
+    matched_patterns: List[str] = field(default_factory=list)
+    discount_rate: Optional[float] = None
+    funding_purpose: Optional[str] = None
     is_third_party: bool = False
     is_related_party: bool = False
-    issue_amount: float | None = None
+    issue_amount: Optional[float] = None
     recommended_action: str = "매수"
 
 
 class DartConnector:
-    RISK_WEIGHTS = {
+    RISK_WEIGHTS: Dict[str, int] = {
         "third_party_allotment": 30,
         "rights_offering_high_discount": 30,
         "rights_offering_low_discount": 15,
@@ -69,17 +74,19 @@ class DartConnector:
         "merger": 25,
     }
 
-    RISK_THRESHOLDS = {RiskLevel.NORMAL: 0, RiskLevel.WARNING: 20, RiskLevel.HIGH: 50, RiskLevel.CRITICAL: 70}
+    RISK_THRESHOLDS: Dict[RiskLevel, int] = {
+        RiskLevel.NORMAL: 0, RiskLevel.WARNING: 20, RiskLevel.HIGH: 50, RiskLevel.CRITICAL: 70
+    }
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = "https://opendart.fss.or.kr/api"
-        self.daily_limit = 10000
-        self.daily_used = 0
-        self.last_reset = datetime.now()
-        self._session: aiohttp.ClientSession | None = None
+    def __init__(self, api_key: str) -> None:
+        self.api_key: str = api_key
+        self.base_url: str = "https://opendart.fss.or.kr/api"
+        self.daily_limit: int = 10000
+        self.daily_used: int = 0
+        self.last_reset: datetime = datetime.now()
+        self._session: Optional[aiohttp.ClientSession] = None
 
-        self.patterns = {
+        self.patterns: Dict[str, Dict[str, Any]] = {
             "third_party_allotment": {"pattern": r"제3자배정", "weight": self.RISK_WEIGHTS["third_party_allotment"]},
             "rights_offering": {"pattern": r"유상증자", "weight": 0},
             "cb_issue": {"pattern": r"전환사채\s*(발행|결정)", "weight": self.RISK_WEIGHTS["cb_issue"]},
@@ -91,24 +98,27 @@ class DartConnector:
             "merger": {"pattern": r"합병\s*(결정|공고)", "weight": self.RISK_WEIGHTS["merger"]},
         }
 
-        self._corp_code_map = None
-        self._cache_loaded = False
-        self._last_retry_time: dict[str, float] = {}
+        self._corp_code_map: Optional[Dict[str, str]] = None
+        self._cache_loaded: bool = False
+        self._last_retry_time: Dict[str, float] = {}
 
         self._load_cache()
         collector_status.register("dart_connector", freshness_seconds=86400)
 
-    def _load_cache(self):
+    def _load_cache(self) -> None:
         if CACHE_FILE.exists():
             try:
                 with open(CACHE_FILE, encoding="utf-8") as f:
-                    data = json.load(f)
+                    data: Dict[str, Any] = json.load(f)
                 cached_time = datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
                 if datetime.now() - cached_time < timedelta(days=CACHE_TTL_DAYS):
                     self._corp_code_map = data.get("mapping", {})
                     self._cache_loaded = True
-                    logger.debug(f"✅ corp_code 캐시 로드 완료 ({len(self._corp_code_map)}개)")
-                    collector_status.record_success("dart_connector", {"cache_size": len(self._corp_code_map)})
+                    # 🔧 Session 39: Optional[Dict] 방어 (len() [Sized] 오류 회피)
+                    logger.debug(f"✅ corp_code 캐시 로드 완료 ({len(self._corp_code_map or {})}개)")
+                    collector_status.record_success(
+                        "dart_connector", {"cache_size": len(self._corp_code_map or {})}
+                    )
                     return
                 else:
                     logger.info("⏳ corp_code 캐시 만료, 재다운로드 필요")
@@ -118,7 +128,7 @@ class DartConnector:
         self._corp_code_map = {}
         self._cache_loaded = False
 
-    def _save_cache(self, mapping: dict):
+    def _save_cache(self, mapping: Dict[str, str]) -> None:
         try:
             CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -131,7 +141,7 @@ class DartConnector:
         except Exception as e:
             logger.error(f"❌ 캐시 저장 실패: {e}")
 
-    def _download_corp_code(self) -> dict[str, str]:
+    def _download_corp_code(self) -> Dict[str, str]:
         if not self.api_key:
             logger.warning("⚠️ DART API 키 없음, corp_code 매핑 불가")
             return {}
@@ -150,7 +160,7 @@ class DartConnector:
                 return {}
 
             root = ET.fromstring(resp.content)
-            mapping = {}
+            mapping: Dict[str, str] = {}
             for corp in root.findall("list"):
                 corp_code = corp.findtext("corp_code")
                 stock_code = corp.findtext("stock_code")
@@ -168,7 +178,7 @@ class DartConnector:
             collector_status.record_failure("dart_connector", str(e))
         return {}
 
-    def get_corp_code_sync(self, ticker: str) -> str | None:
+    def get_corp_code_sync(self, ticker: str) -> Optional[str]:
         if not ticker or not ticker.isdigit() or len(ticker) < 6:
             return None
 
@@ -179,7 +189,7 @@ class DartConnector:
             return self._corp_code_map[ticker]
 
         now = datetime.now().timestamp()
-        last_retry = self._last_retry_time.get(ticker, 0)
+        last_retry = self._last_retry_time.get(ticker, 0.0)
         if self._cache_loaded and (now - last_retry) < RETRY_INTERVAL_HOURS * 3600:
             remaining = (RETRY_INTERVAL_HOURS * 3600 - (now - last_retry)) / 60
             logger.debug(f"⏳ {ticker} 재시도 대기 중 (남은 시간: {remaining:.0f}분)")
@@ -197,12 +207,12 @@ class DartConnector:
             logger.warning(f"⚠️ {ticker} corp_code 매핑 실패 → {RETRY_INTERVAL_HOURS}시간 후 재시도")
             return None
 
-    async def connect(self):
+    async def connect(self) -> None:
         if self._session is None:
             self._session = aiohttp.ClientSession()
         logger.info("DART Connector connected")
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         if self._session:
             await self._session.close()
             self._session = None
@@ -210,13 +220,13 @@ class DartConnector:
 
     async def get_disclosures(
         self, corp_code: str, from_date: str, to_date: str, deep_scan: bool = False
-    ) -> list[DisclosureAnalysis]:
+    ) -> List[DisclosureAnalysis]:
         if self._session is None:
             await self.connect()
         await self._check_rate_limit()
 
         url = f"{self.base_url}/list.json"
-        params = {
+        params: Dict[str, Any] = {
             "crtfc_key": self.api_key,
             "corp_code": corp_code,
             "bgn_de": from_date,
@@ -225,18 +235,20 @@ class DartConnector:
         }
 
         try:
+            if self._session is None:
+                return []
             async with self._session.get(url, params=params) as resp:
                 self.daily_used += 1
-                data = await resp.json()
+                data: Dict[str, Any] = await resp.json()
                 if data.get("status") != "000":
                     logger.error(f"DART API error: {data.get('message', 'Unknown')}")
                     return []
 
-                results = []
+                results: List[DisclosureAnalysis] = []
                 for item in data.get("list", []):
                     analysis = self._analyze_by_title(item)
                     if deep_scan and analysis.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
-                        content = await self._fetch_content(analysis.corp_code, item.get("rcept_no", ""))
+                        content = await self._fetch_content(analysis.corp_code, str(item.get("rcept_no", "")))
                         if content:
                             analysis.content = content
                             self._analyze_by_content(analysis)
@@ -246,26 +258,26 @@ class DartConnector:
             logger.error(f"DART API 호출 실패: {e}")
             return []
 
-    def _analyze_by_title(self, item: dict) -> DisclosureAnalysis:
-        title = item.get("report_nm", "")
-        corp_code = item.get("corp_code", "")
-        date = item.get("rcept_de", "")
+    def _analyze_by_title(self, item: Dict[str, Any]) -> DisclosureAnalysis:
+        title: str = str(item.get("report_nm", ""))
+        corp_code: str = str(item.get("corp_code", ""))
+        date: str = str(item.get("rcept_de", ""))
 
         analysis = DisclosureAnalysis(
             corp_code=corp_code,
             title=title,
-            report_type=item.get("pblntf_detail_ty", ""),
+            report_type=str(item.get("pblntf_detail_ty", "")),
             date=date,
-            url=item.get("rm_url", ""),
+            url=str(item.get("rm_url", "")),
         )
 
-        risk_score = 0
-        matched = []
+        risk_score: int = 0
+        matched: List[str] = []
 
         for pattern_name, pattern_info in self.patterns.items():
-            if re.search(pattern_info["pattern"], title):
+            if re.search(str(pattern_info["pattern"]), title):
                 matched.append(pattern_name)
-                risk_score += pattern_info["weight"]
+                risk_score += int(pattern_info["weight"])
 
         discount_match = re.search(r"할인율\s*(\d+)%", title)
         if discount_match:
@@ -278,7 +290,7 @@ class DartConnector:
                 else:
                     risk_score += self.RISK_WEIGHTS["rights_offering_low_discount"]
                     matched.append("rights_offering_low_discount")
-            except:
+            except Exception:
                 pass
 
         amount_match = re.search(r"발행금액\s*([\d,]+)\s*억원", title)
@@ -289,7 +301,7 @@ class DartConnector:
                 if amount >= 100:
                     risk_score += self.RISK_WEIGHTS["large_issue"]
                     matched.append("large_issue")
-            except:
+            except Exception:
                 pass
 
         if "제3자배정" in title:
@@ -315,20 +327,22 @@ class DartConnector:
         analysis.recommended_action = self._get_recommended_action(analysis)
         return analysis
 
-    async def _fetch_content(self, corp_code: str, rcept_no: str) -> str | None:
+    async def _fetch_content(self, corp_code: str, rcept_no: str) -> Optional[str]:
         if self._session is None:
             await self.connect()
         await self._check_rate_limit()
 
         url = f"{self.base_url}/document.json"
-        params = {"crtfc_key": self.api_key, "corp_code": corp_code, "rcept_no": rcept_no}
+        params: Dict[str, str] = {"crtfc_key": self.api_key, "corp_code": corp_code, "rcept_no": rcept_no}
 
         try:
+            if self._session is None:
+                return None
             async with self._session.get(url, params=params) as resp:
                 self.daily_used += 1
-                data = await resp.json()
+                data: Dict[str, Any] = await resp.json()
                 if "document" in data:
-                    return self._parse_document(data["document"])
+                    return self._parse_document(str(data["document"]))
                 return None
         except Exception as e:
             logger.error(f"공시 본문 조회 실패: {e}")
@@ -339,10 +353,10 @@ class DartConnector:
             text = re.sub(r"<[^>]+>", " ", raw_doc)
             text = re.sub(r"\s+", " ", text)
             return text.strip()
-        except:
+        except Exception:
             return raw_doc
 
-    def _analyze_by_content(self, analysis: DisclosureAnalysis):
+    def _analyze_by_content(self, analysis: DisclosureAnalysis) -> None:
         content = analysis.content
         if not content:
             return
@@ -350,7 +364,7 @@ class DartConnector:
             match = re.search(r"할인율\s*(\d+)%", content)
             if match:
                 rate = float(match.group(1))
-                if rate > (analysis.discount_rate or 0):
+                if rate > (analysis.discount_rate or 0.0):
                     analysis.discount_rate = rate
                     analysis.risk_score = min(100, analysis.risk_score + 10)
         analysis.risk_level = self._get_risk_level(analysis.risk_score)
@@ -376,7 +390,7 @@ class DartConnector:
         else:
             return "매수"
 
-    async def _check_rate_limit(self):
+    async def _check_rate_limit(self) -> None:
         now = datetime.now()
         if (now - self.last_reset).days >= 1:
             self.daily_used = 0
@@ -389,14 +403,11 @@ class DartConnector:
             self.daily_used = 0
             self.last_reset = datetime.now()
 
-    # ============================================================
-    # 동기 메서드 (기존, 하위 호환성 유지)
-    # ============================================================
-    def get_financials_sync(self, corp_code: str, year: str = None) -> dict[str, float]:
+    def get_financials_sync(self, corp_code: str, year: Optional[str] = None) -> Dict[str, float]:
         if not self.api_key:
             return {}
 
-        years_to_try = [year] if year else ["2024", "2023", "2022"]
+        years_to_try: List[str] = [year] if year else ["2024", "2023", "2022"]
 
         for try_year in years_to_try:
             try:
@@ -412,27 +423,27 @@ class DartConnector:
                     timeout=10,
                 )
                 resp.raise_for_status()
-                data = resp.json()
+                data: Dict[str, Any] = resp.json()
 
                 if data.get("status") == "000":
-                    result = {}
+                    result: Dict[str, float] = {}
                     target = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"]
                     for item in data.get("list", []):
                         if item.get("sj_div") != "CFS":
                             continue
                         acc = item.get("account_nm")
                         if acc in target:
-                            raw = item.get("thstrm_amount", "0")
+                            raw = str(item.get("thstrm_amount", "0"))
                             try:
                                 result[acc] = float(raw.replace(",", ""))
-                            except:
+                            except Exception:
                                 result[acc] = 0.0
 
-                    revenue = result.get("매출액", 0)
-                    op = result.get("영업이익", 0)
-                    net = result.get("당기순이익", 0)
-                    eq = result.get("자본총계", 0)
-                    debt = result.get("부채총계", 0)
+                    revenue = result.get("매출액", 0.0)
+                    op = result.get("영업이익", 0.0)
+                    net = result.get("당기순이익", 0.0)
+                    eq = result.get("자본총계", 0.0)
+                    debt = result.get("부채총계", 0.0)
 
                     if revenue > 0:
                         result["영업이익률"] = (op / revenue) * 100 if op else 0.0
@@ -456,7 +467,7 @@ class DartConnector:
         collector_status.record_failure("dart_connector", f"재무제표 없음 ({corp_code})")
         return {}
 
-    def get_company_info_sync(self, corp_code: str) -> dict | None:
+    def get_company_info_sync(self, corp_code: str) -> Optional[Dict[str, Any]]:
         try:
             resp = requests.get(
                 f"{self.base_url}/company.json",
@@ -467,12 +478,17 @@ class DartConnector:
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "000":
-                return data
+                # 🔧 Session 39: dict()로 감싸 warn_return_any=true [no-any-return] 방지
+                # (search_notices_sync의 list() 래핑과 동일한 원리, 내용은 완전히
+                # 동일하되 얕은 복사본을 반환하는 점만 원본과 차이 있음 - 무해함)
+                return dict(data)
         except Exception as e:
             logger.error(f"❌ 기업 정보 조회 오류 ({corp_code}): {e}")
         return None
 
-    def search_notices_sync(self, corp_code: str, start_date: str | None = None, limit: int = 10) -> list | None:
+    def search_notices_sync(
+        self, corp_code: str, start_date: Optional[str] = None, limit: int = 10
+    ) -> Optional[List[Dict[str, Any]]]:
         if start_date is None:
             start_date = datetime.now().replace(month=1, day=1).strftime("%Y%m%d")
 
@@ -492,30 +508,29 @@ class DartConnector:
             resp.raise_for_status()
             data = resp.json()
             if data.get("status") == "000":
-                return data.get("list", [])
+                return list(data.get("list", []))
         except Exception as e:
             logger.error(f"❌ 공시 검색 오류 ({corp_code}): {e}")
         return None
 
-    # ============================================================
-    # 🔥 P1-7: Async Wrappers (asyncio.to_thread 사용)
-    # ============================================================
-    async def get_financials_async(self, corp_code: str, year: str = None) -> dict[str, float]:
+    async def get_financials_async(self, corp_code: str, year: Optional[str] = None) -> Dict[str, float]:
         """비동기 재무제표 조회 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.get_financials_sync, corp_code, year)
 
-    async def get_company_info_async(self, corp_code: str) -> dict | None:
+    async def get_company_info_async(self, corp_code: str) -> Optional[Dict[str, Any]]:
         """비동기 기업 정보 조회 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.get_company_info_sync, corp_code)
 
-    async def search_notices_async(self, corp_code: str, start_date: str | None = None, limit: int = 10) -> list | None:
+    async def search_notices_async(
+        self, corp_code: str, start_date: Optional[str] = None, limit: int = 10
+    ) -> Optional[List[Dict[str, Any]]]:
         """비동기 공시 검색 (이벤트 루프 블로킹 없음)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.search_notices_sync, corp_code, start_date, limit)
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> Dict[str, Any]:
         return {
             "daily_used": self.daily_used,
             "daily_limit": self.daily_limit,

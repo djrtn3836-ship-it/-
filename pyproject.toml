@@ -69,29 +69,44 @@ disallow_incomplete_defs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "telegram.*",
-    "aiohttp.*",
-    "websockets.*",
-    "yfinance.*",
-    "apscheduler.*",
-    "numpy.*",
-    "scipy.*",
-    "sklearn.*",
-    "xgboost.*",
-    "pandas.*",
-    "yaml.*",
-    "dotenv.*",
-    "psutil.*",
-    "reportlab.*",
-    "asyncpg.*",
-    "optuna.*",
-    "redis.*",   
+    "domain.models.signal",
+    "domain.strategies.base",
+    "domain.strategies.trend",
+    "domain.strategies.reversal",
+    "domain.strategies.breakout",
+    "filters.macro_filter",
+    "filters.sector_filter",
+    "filters.stock_filter",
+    "filters.korean_special_filter",
+    "filters.dynamic_weighter",
+    "application.analysis.atr_service",
+    "application.analysis.signal_pipeline",
+    "config.schema",
+    "core.logger",
+    "scheduler.macro_collector",
+    "data.db_manager",
+    "core.debug_tower",
+    "collector.collector_status",
+    "observability.tracer",
+    "observability.trace_config",
+    "observability.trace_id",
+    "observability.trace_propagation",
+    "observability.auto_trace",
+    "core.blackbox_logger",
+    "core.circuit_breaker",
+    "monitor.phase_transition_validator",
+    "scanner.deep_analyzer",
     "data.kiwoom_connector",
     "scanner.realtime_monitor",
     "feedback.feedback_learner",
     "report.weekly_pdf",
-
+    "data.dart_connector",
+    "infrastructure.dart.client",
 ]
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 ignore_missing_imports = true
 
 [tool.ruff]
