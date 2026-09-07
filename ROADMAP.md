@@ -4,7 +4,7 @@ $content = @'
 
 
 
-> 최종 갱신: Session 38
+> 최종 갱신: Session 39
 
 > 기준 버전: V10 DDD 아키텍처
 
@@ -12,7 +12,9 @@ $content = @'
 
 > 테스트 상태: 1095/1095 passed (재검증 필요)
 
-> mypy strict 완료 모듈: 31개
+> mypy strict 완료 모듈: 33개
+
+> 전체 mypy 오류: 637 -> 약 574 예상 (검증 필요)
 
 
 
@@ -20,61 +22,49 @@ $content = @'
 
 
 
-\## dart\_connector.py / client.py 관련 확정 사항
+\## Session 39 핵심 발견
 
 
 
-data/dart\_connector.py와 infrastructure/dart/client.py는 둘 다 실제로
+data/dart\_connector.py와 infrastructure/dart/client.py는 CACHE\_FILE 경로
 
-존재하는 파일이다. app/bootstrap.py는 try/except ImportError로 client.py를
+한 줄을 제외하고 내용이 완전히 동일한 중복 파일임을 확정. 두 파일 모두
 
-우선 사용하지만, report/weekly\_pdf.py는 data.dart\_connector를 직접(무조건)
+라이브 코드(각각 weekly\_pdf.py, bootstrap.py가 사용). 정밀 검증 과정에서
 
-import하므로 두 파일 모두 라이브 코드이며 어느 쪽도 배제 대상이 아니다.
+두 가지 실제 mypy strict 위반 지점을 발견해 수정:
 
-다음 세션에서 두 파일의 전체 내용을 확보해 순서대로 mypy strict를 적용한다.
+1\) \_load\_cache()의 len() 호출이 Optional\[Dict] 타입에 대해 \[Sized] 오류를
 
+&#x20;  유발할 수 있어 len(x or {}) 가드 적용
 
+2\) get\_company\_info\_sync()가 warn\_return\_any=true 설정 하에서 Any를
 
-\## Session 38 완료 작업
+&#x20;  직접 반환해 \[no-any-return] 오류를 유발하므로 dict()로 감싸 방지
 
-
-
-\- data/kiwoom\_connector.py: ConnectionClosed 예외 분기 보존 확인, mypy strict 완료
-
-\- scanner/realtime\_monitor.py: UnboundLocalError 잠재 결함 수정, mypy strict 완료
-
-\- feedback/feedback\_learner.py, report/weekly\_pdf.py: mypy strict 완료
-
-\- pyproject.toml: strict 모듈 31개
+&#x20;  (search\_notices\_sync의 list() 래핑과 동일 원리, 결과는 얕은 복사본)
 
 
 
-\## 미해결 관찰 사항
+이번 세션에서는 타입 힌트만 추가하고 두 파일의 중복 구조 리팩터링은 보류.
 
 
 
-Session 37에서 deep\_analyzer.py 오류가 0건이 되었음에도 "오류 있는 파일 수"가
-
-79에서 그대로 유지된 현상 확인. strict 목록 확장이 다른 파일(예: bootstrap.py)에서
-
-새로운 오류를 노출시켰을 가능성. 다음 세션에서 전체 그룹 통계로 원인 파일 확인 필요.
+\## 다음 우선순위 (Session 40\~)
 
 
 
-\## 다음 우선순위 (Session 39\~)
+1\. app/bootstrap.py mypy strict (이미 전체 내용 확보됨, 재요청 불필요,
 
+&#x20;  단 1300줄 이상 대형 파일이므로 신중히 처리)
 
+2\. core/exception\_handler.py + core/exceptions.py (소형, 각 2개 오류 추정)
 
-1\. data/dart\_connector.py + infrastructure/dart/client.py 전체 내용 확보 후 mypy strict 적용
+3\. data/news\_crawler.py + infrastructure/news/crawler.py
 
-2\. app/bootstrap.py: 이미 전체 내용 확보됨(재요청 불필요), 1300줄 이상 대형 파일이므로
+&#x20;  (dart\_connector와 유사한 중복 쌍 가능성, 확인 필요)
 
-&#x20;  신중하게 다음 세션에서 처리
-
-3\. core/exception\_handler.py, core/exceptions.py, data/news\_crawler.py/
-
-&#x20;  infrastructure/news/crawler.py 순차 정리
+4\. 전체 mypy 오류 500개 이하 달성 목표
 
 
 
