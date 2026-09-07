@@ -4,7 +4,7 @@ $content = @'
 
 
 
-> 최종 갱신: Session 36
+> 최종 갱신: Session 38
 
 > 기준 버전: V10 DDD 아키텍처
 
@@ -12,9 +12,7 @@ $content = @'
 
 > 테스트 상태: 1095/1095 passed (재검증 필요)
 
-> signal\_pipeline.py 의존성 체인 mypy strict: 0 errors (달성 완료)
-
-> 전체 코드베이스 mypy (.): 902개에서 감소 예정, 실측 필요
+> mypy strict 완료 모듈: 31개
 
 
 
@@ -22,57 +20,61 @@ $content = @'
 
 
 
-\## Session 36 핵심 조치
+\## dart\_connector.py / client.py 관련 확정 사항
 
 
 
-1\. 중복 파일 3쌍(daily\_monitor.py, phase\_transition\_validator.py,
+data/dart\_connector.py와 infrastructure/dart/client.py는 둘 다 실제로
 
-&#x20;  shadow\_logger.py, 각 monitor/analytics 경로)의 오류 개수가 2배수/4배수
+존재하는 파일이다. app/bootstrap.py는 try/except ImportError로 client.py를
 
-&#x20;  패턴을 보이는 것을 근거로 두 경로가 동일 구조의 중복 파일임을 확정.
+우선 사용하지만, report/weekly\_pdf.py는 data.dart\_connector를 직접(무조건)
 
-&#x20;  app/bootstrap.py의 실제 import 문으로 monitor/phase\_transition\_validator.py만
+import하므로 두 파일 모두 라이브 코드이며 어느 쪽도 배제 대상이 아니다.
 
-&#x20;  라이브임을 확인.
-
-2\. pyproject.toml exclude에 5개 죽은 코드 파일 추가
-
-&#x20;  (daily\_monitor.py x2, shadow\_logger.py x2, analytics/phase\_transition\_validator.py)
-
-3\. monitor/phase\_transition\_validator.py mypy strict 완료 (로직 무변경)
-
-4\. scanner/deep\_analyzer.py는 실제 파일 내용 미확보로 이번 세션에서 보류
-
-&#x20;  (추측 기반 재작성의 위험성 - schema.py/postgres\_manager.py 사고 재발 방지)
+다음 세션에서 두 파일의 전체 내용을 확보해 순서대로 mypy strict를 적용한다.
 
 
 
-\## 백로그
+\## Session 38 완료 작업
 
 
 
-\- FeatureStore 처리 방향 미결정
+\- data/kiwoom\_connector.py: ConnectionClosed 예외 분기 보존 확인, mypy strict 완료
 
-\- daily\_monitor.py 두 경로의 실제 내용 차이 여부 미확인 (오류 패턴이
+\- scanner/realtime\_monitor.py: UnboundLocalError 잠재 결함 수정, mypy strict 완료
 
-&#x20; 2배수가 아니라서 동일 파일이 아닐 가능성 있음, 확인 필요)
+\- feedback/feedback\_learner.py, report/weekly\_pdf.py: mypy strict 완료
 
-
-
-\## 다음 우선순위 (Session 37\~)
+\- pyproject.toml: strict 모듈 31개
 
 
 
-1\. scanner/deep\_analyzer.py 전체 내용 확보 후 mypy strict 적용
+\## 미해결 관찰 사항
 
-&#x20;  (반드시 실제 파일을 먼저 받은 뒤에만 작업)
 
-2\. mypy . 잔여 오류 상위 파일(kiwoom\_connector.py, weekly\_pdf.py, bootstrap.py,
 
-&#x20;  telegram\_commands.py, dart\_connector.py 등) 순차 공략
+Session 37에서 deep\_analyzer.py 오류가 0건이 되었음에도 "오류 있는 파일 수"가
 
-3\. Phase 4 마지막 항목 또는 Phase 5 진입 검토
+79에서 그대로 유지된 현상 확인. strict 목록 확장이 다른 파일(예: bootstrap.py)에서
+
+새로운 오류를 노출시켰을 가능성. 다음 세션에서 전체 그룹 통계로 원인 파일 확인 필요.
+
+
+
+\## 다음 우선순위 (Session 39\~)
+
+
+
+1\. data/dart\_connector.py + infrastructure/dart/client.py 전체 내용 확보 후 mypy strict 적용
+
+2\. app/bootstrap.py: 이미 전체 내용 확보됨(재요청 불필요), 1300줄 이상 대형 파일이므로
+
+&#x20;  신중하게 다음 세션에서 처리
+
+3\. core/exception\_handler.py, core/exceptions.py, data/news\_crawler.py/
+
+&#x20;  infrastructure/news/crawler.py 순차 정리
 
 
 
