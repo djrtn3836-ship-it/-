@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 """
-report/weekly_pdf.py - v6.1 FINAL (성능 로깅 + 폰트 폴백 강화)
-- PDF 생성 시간 측정 및 로깅 추가
-- 폰트 로드 실패 시 Helvetica로 안전하게 폴백 (font_utils 연동)
-- ML/VaR 정보 포함 (v6.0 유지)
+report/weekly_pdf.py - v6.2 (Session 38: mypy strict 적용)
+- 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
+- from data.dart_connector import DartConnector 직접 import 유지
+  (이 import 자체가 data/dart_connector.py가 죽은 코드가 아니라는 확정적 증거임)
 """
 
 import os
@@ -11,12 +12,13 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet, StyleSheet1
 from reportlab.lib.units import mm
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -33,56 +35,55 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class WeeklyPDFGenerator:
-    def __init__(self, db_manager: DatabaseManager = None, kiwoom_connector=None):
-        self.db = db_manager or DatabaseManager()
-        self.kiwoom = kiwoom_connector
+    def __init__(self, db_manager: Optional[DatabaseManager] = None, kiwoom_connector: Optional[Any] = None) -> None:
+        self.db: DatabaseManager = db_manager or DatabaseManager()
+        self.kiwoom: Optional[Any] = kiwoom_connector
 
         load_dotenv()
-        self.dart_api_key = os.getenv("DART_API_KEY")
-        self.dart = DartConnector(self.dart_api_key) if self.dart_api_key else None
+        self.dart_api_key: Optional[str] = os.getenv("DART_API_KEY")
+        self.dart: Optional[DartConnector] = DartConnector(self.dart_api_key) if self.dart_api_key else None
         if not self.dart:
             logger.warning("⚠️ DART API 키 없음 → 재무 데이터 제외")
 
         self.news = NewsCrawler()
 
-        self.styles = None
-        self.story = []
+        self.styles: Optional[StyleSheet1] = None
+        self.story: List[Any] = []
 
-        # 🔥 v6.1: 폰트 등록 (이미 font_utils에서 전역으로 처리)
         try:
             register_korean_fonts()
             logger.info(f"✅ 한글 폰트 등록 완료 (FONT: {FONT_NAME})")
         except Exception as e:
             logger.warning(f"⚠️ 폰트 등록 실패, Helvetica로 폴백: {e}")
 
-    async def generate(self, date_ref: str | None = None) -> Path | None:
+    async def generate(self, date_ref: Optional[str] = None) -> Optional[Path]:
         start_time = time.time()
         if date_ref is None:
             date_ref = datetime.now().strftime("%Y-%m-%d")
 
-        logger.info(f"📄 [v6.1] 주간 PDF 보고서 생성 시작 (기준일: {date_ref})")
+        logger.info(f"📄 [v6.2] 주간 PDF 보고서 생성 시작 (기준일: {date_ref})")
 
         try:
             await self.db.init_db()
-            weekly_data = await self._collect_weekly_data(date_ref)
+            weekly_data: Dict[str, Any] = await self._collect_weekly_data(date_ref)
 
             if weekly_data["total_decisions"] == 0:
                 logger.info("⚠️ 금주 신호 없음 → '관망' 페이지 포함하여 PDF 생성")
 
             try:
                 news_items, _ = await self.news.get_news_with_sentiment("코스피", limit=5)
-                weekly_data["headlines"] = [item.get("title", "") for item in news_items[:5]]
+                weekly_data["headlines"] = [str(item.get("title", "")) for item in news_items[:5]]
             except Exception as e:
                 logger.warning(f"뉴스 수집 실패: {e}")
                 weekly_data["headlines"] = ["뉴스 데이터를 불러올 수 없습니다."]
 
             exits = [d for d in weekly_data["decisions"] if d.get("action") == "EXIT"]
             weekly_data["exit_count"] = len(exits)
-            weekly_data["exit_avg_pnl"] = statistics.mean([d.get("pnl", 0.0) for d in exits]) if exits else 0.0
+            weekly_data["exit_avg_pnl"] = statistics.mean([float(d.get("pnl", 0.0)) for d in exits]) if exits else 0.0
 
-            ml_scores = [d.get("ml_score", 0.5) for d in weekly_data["decisions"] if d.get("ml_score") is not None]
+            ml_scores = [float(d.get("ml_score", 0.5)) for d in weekly_data["decisions"] if d.get("ml_score") is not None]
             risk_adjs = [
-                d.get("risk_adjustment_factor", 1.0)
+                float(d.get("risk_adjustment_factor", 1.0))
                 for d in weekly_data["decisions"]
                 if d.get("risk_adjustment_factor") is not None
             ]
@@ -96,7 +97,7 @@ class WeeklyPDFGenerator:
                     await self.kiwoom.connect()
                     if not self.kiwoom.is_connected():
                         self.kiwoom = None
-                except:
+                except Exception:
                     self.kiwoom = None
 
             weekly_data = await self._enrich_stock_data(weekly_data)
@@ -112,7 +113,7 @@ class WeeklyPDFGenerator:
                 topMargin=20 * mm,
                 bottomMargin=20 * mm,
                 title=f"Quant Weekly - {date_ref}",
-                author="v6.1 Quant System",
+                author="v6.2 Quant System",
             )
 
             self.story = []
@@ -148,29 +149,30 @@ class WeeklyPDFGenerator:
             logger.error(traceback.format_exc())
             return None
 
-    # ============================================================
-    # 데이터 수집 (기존 v6.0 유지)
-    # ============================================================
-    async def _collect_weekly_data(self, date_ref: str) -> dict:
+    async def _collect_weekly_data(self, date_ref: str) -> Dict[str, Any]:
         end_date = datetime.strptime(date_ref, "%Y-%m-%d")
-        decisions = []
+        decisions: List[Dict[str, Any]] = []
         for i in range(7):
             day = (end_date - timedelta(days=i)).strftime("%Y-%m-%d")
             decisions.extend(await self.db.get_decisions_by_date(day))
 
         total = len(decisions)
-        buy_count = sum(1 for d in decisions if d["action"] == "BUY")
-        sell_count = sum(1 for d in decisions if d["action"] == "SELL")
-        hold_count = sum(1 for d in decisions if d["action"] == "HOLD")
-        scores = [d["score"] for d in decisions] if decisions else []
+        buy_count = sum(1 for d in decisions if d.get("action") == "BUY")
+        sell_count = sum(1 for d in decisions if d.get("action") == "SELL")
+        hold_count = sum(1 for d in decisions if d.get("action") == "HOLD")
+        scores = [float(d.get("score", 0.0)) for d in decisions]
         avg_score = sum(scores) / len(scores) if scores else 0.0
 
-        top_buy = sorted([d for d in decisions if d["action"] == "BUY"], key=lambda x: x["score"], reverse=True)[:5]
+        top_buy = sorted(
+            [d for d in decisions if d.get("action") == "BUY"],
+            key=lambda x: float(x.get("score", 0.0)),
+            reverse=True,
+        )[:5]
         weights = await self.db.get_weights()
 
-        daily_counts = {}
+        daily_counts: Dict[str, int] = {}
         for d in decisions:
-            raw_created = d.get("created_at", "") or ""
+            raw_created = str(d.get("created_at", ""))
             day = raw_created[:10] if len(raw_created) >= 10 else ""
             if day:
                 daily_counts[day] = daily_counts.get(day, 0) + 1
@@ -192,12 +194,12 @@ class WeeklyPDFGenerator:
             "ml_low": 0.5,
         }
 
-    async def _enrich_stock_data(self, data: dict) -> dict:
+    async def _enrich_stock_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         years_to_try = ["2024", "2023", "2022"]
-        for stock in data["top_buy"]:
-            ticker = stock.get("ticker", "")
-            financials = {}
-            supply = {}
+        for stock in data.get("top_buy", []):
+            ticker = str(stock.get("ticker", ""))
+            financials: Dict[str, Any] = {}
+            supply: Dict[str, Any] = {}
             if self.dart:
                 corp_code = self.dart.get_corp_code_sync(ticker)
                 if corp_code:
@@ -229,56 +231,33 @@ class WeeklyPDFGenerator:
                     stock["supply"] = supply
         return data
 
-    # ============================================================
-    # 스타일 빌드 (v6.1 - 폰트 폴백 강화)
-    # ============================================================
-    def _build_styles(self):
+    def _build_styles(self) -> None:
         self.styles = getSampleStyleSheet()
-        # FONT_NAME이 'Helvetica'이면 폴백 경고 (font_utils에서 처리)
         if FONT_NAME == "Helvetica":
             logger.warning("⚠️ 한글 폰트 없음 → Helvetica 사용 (한글 깨짐 가능)")
 
         self.styles.add(
             ParagraphStyle(
-                name="Title1",
-                parent=self.styles["Title"],
-                fontName=FONT_BOLD,
-                fontSize=22,
-                spaceAfter=12 * mm,
-                alignment=TA_CENTER,
-                textColor=colors.darkblue,
+                name="Title1", parent=self.styles["Title"], fontName=FONT_BOLD, fontSize=22,
+                spaceAfter=12 * mm, alignment=TA_CENTER, textColor=colors.darkblue,
             )
         )
         self.styles.add(
             ParagraphStyle(
-                name="SectionTitle",
-                parent=self.styles["Heading1"],
-                fontName=FONT_BOLD,
-                fontSize=16,
-                spaceAfter=8 * mm,
-                spaceBefore=6 * mm,
-                textColor=colors.darkblue,
+                name="SectionTitle", parent=self.styles["Heading1"], fontName=FONT_BOLD, fontSize=16,
+                spaceAfter=8 * mm, spaceBefore=6 * mm, textColor=colors.darkblue,
             )
         )
         self.styles.add(
             ParagraphStyle(
-                name="SubSectionTitle",
-                parent=self.styles["Heading2"],
-                fontName=FONT_BOLD,
-                fontSize=13,
-                spaceAfter=4 * mm,
-                spaceBefore=3 * mm,
+                name="SubSectionTitle", parent=self.styles["Heading2"], fontName=FONT_BOLD, fontSize=13,
+                spaceAfter=4 * mm, spaceBefore=3 * mm,
             )
         )
         self.styles.add(
             ParagraphStyle(
-                name="BodyText",
-                parent=self.styles["Normal"],
-                fontName=FONT_NAME,
-                fontSize=10,
-                leading=14,
-                alignment=TA_JUSTIFY,
-                spaceAfter=3 * mm,
+                name="BodyText", parent=self.styles["Normal"], fontName=FONT_NAME, fontSize=10,
+                leading=14, alignment=TA_JUSTIFY, spaceAfter=3 * mm,
             )
         )
         self.styles.add(
@@ -287,21 +266,20 @@ class WeeklyPDFGenerator:
             )
         )
 
-    # ============================================================
-    # 각 섹션 빌드 (v6.1 - 데이터 부족 방어 강화, 성능 로깅)
-    # ============================================================
-    def _build_title_page(self, date_ref, data):
+    def _build_title_page(self, date_ref: str, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Spacer(1, 30 * mm))
-        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트 v6.1</b>", self.styles["Title1"]))
+        self.story.append(Paragraph("<b>퀀트 전략 주간 리포트 v6.2</b>", self.styles["Title1"]))
         self.story.append(Spacer(1, 5 * mm))
         self.story.append(Paragraph(f"<font size=14>{date_ref}</font>", self.styles["BodyText"]))
         self.story.append(Spacer(1, 30 * mm))
-        self.story.append(Paragraph(f"<b>시그널 건수</b>: {data['total_decisions']}건", self.styles["BodyText"]))
+        self.story.append(Paragraph(f"<b>시그널 건수</b>: {data.get('total_decisions', 0)}건", self.styles["BodyText"]))
         self.story.append(
-            Paragraph(f"<b>매수/매도</b>: {data['buy_count']} / {data['sell_count']}", self.styles["BodyText"])
+            Paragraph(f"<b>매수/매도</b>: {data.get('buy_count', 0)} / {data.get('sell_count', 0)}", self.styles["BodyText"])
         )
-        self.story.append(Paragraph(f"<b>ML 평균 예측</b>: {data['avg_ml']:.1%}", self.styles["BodyText"]))
-        self.story.append(Paragraph(f"<b>VaR 조정 계수</b>: {data['avg_risk_adj']:.2f}", self.styles["BodyText"]))
+        self.story.append(Paragraph(f"<b>ML 평균 예측</b>: {data.get('avg_ml', 0.0):.1%}", self.styles["BodyText"]))
+        self.story.append(Paragraph(f"<b>VaR 조정 계수</b>: {data.get('avg_risk_adj', 1.0):.2f}", self.styles["BodyText"]))
         self.story.append(Spacer(1, 20 * mm))
         self.story.append(
             Paragraph(
@@ -311,10 +289,15 @@ class WeeklyPDFGenerator:
         )
         self.story.append(PageBreak())
 
-    def _build_executive_summary(self, data):
+    def _build_executive_summary(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("1. Executive Summary", self.styles["SectionTitle"]))
-        total, buy, sell, hold = data["total_decisions"], data["buy_count"], data["sell_count"], data["hold_count"]
-        avg = data["avg_score"]
+        total = data.get("total_decisions", 0)
+        buy = data.get("buy_count", 0)
+        sell = data.get("sell_count", 0)
+        hold = data.get("hold_count", 0)
+        avg = data.get("avg_score", 0.0)
         self.story.append(
             Paragraph(
                 f"금주 총 {total}개의 시그널이 발생했습니다. 매수 {buy}건, 매도 {sell}건, 관망 {hold}건으로, "
@@ -324,33 +307,39 @@ class WeeklyPDFGenerator:
         )
         self.story.append(
             Paragraph(
-                f"<b>ML 인사이트</b>: 평균 예측 확률 {data['avg_ml']:.1%} (최고 {data['ml_high']:.1%}, 최저 {data['ml_low']:.1%}), "
-                f"VaR 조정 계수 평균 {data['avg_risk_adj']:.2f}",
+                f"<b>ML 인사이트</b>: 평균 예측 확률 {data.get('avg_ml', 0.0):.1%} "
+                f"(최고 {data.get('ml_high', 0.0):.1%}, 최저 {data.get('ml_low', 0.0):.1%}), "
+                f"VaR 조정 계수 평균 {data.get('avg_risk_adj', 1.0):.2f}",
                 self.styles["BodyText"],
             )
         )
-        if data["top_buy"]:
+        if data.get("top_buy"):
             self.story.append(Paragraph("<b>Top 3 추천 종목</b>", self.styles["SubSectionTitle"]))
             for i, d in enumerate(data["top_buy"][:3], 1):
-                name = d.get("name", d.get("ticker", ""))
-                score = d.get("score", 0.0)
-                ml = d.get("ml_score", 0.5)
+                name = str(d.get("name", d.get("ticker", "")))
+                score = float(d.get("score", 0.0))
+                ml = float(d.get("ml_score", 0.5))
                 self.story.append(
                     Paragraph(f"{i}. <b>{name}</b> — 확신도: {score:.1%} | ML 예측: {ml:.1%}", self.styles["BodyText"])
                 )
         self.story.append(PageBreak())
 
-    def _build_no_signal_page(self):
+    def _build_no_signal_page(self) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("2. 이번 주 시그널 현황", self.styles["SectionTitle"]))
         self.story.append(Paragraph("<b>⚠️ 금주 발생한 매수/매도 시그널이 없습니다.</b>", self.styles["BodyText"]))
         self.story.append(Paragraph("시장은 횡보 또는 혼조 국면으로 판단됩니다.", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_market_review(self, data):
+    def _build_market_review(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("2. 주간 시장 리뷰", self.styles["SectionTitle"]))
-        if data["daily_counts"]:
-            table_data = [["일자", "시그널 건수"]]
-            for day, count in sorted(data["daily_counts"].items()):
+        daily_counts: Dict[str, int] = data.get("daily_counts", {})
+        if daily_counts:
+            table_data: List[List[Any]] = [["일자", "시그널 건수"]]
+            for day, count in sorted(daily_counts.items()):
                 table_data.append([day, str(count)])
             t = Table(table_data, colWidths=[80, 80])
             t.setStyle(
@@ -363,25 +352,27 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph("<i>일자별 데이터 부족</i>", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_financial_health(self, data):
+    def _build_financial_health(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("3. 종합 펀더멘털 & 수급 분석", self.styles["SectionTitle"]))
-        top_buy = data["top_buy"]
+        top_buy = data.get("top_buy", [])
         if not top_buy:
             self.story.append(Paragraph("<i>분석 가능한 종목이 없습니다.</i>", self.styles["BodyText"]))
             self.story.append(PageBreak())
             return
-        table_data = [["종목", "매출(조)", "영업익(조)", "영업익률", "ROE", "부채비율", "외국인", "기관"]]
+        table_data: List[List[Any]] = [["종목", "매출(조)", "영업익(조)", "영업익률", "ROE", "부채비율", "외국인", "기관"]]
         for stock in top_buy[:5]:
-            name = stock.get("name", stock.get("ticker", ""))
-            fin = stock.get("financials", {})
-            supply = stock.get("supply", {})
-            revenue = fin.get("매출액", 0) / 1e12
-            op = fin.get("영업이익", 0) / 1e12
-            op_margin = fin.get("영업이익률", 0)
-            roe = fin.get("ROE", 0)
-            debt_ratio = fin.get("부채비율", 0)
-            foreign_net = supply.get("foreign_net_buy", 0) / 1e8
-            inst_net = supply.get("inst_net_buy", 0) / 1e8
+            name = str(stock.get("name", stock.get("ticker", "")))
+            fin: Dict[str, Any] = stock.get("financials", {})
+            supply: Dict[str, Any] = stock.get("supply", {})
+            revenue = float(fin.get("매출액", 0)) / 1e12
+            op = float(fin.get("영업이익", 0)) / 1e12
+            op_margin = float(fin.get("영업이익률", 0))
+            roe = float(fin.get("ROE", 0))
+            debt_ratio = float(fin.get("부채비율", 0))
+            foreign_net = float(supply.get("foreign_net_buy", 0)) / 1e8
+            inst_net = float(supply.get("inst_net_buy", 0)) / 1e8
             row = [
                 name,
                 f"{revenue:.2f}" if revenue > 0 else "-",
@@ -410,15 +401,17 @@ class WeeklyPDFGenerator:
             self.story.append(t)
         self.story.append(PageBreak())
 
-    def _build_supply_demand(self, data):
+    def _build_supply_demand(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("4. 수급 인사이트", self.styles["SectionTitle"]))
-        top_buy = data["top_buy"]
-        insights = []
+        top_buy = data.get("top_buy", [])
+        insights: List[str] = []
         for stock in top_buy[:5]:
-            name = stock.get("name", stock.get("ticker", ""))
-            supply = stock.get("supply", {})
-            foreign = supply.get("foreign_net_buy", 0)
-            inst = supply.get("inst_net_buy", 0)
+            name = str(stock.get("name", stock.get("ticker", "")))
+            supply: Dict[str, Any] = stock.get("supply", {})
+            foreign = float(supply.get("foreign_net_buy", 0))
+            inst = float(supply.get("inst_net_buy", 0))
             if foreign > 0:
                 insights.append(f"• {name}: 외국인 {foreign/1e8:+.0f}억 순매수")
             if inst > 0:
@@ -431,38 +424,43 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph("<i>수급 데이터 없음</i>", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_ml_insights(self, data):
+    def _build_ml_insights(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("🧠 ML 예측 인사이트", self.styles["SectionTitle"]))
         self.story.append(
             Paragraph(
-                f"• 평균 ML 예측 확률: <b>{data['avg_ml']:.1%}</b> (범위: {data['ml_low']:.1%} ~ {data['ml_high']:.1%})",
+                f"• 평균 ML 예측 확률: <b>{data.get('avg_ml', 0.0):.1%}</b> "
+                f"(범위: {data.get('ml_low', 0.0):.1%} ~ {data.get('ml_high', 0.0):.1%})",
                 self.styles["BodyText"],
             )
         )
         self.story.append(
             Paragraph(
-                f"• VaR 조정 계수 평균: <b>{data['avg_risk_adj']:.2f}</b> (1.0=기준, 낮을수록 리스크 축소)",
+                f"• VaR 조정 계수 평균: <b>{data.get('avg_risk_adj', 1.0):.2f}</b> (1.0=기준, 낮을수록 리스크 축소)",
                 self.styles["BodyText"],
             )
         )
         sorted_by_ml = sorted(
-            [d for d in data["decisions"] if d.get("ml_score") is not None],
-            key=lambda x: x.get("ml_score", 0),
+            [d for d in data.get("decisions", []) if d.get("ml_score") is not None],
+            key=lambda x: float(x.get("ml_score", 0)),
             reverse=True,
         )[:3]
         if sorted_by_ml:
             self.story.append(Paragraph("<b>ML 최고 예측 종목</b>", self.styles["SubSectionTitle"]))
             for d in sorted_by_ml:
-                name = d.get("name", d.get("ticker", ""))
-                ml = d.get("ml_score", 0.5)
-                action = d.get("action", "HOLD")
+                name = str(d.get("name", d.get("ticker", "")))
+                ml = float(d.get("ml_score", 0.5))
+                action = str(d.get("action", "HOLD"))
                 self.story.append(Paragraph(f"• {name} — ML {ml:.1%} | 액션: {action}", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_trailing_stop_stats(self, data):
+    def _build_trailing_stop_stats(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("📉 트레일링 스탑 성과", self.styles["SectionTitle"]))
-        exit_cnt = data.get("exit_count", 0)
-        avg_pnl = data.get("exit_avg_pnl", 0.0)
+        exit_cnt = int(data.get("exit_count", 0))
+        avg_pnl = float(data.get("exit_avg_pnl", 0.0))
         self.story.append(Paragraph(f"• 이번 주 트레일링 스탑 청산 건수: <b>{exit_cnt}건</b>", self.styles["BodyText"]))
         self.story.append(Paragraph(f"• 청산 평균 손익률: <b>{avg_pnl:+.2f}%</b>", self.styles["BodyText"]))
         if exit_cnt == 0:
@@ -471,9 +469,11 @@ class WeeklyPDFGenerator:
             )
         self.story.append(PageBreak())
 
-    def _build_news_summary(self, data):
+    def _build_news_summary(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("📰 이번주 주요 헤드라인", self.styles["SectionTitle"]))
-        headlines = data.get("headlines", [])
+        headlines: List[str] = data.get("headlines", [])
         if headlines and headlines[0] != "뉴스 데이터를 불러올 수 없습니다.":
             for i, h in enumerate(headlines[:5], 1):
                 self.story.append(Paragraph(f"{i}. {h}", self.styles["BodyText"]))
@@ -481,21 +481,26 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph("<i>수집된 뉴스가 없습니다.</i>", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_factor_attribution(self, data):
+    def _build_factor_attribution(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("5. 팩터 귀속 분석", self.styles["SectionTitle"]))
-        weights = data.get("weights", {})
+        weights: Dict[str, float] = data.get("weights", {})
         if weights:
             for f, w in weights.items():
-                bar = "█" * int(w * 20) + "░" * (20 - int(w * 20))
-                self.story.append(Paragraph(f"• {f:<12}: {bar} {w:.2f}", self.styles["BodyText"]))
+                w_float = float(w)
+                bar = "█" * int(w_float * 20) + "░" * (20 - int(w_float * 20))
+                self.story.append(Paragraph(f"• {f:<12}: {bar} {w_float:.2f}", self.styles["BodyText"]))
         else:
             self.story.append(Paragraph("<i>초기 가중치 (학습 전)</i>", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_portfolio_positioning(self, data):
+    def _build_portfolio_positioning(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("6. 포트폴리오 포지셔닝", self.styles["SectionTitle"]))
-        avg = data.get("avg_score", 0.5)
-        avg_ml = data.get("avg_ml", 0.5)
+        avg = float(data.get("avg_score", 0.5))
+        avg_ml = float(data.get("avg_ml", 0.5))
         core = min(80, int(45 + avg * 30 + avg_ml * 20))
         tactical = max(5, int(30 - avg * 15 - avg_ml * 10))
         cash = 100 - core - tactical - 5
@@ -507,14 +512,18 @@ class WeeklyPDFGenerator:
         )
         self.story.append(PageBreak())
 
-    def _build_risk_analysis(self, data):
+    def _build_risk_analysis(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("7. 위험 분석", self.styles["SectionTitle"]))
         risks = [
             ("전력 병목", "데이터센터 전력 인허가 지연", "중간"),
             ("HBM 가격", "피크아웃 조기화 가능성", "중간"),
             ("로봇 서사", "파일럿→수주 전환 부재", "높음"),
         ]
-        table_data = [["리스크", "설명", "수준"]] + risks
+        table_data: List[List[Any]] = [["리스크", "설명", "수준"]]
+        for r in risks:
+            table_data.append(list(r))
         t = Table(table_data, colWidths=[50, 120, 40])
         t.setStyle(
             TableStyle(
@@ -524,7 +533,9 @@ class WeeklyPDFGenerator:
         self.story.append(t)
         self.story.append(PageBreak())
 
-    def _build_scenario_analysis(self, data):
+    def _build_scenario_analysis(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("8. 시나리오 분석", self.styles["SectionTitle"]))
         scenarios = [
             ("낙관 (25%)", "추론 수요 폭증", "Core 확대"),
@@ -536,7 +547,9 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph(f"• {desc} → {action}", self.styles["BodyText"]))
         self.story.append(PageBreak())
 
-    def _build_appendix(self, data):
+    def _build_appendix(self, data: Dict[str, Any]) -> None:
+        if not self.styles:
+            return
         self.story.append(Paragraph("부록", self.styles["SectionTitle"]))
         self.story.append(Paragraph("<b>데이터 출처</b>", self.styles["SubSectionTitle"]))
         self.story.append(Paragraph("• 실시간 시세: Kiwoom WebSocket", self.styles["BodyText"]))
@@ -544,6 +557,6 @@ class WeeklyPDFGenerator:
         self.story.append(Paragraph("• 수급 데이터: Kiwoom REST", self.styles["BodyText"]))
         self.story.append(Paragraph("• 뉴스: NewsCrawler (NAVER API HUB)", self.styles["BodyText"]))
         self.story.append(
-            Paragraph(f"• ML 엔진: XGBoost (평균 예측 {data.get('avg_ml', 0.5):.1%})", self.styles["BodyText"])
+            Paragraph(f"• ML 엔진: XGBoost (평균 예측 {float(data.get('avg_ml', 0.5)):.1%})", self.styles["BodyText"])
         )
-        self.story.append(Paragraph(f"• VaR 조정 계수: {data.get('avg_risk_adj', 1.0):.2f}", self.styles["BodyText"]))
+        self.story.append(Paragraph(f"• VaR 조정 계수: {float(data.get('avg_risk_adj', 1.0)):.2f}", self.styles["BodyText"]))

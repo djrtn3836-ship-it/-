@@ -85,7 +85,12 @@ module = [
     "reportlab.*",
     "asyncpg.*",
     "optuna.*",
-    "redis.*",
+    "redis.*",   
+    "data.kiwoom_connector",
+    "scanner.realtime_monitor",
+    "feedback.feedback_learner",
+    "report.weekly_pdf",
+
 ]
 ignore_missing_imports = true
 
