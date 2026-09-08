@@ -4,17 +4,17 @@ $content = @'
 
 
 
-> 최종 갱신: Session 40
+> 최종 갱신: Session 41
 
 > 기준 버전: V10 DDD 아키텍처
 
 > 현재 진입점: python app/main.py
 
-> 테스트 상태: 1095/1095 passed (재검증 필요)
+> 테스트 상태: 1095/1095 passed (이번 세션 pytest 미실행, 재확인 필요)
 
-> mypy strict 완료 모듈: 37개
+> mypy strict 완료 모듈: 38개
 
-> 전체 mypy 오류: 572 -> 약 526 예상 (검증 필요)
+> 전체 mypy 오류: 527 -> 검증 필요 (app/bootstrap.py 단독 실행 결과 대기)
 
 
 
@@ -22,55 +22,57 @@ $content = @'
 
 
 
-\## Session 40 핵심 성과
+\## Session 41 핵심 발견 - 잔여 오류 누적 현상
 
 
 
-core/exception\_handler.py에서 실제 운영 버그를 발견하고 수정함:
+Session 37\~40에 걸쳐 11개 파일을 strict 완료 처리했지만, 오류가 있는
 
-setup\_global\_exception\_handler()가 원본 핸들러(sys.excepthook, loop의 기존
+파일 총 개수는 79->77로 단 2개만 감소함(856->527 오류 감소와 불균형).
 
-예외 핸들러)를 새 핸들러로 교체한 "이후"에 캡처하고 있어, restore\_exception\_handler()
+이는 "완료"로 표시한 파일 중 다수(추정 9개)에 Select-Object -First 15로
 
-호출 시 커스텀 핸들러를 자기 자신으로 재설정하는 무의미한 동작이 되고
+잘린 목록에는 보이지 않는 소수의 잔여 오류가 남아있을 가능성을 시사함.
 
-진짜 원본으로는 절대 복원되지 않던 문제. 원본 값을 교체 전에 먼저
-
-캡처하도록 순서를 수정하여 근본 해결.
+실제로 kiwoom\_connector.py(345,383)와 client.py(493)가 이번에 재등장.
 
 
 
-core/exceptions.py의 handle\_exceptions 데코레이터는 Session 32에서 검증된
+\- kiwoom\_connector.py: Session 38에서 이미 str(resp.status) 수정을 적용했으므로
 
-observability/tracer.py의 traced() 패턴(Callable\[..., Any] + 분기별 정의)을
+&#x20; 동일 가설을 재적용하지 않고, 단독 mypy 실행으로 정확한 오류 원인을
 
-동일하게 적용하여 코드베이스 타입 처리 방식의 일관성을 유지.
+&#x20; 먼저 확인하기로 결정 (추측 대신 검증 우선 원칙, config/schema.py 오진
 
+&#x20; 반복 사례의 교훈 적용)
 
+\- app/bootstrap.py: 전체 파일 mypy strict 적용, self.db/kiwoom/monitor의
 
-data/news\_crawler.py + infrastructure/news/crawler.py는 dart\_connector 쌍과
+&#x20; Optional 가드 추가. Select-Object -First 15 목록에 525, 764만 나타났으나
 
-동일한 구조(모듈 독스트링만 다름)의 완전한 중복 파일임을 확정. 둘 다
+&#x20; 잘린 목록이므로 전체 오류 개수는 단독 실행으로 재확인 필요
 
-라이브 코드이므로 모두 타입 힌트 적용 완료.
+\- 신규 발견: core/settings.py 존재 가능성 (config/schema.py 독스트링에
 
-
-
-pyproject.toml: strict 모듈 33개 -> 37개.
-
-
-
-\## 다음 우선순위 (Session 41\~)
+&#x20; "통합 완료"로 기재되었으나 실제로는 별도 파일로 남아있을 수 있음, 확인 필요)
 
 
 
-1\. app/bootstrap.py mypy strict (이미 전체 내용 확보됨, 재요청 불필요,
+\## 다음 우선순위 (Session 42\~)
 
-&#x20;  단 1300줄 이상 대형 파일이므로 단독 세션으로 신중히 처리)
 
-2\. mypy 전체 실행으로 파일별 그룹 통계 재확인 (526 예측치 검증)
 
-3\. core/config.py, report/daily\_report.py, report/telegram\_commands.py 순차 공략
+1\. app/bootstrap.py, data/kiwoom\_connector.py, infrastructure/dart/client.py
+
+&#x20;  단독 mypy 실행 결과 확인 후 잔여 오류 정밀 수정
+
+2\. core/settings.py 실제 위치/사용 여부 확인
+
+3\. core/config.py, report/telegram\_sender.py, orchestrator/strategy\_router.py,
+
+&#x20;  report/telegram\_commands.py, report/daily\_report.py, core/scheduler.py
+
+&#x20;  전체 내용 확보 후 순차 처리
 
 4\. 전체 mypy 오류 500개 이하 달성 목표
 
