@@ -4,7 +4,7 @@ $content = @'
 
 
 
-> 최종 갱신: Session 39
+> 최종 갱신: Session 40
 
 > 기준 버전: V10 DDD 아키텍처
 
@@ -12,9 +12,9 @@ $content = @'
 
 > 테스트 상태: 1095/1095 passed (재검증 필요)
 
-> mypy strict 완료 모듈: 33개
+> mypy strict 완료 모듈: 37개
 
-> 전체 mypy 오류: 637 -> 약 574 예상 (검증 필요)
+> 전체 mypy 오류: 572 -> 약 526 예상 (검증 필요)
 
 
 
@@ -22,47 +22,55 @@ $content = @'
 
 
 
-\## Session 39 핵심 발견
+\## Session 40 핵심 성과
 
 
 
-data/dart\_connector.py와 infrastructure/dart/client.py는 CACHE\_FILE 경로
+core/exception\_handler.py에서 실제 운영 버그를 발견하고 수정함:
 
-한 줄을 제외하고 내용이 완전히 동일한 중복 파일임을 확정. 두 파일 모두
+setup\_global\_exception\_handler()가 원본 핸들러(sys.excepthook, loop의 기존
 
-라이브 코드(각각 weekly\_pdf.py, bootstrap.py가 사용). 정밀 검증 과정에서
+예외 핸들러)를 새 핸들러로 교체한 "이후"에 캡처하고 있어, restore\_exception\_handler()
 
-두 가지 실제 mypy strict 위반 지점을 발견해 수정:
+호출 시 커스텀 핸들러를 자기 자신으로 재설정하는 무의미한 동작이 되고
 
-1\) \_load\_cache()의 len() 호출이 Optional\[Dict] 타입에 대해 \[Sized] 오류를
+진짜 원본으로는 절대 복원되지 않던 문제. 원본 값을 교체 전에 먼저
 
-&#x20;  유발할 수 있어 len(x or {}) 가드 적용
-
-2\) get\_company\_info\_sync()가 warn\_return\_any=true 설정 하에서 Any를
-
-&#x20;  직접 반환해 \[no-any-return] 오류를 유발하므로 dict()로 감싸 방지
-
-&#x20;  (search\_notices\_sync의 list() 래핑과 동일 원리, 결과는 얕은 복사본)
+캡처하도록 순서를 수정하여 근본 해결.
 
 
 
-이번 세션에서는 타입 힌트만 추가하고 두 파일의 중복 구조 리팩터링은 보류.
+core/exceptions.py의 handle\_exceptions 데코레이터는 Session 32에서 검증된
+
+observability/tracer.py의 traced() 패턴(Callable\[..., Any] + 분기별 정의)을
+
+동일하게 적용하여 코드베이스 타입 처리 방식의 일관성을 유지.
 
 
 
-\## 다음 우선순위 (Session 40\~)
+data/news\_crawler.py + infrastructure/news/crawler.py는 dart\_connector 쌍과
+
+동일한 구조(모듈 독스트링만 다름)의 완전한 중복 파일임을 확정. 둘 다
+
+라이브 코드이므로 모두 타입 힌트 적용 완료.
+
+
+
+pyproject.toml: strict 모듈 33개 -> 37개.
+
+
+
+\## 다음 우선순위 (Session 41\~)
 
 
 
 1\. app/bootstrap.py mypy strict (이미 전체 내용 확보됨, 재요청 불필요,
 
-&#x20;  단 1300줄 이상 대형 파일이므로 신중히 처리)
+&#x20;  단 1300줄 이상 대형 파일이므로 단독 세션으로 신중히 처리)
 
-2\. core/exception\_handler.py + core/exceptions.py (소형, 각 2개 오류 추정)
+2\. mypy 전체 실행으로 파일별 그룹 통계 재확인 (526 예측치 검증)
 
-3\. data/news\_crawler.py + infrastructure/news/crawler.py
-
-&#x20;  (dart\_connector와 유사한 중복 쌍 가능성, 확인 필요)
+3\. core/config.py, report/daily\_report.py, report/telegram\_commands.py 순차 공략
 
 4\. 전체 mypy 오류 500개 이하 달성 목표
 
