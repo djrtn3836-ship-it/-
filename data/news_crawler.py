@@ -1,9 +1,10 @@
+# -*- coding: utf-8 -*-
 """
-data/news_crawler.py - v6.3.0 FINAL (재시도 + Fallback + 동적 TTL)
-- 수집 실패 시 지수 백오프 재시도 (최대 3회)
-- 캐시 TTL 동적 조정 (성공 시 3600초, 실패 시 7200초로 연장)
-- CollectorStatusManager 연동 (상태 추적)
-- Circuit Breaker 유지
+data/news_crawler.py - v6.3.1 (Session 40: mypy strict 적용)
+- 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
+- if self._session is None: break 가드는 mypy strict의 Optional 타입 좁히기를
+  위해 필요한 방어 코드입니다(원본은 connect() 호출 후 그대로 진행). 정상 동작
+  경로에서는 실행되지 않는 순수 타입 안전망입니다.
 """
 
 import asyncio
@@ -12,6 +13,7 @@ import os
 import re
 import socket
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from aiohttp.resolver import ThreadedResolver
@@ -26,43 +28,44 @@ logger = setup_logger("news")
 
 
 class NewsCrawler:
-    def __init__(self):
+    def __init__(self) -> None:
         load_dotenv()
-        self.client_id = os.getenv("NAVER_CLIENT_ID")
-        self.client_secret = os.getenv("NAVER_CLIENT_SECRET")
-        self._session: aiohttp.ClientSession | None = None
-        self._cache = {}
-        self._cache_time = {}
-        self._cache_ttl = 3600  # 기본 1시간
+        self.client_id: Optional[str] = os.getenv("NAVER_CLIENT_ID")
+        self.client_secret: Optional[str] = os.getenv("NAVER_CLIENT_SECRET")
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
+        self._cache_time: Dict[str, float] = {}
+        self._cache_ttl: int = 3600
 
         self._connector = aiohttp.TCPConnector(
             resolver=ThreadedResolver(), use_dns_cache=False, family=socket.AF_INET, ttl_dns_cache=0
         )
 
-        # 🔥 v6.3.0: CollectorStatus 등록
         collector_status.register("news_crawler", freshness_seconds=3600)
 
         if not self.client_id or not self.client_secret:
             logger.warning("⚠️ NAVER_CLIENT_ID / SECRET 미설정 → 뉴스 수집 비활성화")
 
-    async def connect(self):
+    async def connect(self) -> None:
         if self._session is None:
             self._session = aiohttp.ClientSession(connector=self._connector)
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         if self._session:
             await self._session.close()
             self._session = None
 
     @NEWS_CRAWLER_CB.protect
-    async def fetch_news(self, ticker: str, limit: int = 5, max_retries: int = 3) -> tuple[list[dict], float] | None:
+    async def fetch_news(
+        self, ticker: str, limit: int = 5, max_retries: int = 3
+    ) -> Optional[Tuple[List[Dict[str, Any]], float]]:
         if not self.client_id or not self.client_secret:
             return [], 0.0
 
         if self._session is None:
             await self.connect()
 
-        stock_name_map = {
+        stock_name_map: Dict[str, str] = {
             "005930": "삼성전자",
             "000660": "SK하이닉스",
             "005380": "현대차",
@@ -71,27 +74,29 @@ class NewsCrawler:
             "006400": "삼성SDI",
             "207940": "삼성바이오로직스",
         }
-        query = stock_name_map.get(ticker, ticker)
+        query: str = stock_name_map.get(ticker, ticker)
 
         url = "https://naverapihub.apigw.ntruss.com/search/v1/news"
-        headers = {
+        headers: Dict[str, str] = {
             "X-NCP-APIGW-API-KEY-ID": self.client_id,
             "X-NCP-APIGW-API-KEY": self.client_secret,
             "Accept": "application/json",
         }
-        params = {
+        params: Dict[str, Any] = {
             "query": query,
             "display": limit,
             "sort": "date",
             "format": "json",
         }
 
-        # 🔥 v6.3.0: 재시도 루프 (지수 백오프)
-        last_error = None
+        last_error: Optional[str] = None
         for attempt in range(max_retries + 1):
             try:
+                if self._session is None:
+                    break
                 async with self._session.get(url, headers=headers, params=params, timeout=10) as resp:
                     if resp.status == 200:
+                        data: Dict[str, Any] = {}
                         try:
                             data = await resp.json()
                         except aiohttp.ContentTypeError:
@@ -102,25 +107,25 @@ class NewsCrawler:
                                 logger.error(f"❌ JSON 디코딩 실패 ({ticker})")
                                 continue
 
-                        items = data.get("items", [])
-                        results, texts_for_sentiment = [], []
+                        items: List[Dict[str, Any]] = data.get("items", [])
+                        results: List[Dict[str, Any]] = []
+                        texts_for_sentiment: List[str] = []
                         for item in items:
-                            title = re.sub(r"<[^>]+>", "", item.get("title", ""))
-                            description = re.sub(r"<[^>]+>", "", item.get("description", ""))
+                            title = re.sub(r"<[^>]+>", "", str(item.get("title", "")))
+                            description = re.sub(r"<[^>]+>", "", str(item.get("description", "")))
                             results.append(
                                 {
                                     "title": title,
                                     "summary": description,
-                                    "link": item.get("originallink", item.get("link", "")),
-                                    "pub_date": item.get("pubDate", ""),
+                                    "link": str(item.get("originallink", item.get("link", ""))),
+                                    "pub_date": str(item.get("pubDate", "")),
                                     "source": "naver_api_hub",
                                 }
                             )
                             texts_for_sentiment.append(title + " " + description)
 
-                        sentiment_score = await sentiment_analyzer.analyze(texts_for_sentiment)
+                        sentiment_score: float = float(await sentiment_analyzer.analyze(texts_for_sentiment))
 
-                        # 🔥 v6.3.0: 성공 기록
                         collector_status.record_success("news_crawler", {"ticker": ticker, "count": len(results)})
                         logger.debug(f"📰 {ticker} 뉴스 {len(results)}개, 감성: {sentiment_score:+.2f}")
                         return results, sentiment_score
@@ -136,38 +141,32 @@ class NewsCrawler:
                 last_error = str(e)
                 logger.error(f"❌ 뉴스 수집 실패 ({ticker}): {e}")
 
-            # 재시도 전 대기 (지수 백오프)
             if attempt < max_retries:
                 delay = 2 ** (attempt + 1)
                 await asyncio.sleep(delay)
 
-        # 🔥 모든 재시도 실패
         collector_status.record_failure("news_crawler", last_error or "알 수 없는 오류")
         logger.error(f"❌ {ticker} 뉴스 수집 최종 실패 (마지막 오류: {last_error})")
         return None
 
     async def get_news_with_sentiment(
-        self, ticker: str, limit: int = 5, cache_seconds: int | None = None
-    ) -> tuple[list[dict], float]:
+        self, ticker: str, limit: int = 5, cache_seconds: Optional[int] = None
+    ) -> Tuple[List[Dict[str, Any]], float]:
         """뉴스 조회 (캐싱 + 동적 TTL)"""
         cache_key = f"{ticker}_{limit}"
         now = datetime.now().timestamp()
 
-        # 🔥 v6.3.0: 캐시 TTL 동적 조정
-        ttl = cache_seconds if cache_seconds is not None else self._cache_ttl
+        ttl: int = cache_seconds if cache_seconds is not None else self._cache_ttl
 
-        # 캐시 상태 확인
-        if cache_key in self._cache and (now - self._cache_time.get(cache_key, 0)) < ttl:
+        if cache_key in self._cache and (now - self._cache_time.get(cache_key, 0.0)) < ttl:
             logger.debug(f"📰 [뉴스 캐시] {ticker} 캐시 사용 (TTL: {ttl}s)")
             return self._cache[cache_key]
 
         result = await self.fetch_news(ticker, limit)
         if result is None:
-            # 🔥 v6.3.0: 실패 시 캐시된 데이터가 있으면 TTL 연장하여 사용
             if cache_key in self._cache:
                 logger.warning(f"⚠️ [뉴스 Fallback] {ticker} API 실패 → 캐시된 데이터 사용 (TTL 연장)")
-                # TTL을 2배로 연장 (7200초)
-                self._cache_time[cache_key] = now - (ttl * 0.5)  # 절반만 경과한 것처럼 설정
+                self._cache_time[cache_key] = now - (ttl * 0.5)
                 return self._cache[cache_key]
             logger.warning(f"⚠️ [뉴스 API] {ticker} 뉴스 수집 실패 → 감성 점수 0.0")
             return [], 0.0
@@ -178,12 +177,12 @@ class NewsCrawler:
         logger.info(f"📰 [뉴스 API] {ticker} 뉴스 {len(news)}개 수집, 감성: {sentiment:+.2f}")
         return news, sentiment
 
-    def get_headlines(self, query: str = "코스피", limit: int = 5) -> list[str]:
+    def get_headlines(self, query: str = "코스피", limit: int = 5) -> List[str]:
         import asyncio
 
-        async def _inner():
+        async def _inner() -> List[str]:
             news, _ = await self.get_news_with_sentiment(query, limit=limit)
-            return [item.get("title", "") for item in news[:limit]]
+            return [str(item.get("title", "")) for item in news[:limit]]
 
         try:
             loop = asyncio.get_running_loop()

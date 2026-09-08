@@ -102,12 +102,15 @@ module = [
     "report.weekly_pdf",
     "data.dart_connector",
     "infrastructure.dart.client",
+    "core.exception_handler",
+    "core.exceptions",
+    "data.news_crawler",
+    "infrastructure.news.crawler",
 ]
 strict = true
 warn_return_any = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
-ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 120
