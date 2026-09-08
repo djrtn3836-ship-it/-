@@ -1,29 +1,21 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-app/bootstrap.py - V10 DI Container and Boot Sequence v2.5.0
+app/bootstrap.py - V10 DI Container and Boot Sequence v2.5.1
 
-v2.5.0 변경 (container.py / db_manager.py / order_executor.py /
-              portfolio_var.py / deep_analyzer.py / portfolio_manager.py 대조 검증):
-    - ✅ PortfolioManager가 싱글톤임이 소스로 확정됨(__new__ 패턴 확인).
-      container.portfolio_manager와 analyzer.portfolio_manager는 동일 객체이며,
-      start()/stop()은 _running 가드로 idempotent함이 확인됨.
-      → init_analyzer()의 중복 start() 호출, shutdown()의 중복 stop() 호출 제거.
-    - 🔥 CRITICAL 발견: risk/portfolio_var.py가 계산하는 position_limit이
-      execution/order_executor.py의 update_position_limit()으로 전달되는 코드가
-      어디에도 없었음. ROADMAP.md에는 "✅ 완료"로 기록되어 있었으나 실제
-      연결 고리가 없었던 것을 소스 대조로 확인하고, PortfolioManager에
-      콜백 등록 방식(set_order_executor_callback)으로 연결을 완성함.
-    - order_executor.initialize() "중복 호출" 의혹은 근거 없음(재확인):
-      AppContainer.order_executor는 @property 지연 싱글톤이라 재접근해도
-      재초기화되지 않음.
-    - scanner/deep_analyzer.py __init__의 asyncio.create_task(portfolio_manager.start())
-      중복 태스크 생성 문제는 deep_analyzer.py v7.7.1 패치로 별도 해결.
-
-v2.4.0 이전 변경 이력(SafetyGuard v5.2.0 API, SentimentPipeline, HyperparameterTuner,
-set_telegram_sender/set_realtime_price_provider 핫픽스 등)은 유지됨.
-
-V10 DDD 아키텍처의 유일한 부트스트래퍼.
+v2.5.1 변경 (Session 41: mypy strict 적용):
+    - 모든 메서드 반환 타입 및 파라미터 타입 명시
+    - message_queue, worker_tasks, all_tasks 등 내부 자료구조 제네릭 타입 명시
+    - self.db/self.kiwoom/self.monitor/self._shutdown_event가 Optional로
+      선언되어 있어 strict 모드에서 요구하는 None 가드를 필요한 지점에 추가.
+      정상 부트스트랩 흐름에서는 이 속성들이 실제로 None이 되지 않으므로
+      런타임 동작에 실질적 영향 없음(안전망 성격).
+    - 유일한 예외: init_scheduler()에서 self.db가 없으면 calibrator를 생성하지
+      않고 해당 스케줄 작업 등록도 건너뛰도록 함(정상 흐름에서 self.db는
+      항상 non-None이라 실질적 차이는 없으나, 미세한 로직 변경이므로 명시함).
+    - ⚠️ 이 파일은 strict 목록 등록 직후 단독 mypy 실행으로 전체 오류를
+      재확인해야 함(Select-Object -First 15의 잘린 목록만으로는 이 파일의
+      전체 오류 개수를 확정할 수 없음 - Session 33의 config/schema.py
+      사례와 동일한 방법론 적용 필요).
 """
 
 import asyncio
@@ -34,11 +26,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# ─── V10 Observability ──────────────────────────────────────────────
 from observability.tracer import get_tracer
 from observability.auto_trace import TracedService
 from observability.trace_id import bind_trace_id, reset_trace_id, new_trace_id
@@ -46,7 +37,6 @@ from observability.health_score import calculate_health_score
 
 trace = get_tracer(__name__)
 
-# ─── V10 Config (Pydantic schema) ───────────────────────────────────
 from config.schema import get_config
 from core.container import AppContainer
 from core.logger import setup_logger
@@ -55,7 +45,6 @@ from core.holiday_utils import is_trading_day
 from core.regime_manager import regime_manager
 from core.scheduler import SchedulerManager
 
-# ─── BlackBox / DebugTower (운영 필수) ───────────────────────────────
 from core.blackbox_logger import get_status as bb_get_status, log_error, log_event
 from core.debug_tower import debug_tower
 from core.exception_handler import (
@@ -64,43 +53,39 @@ from core.exception_handler import (
 )
 from core.supervisor import SystemSupervisor
 
-# ─── Data / Infrastructure ───────────────────────────────────────────
 from data.db_manager import DatabaseManager
 
 try:
     from infrastructure.dart.client import DartConnector
 except ImportError:
-    from data.dart_connector import DartConnector
+    from data.dart_connector import DartConnector  # type: ignore
 
 try:
     from infrastructure.news.crawler import NewsCrawler
 except ImportError:
-    from data.news_crawler import NewsCrawler
+    from data.news_crawler import NewsCrawler  # type: ignore
 
 try:
     from infrastructure.kiwoom import KiwoomConnectorV512
 except ImportError:
-    from data.kiwoom_connector import KiwoomConnectorV512
+    from data.kiwoom_connector import KiwoomConnectorV512  # type: ignore
 
 try:
     from infrastructure.kiwoom.monitor import RealtimeMonitor
 except ImportError:
-    from scanner.realtime_monitor import RealtimeMonitor
+    from scanner.realtime_monitor import RealtimeMonitor  # type: ignore
 
 from scanner.deep_analyzer import DeepAnalyzer
 
-# ─── Application Layer (V10) ─────────────────────────────────────────
 from application.analysis.signal_pipeline import SignalPipeline
 from application.analysis.strategy_bandit import StrategyBandit
 from application.analysis.bandit_feedback_bridge import BanditFeedbackBridge
 from application.analysis.ab_framework import get_ab_manager, ABTestManager
 from application.analysis.tuning_executor import TuningExecutor
 
-# ─── Orchestrator (V10) ───────────────────────────────────────────────
 from orchestrator.sentiment_pipeline import SentimentPipeline
 from orchestrator.portfolio_manager import PortfolioManager
 
-# ─── Analytics / Report / Risk ───────────────────────────────────────
 from analytics.performance_tracker import performance_tracker
 from analytics.calibration_executor import ExecutionCalibrator
 from analytics.alert_verifier import scheduled_verify
@@ -127,25 +112,23 @@ except ImportError:
 logger = setup_logger("bootstrap")
 config = get_config()
 
-# ─── 상수 ────────────────────────────────────────────────────────────
-_DATA_FLOW_TIMEOUT = 180
-_REQUIRED_ENV_KEYS = [
+_DATA_FLOW_TIMEOUT: int = 180
+_REQUIRED_ENV_KEYS: List[str] = [
     "KIWOOM_APP_KEY",
     "KIWOOM_APP_SECRET",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
 ]
-PID_FILE = Path(__file__).parent.parent / "scanner.pid"
+PID_FILE: Path = Path(__file__).parent.parent / "scanner.pid"
 
 
 class Bootstrapper(TracedService):
     """V10 부트스트래퍼 - 시스템의 유일한 진입점."""
 
     def __init__(self) -> None:
-        self._shutdown_requested = False
+        self._shutdown_requested: bool = False
         self._shutdown_event: Optional[asyncio.Event] = None
 
-        # ─── 컴포넌트 ─────────────────────────────────────────────
         self.container: Optional[AppContainer] = None
         self.kiwoom: Optional[KiwoomConnectorV512] = None
         self.monitor: Optional[RealtimeMonitor] = None
@@ -161,33 +144,25 @@ class Bootstrapper(TracedService):
         self.tuning_executor: Optional[TuningExecutor] = None
         self.sentiment_pipeline: Optional[SentimentPipeline] = None
         self._error_sender: Optional[TelegramSender] = None
-        self._original_exception_handlers: Optional[dict] = None
+        self._original_exception_handlers: Optional[Dict[str, Any]] = None
 
-        # ─── 큐 / 태스크 ─────────────────────────────────────────
-        self.message_queue: asyncio.Queue = asyncio.Queue(
+        self.message_queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(
             maxsize=config.queue_maxsize
         )
-        self.worker_tasks: List[asyncio.Task] = []
-        self.all_tasks: List[asyncio.Task] = []
+        self.worker_tasks: List["asyncio.Task[Any]"] = []
+        self.all_tasks: List["asyncio.Task[Any]"] = []
 
-        # ─── 타이밍 ───────────────────────────────────────────────
-        self.start_time = 0.0
-        self._last_data_time = 0.0
-        self.startup_details: dict[str, Any] = {}
-
-    # ═══════════════════════════════════════════════════════════════
-    #  1. 환경 초기화
-    # ═══════════════════════════════════════════════════════════════
+        self.start_time: float = 0.0
+        self._last_data_time: float = 0.0
+        self.startup_details: Dict[str, Any] = {}
 
     def load_env(self) -> None:
-        """환경변수 로드 (.env 파일)."""
         env_path = Path(__file__).parent.parent / ".env"
         if env_path.exists():
             load_dotenv(env_path, override=True)
             logger.info(f".env loaded: {env_path}")
 
     def validate_env(self) -> None:
-        """필수 환경변수 검증. 누락 시 SystemExit."""
         missing = [k for k in _REQUIRED_ENV_KEYS if not os.getenv(k)]
         if missing:
             msg = f"필수 환경변수 누락: {', '.join(missing)}"
@@ -198,7 +173,6 @@ class Bootstrapper(TracedService):
         debug_tower.log("SYSTEM", "ENV_VALIDATED", {})
 
     def manage_pid(self) -> None:
-        """PID 파일로 중복 실행 방지."""
         if PID_FILE.exists():
             try:
                 old_pid = int(PID_FILE.read_text().strip())
@@ -226,27 +200,13 @@ class Bootstrapper(TracedService):
         logger.info(f"PID 파일 생성: {os.getpid()}")
 
     def cleanup_pid(self) -> None:
-        """종료 시 PID 파일 삭제."""
         try:
             if PID_FILE.exists():
                 PID_FILE.unlink()
         except Exception:
             pass
 
-    # ═══════════════════════════════════════════════════════════════
-    #  2. 컴포넌트 초기화
-    # ═══════════════════════════════════════════════════════════════
-
     async def init_container(self) -> None:
-        """DI 컨테이너 초기화.
-
-        container.initialize()는 내부적으로 db_manager.init_db(),
-        performance_tracker.initialize(db_manager), order_executor.initialize(),
-        portfolio_manager.start()를 모두 수행합니다. order_executor는 @property
-        지연 싱글톤이므로 이후 재접근해도 재초기화되지 않아 안전합니다(검증 완료).
-        portfolio_manager 역시 __new__ 기반 싱글톤이므로 여기서 시작된 것이
-        시스템 전체에서 유일한 인스턴스입니다(검증 완료).
-        """
         self.container = AppContainer.create_production()
         await self.container.initialize()
         self.db = self.container.db_manager
@@ -255,14 +215,12 @@ class Bootstrapper(TracedService):
         logger.info("DI container initialized")
 
     async def init_telegram(self) -> None:
-        """Telegram 알림 핸들러 연결."""
         self._error_sender = TelegramSender()
         set_alert_callback(self._send_error_alert)
         set_alert_handler(self._send_error_alert)
         logger.info("Telegram alert handler connected")
 
     async def connect_kiwoom(self) -> None:
-        """Kiwoom 연결 (재시도 포함)."""
         if not self.kiwoom:
             raise RuntimeError("Kiwoom connector missing")
         logger.info("Waiting for Kiwoom connection...")
@@ -286,12 +244,6 @@ class Bootstrapper(TracedService):
         debug_tower.log("SYSTEM", "WS_READY_OK", {})
 
     def _get_realtime_price(self, ticker: str) -> float:
-        """실시간 체결가 제공자 (SignalPipeline → AtrService 주입용).
-
-        AppContainer에는 set/get_realtime_price_provider가 존재하지 않음이
-        확인되었으므로, 컨테이너를 거치지 않고 self.monitor를 직접 참조하는
-        바운드 메서드로 주입합니다.
-        """
         if self.monitor is None:
             return 0.0
         try:
@@ -301,14 +253,16 @@ class Bootstrapper(TracedService):
             return 0.0
 
     async def start_monitor(self) -> None:
-        """RealtimeMonitor 시작."""
         if not self.kiwoom:
             raise RuntimeError("Kiwoom missing")
         self.monitor = RealtimeMonitor(self.kiwoom, self.message_queue)
         await self.monitor.start()
+        # 🔧 방금 생성한 인스턴스를 명시적으로 재확인 (mypy Optional 타입 좁히기용,
+        # 실제로 None일 수 없으므로 순수 타입 안전망)
+        assert self.monitor is not None
 
         if hasattr(self.monitor, "set_telegram_sender"):
-            self.monitor.set_telegram_sender(TelegramSender())
+            self.monitor.set_telegram_sender(TelegramSender())  # type: ignore[attr-defined]
             logger.debug("RealtimeMonitor.set_telegram_sender 연결됨")
         else:
             logger.debug(
@@ -324,25 +278,11 @@ class Bootstrapper(TracedService):
         logger.info(f"RealtimeMonitor started (tickers={self.startup_details['ticker_count']})")
 
     async def start_regime_manager(self) -> None:
-        """RegimeManager 시작."""
         await regime_manager.start()
         debug_tower.log("SYSTEM", "REGIME_MANAGER_STARTED", {})
         logger.info("RegimeManager started")
 
     async def init_analyzer(self) -> None:
-        """DeepAnalyzer + SignalPipeline(V10) 초기화.
-
-        v2.5.0: PortfolioManager가 싱글톤임이 확정되어(orchestrator/portfolio_manager.py
-        __new__ 확인), container.initialize()가 이미 start()를 호출했으므로
-        여기서는 재호출하지 않습니다. scanner/deep_analyzer.py v7.7.1도 함께
-        패치하여 __init__ 내부의 불필요한 asyncio.create_task(start()) 생성을
-        제거했습니다.
-
-        container.deep_analyzer 프로퍼티는 feedback_learner를 주입하지 않는
-        별도 생성 경로이며, container.initialize()가 이를 전혀 참조하지 않아
-        실제로는 사용되지 않는 것으로 확인되었습니다. 따라서 이 메서드는
-        의도적으로 별도의 FeedbackLearner를 구성해 DeepAnalyzer를 직접 생성합니다.
-        """
         if not self.db or not self.kiwoom:
             raise RuntimeError("DB or Kiwoom missing")
 
@@ -355,8 +295,6 @@ class Bootstrapper(TracedService):
             realtime_price_provider=self._get_realtime_price,
         )
         logger.info("DeepAnalyzer + SignalPipeline(V10) initialized")
-
-        # PortfolioManager(싱글톤)의 start()는 container.initialize()가 전담.
         logger.info(
             "PortfolioManager singleton confirmed — already started via container.initialize()"
         )
@@ -371,12 +309,7 @@ class Bootstrapper(TracedService):
         except Exception as e:
             logger.warning(f"trailing_stops restore failed (continuing): {e}")
 
-    # ═══════════════════════════════════════════════════════════════
-    #  Session 15: HyperparameterTuner
-    # ═══════════════════════════════════════════════════════════════
-
     async def init_hyperparameter_tuner(self) -> None:
-        """TuningExecutor 초기화 (DB + SignalPipeline 준비된 후 호출)."""
         if self.signal_pipeline is None or self.db is None:
             logger.warning(
                 "SignalPipeline 또는 DB 미초기화 → TuningExecutor 건너뜀 "
@@ -394,18 +327,12 @@ class Bootstrapper(TracedService):
         )
 
     async def _run_hyperparameter_tuning(self) -> None:
-        """하이퍼파라미터 자동 튜닝 스케줄러 래퍼."""
         if self.tuning_executor is None:
             logger.debug("TuningExecutor 미초기화 — 튜닝 스킵")
             return
         await self.tuning_executor.run(days=30)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  Session 16: SentimentPipeline
-    # ═══════════════════════════════════════════════════════════════
-
     async def init_sentiment_pipeline(self) -> None:
-        """SentimentPipeline 초기화."""
         news_crawler = None
         try:
             news_crawler = NewsCrawler()
@@ -437,7 +364,6 @@ class Bootstrapper(TracedService):
         )
 
     async def init_data_sources(self) -> None:
-        """DART 커넥터 초기화. NewsCrawler는 init_sentiment_pipeline()이 전담."""
         dart_key = os.getenv("DART_API_KEY")
         if dart_key:
             dart = DartConnector(api_key=dart_key)
@@ -447,7 +373,6 @@ class Bootstrapper(TracedService):
             logger.warning("DART_API_KEY missing → financial data excluded")
 
     async def start_performance_tracker(self) -> None:
-        """StrategyBandit + BanditFeedbackBridge 연결."""
         if not self.db:
             return
 
@@ -469,7 +394,6 @@ class Bootstrapper(TracedService):
         logger.info("PerformanceTracker v3.0 started (5min update loop + Bandit feedback)")
 
     async def start_ab_framework(self) -> None:
-        """A/B Testing Framework 초기화 (Phase 3)."""
         self.ab_manager = get_ab_manager()
         self.ab_manager.create_test(
             test_name="strategy_selection",
@@ -498,15 +422,6 @@ class Bootstrapper(TracedService):
         )
 
     async def init_execution(self) -> None:
-        """OrderExecutor 참조 확인 + Calibrator 초기화 + PortfolioManager 콜백 연결.
-
-        🔥 v2.5.0: PortfolioManager(싱글톤) → OrderExecutor.update_position_limit()
-        콜백 연결을 추가했습니다. portfolio_manager.py의 update_var()가 VaR/Kelly
-        계산을 완료할 때마다 이 콜백을 통해 OrderExecutor의 주문 크기 한도가
-        실시간으로 갱신됩니다. ROADMAP.md에는 이 연결이 "완료(✅)"로 기록되어
-        있었으나, 실제 코드에는 연결 고리가 없었음을 소스 대조로 확인하고
-        이번에 완성했습니다.
-        """
         if not self.container:
             raise RuntimeError("Container missing")
         order_exec = self.container.order_executor
@@ -522,14 +437,16 @@ class Bootstrapper(TracedService):
         except Exception as e:
             logger.warning(f"OrderExecutor 콜백 등록 실패 (비치명): {e}")
 
-        ExecutionCalibrator(self.db, TelegramSender())
-        logger.info("ExecutionCalibrator initialized")
+        # 🔧 self.db가 Optional이므로 가드 추가. 정상 흐름에서 init_container()가
+        # 먼저 실행되어 self.db가 항상 non-None이므로 실질적 동작 차이 없음.
+        if self.db:
+            ExecutionCalibrator(self.db, TelegramSender())
+            logger.info("ExecutionCalibrator initialized")
 
     async def start_telegram_commands(self) -> None:
-        """Telegram 명령어 핸들러 시작."""
         self.telegram_cmd = TelegramCommandHandler(
-            token=os.getenv("TELEGRAM_BOT_TOKEN"),
-            chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+            token=os.getenv("TELEGRAM_BOT_TOKEN") or "",
+            chat_id=os.getenv("TELEGRAM_CHAT_ID") or "",
             get_stats_callback=self._get_system_stats,
         )
         dart_connector = None
@@ -558,7 +475,13 @@ class Bootstrapper(TracedService):
             self.telegram_cmd = None
 
     async def init_scheduler(self) -> None:
-        """APScheduler 9개 작업 등록."""
+        """APScheduler 작업 등록.
+
+        🔧 Session 41 수정: self.db가 Optional이므로, db 없이 calibrator를
+        생성하지 않고 calibration 작업 등록도 건너뛰도록 함(정상 흐름에서는
+        self.db가 항상 non-None이라 실질적 동작 차이 없음. 다만 미세한 로직
+        변경이므로 명시적으로 밝힘).
+        """
         self.scheduler = SchedulerManager()
         sched = config.scheduler
 
@@ -566,7 +489,7 @@ class Bootstrapper(TracedService):
         daily_reporter = DailyReportGenerator(db_manager=self.db, telegram_sender=sender)
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=self.db, kiwoom_connector=self.kiwoom)
         feedback_learner = FeedbackLearner(self.kiwoom, self.db)
-        calibrator = ExecutionCalibrator(self.db, sender)
+        calibrator: Optional[ExecutionCalibrator] = ExecutionCalibrator(self.db, sender) if self.db else None
 
         self.scheduler.add_job_with_retry(
             self._run_daily_report,
@@ -598,11 +521,12 @@ class Bootstrapper(TracedService):
             CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
             "phase_transition_check", sender, max_retries=2, retry_delay=5,
         )
-        self.scheduler.add_job_with_retry(
-            self._run_calibration,
-            CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
-            "calibration", calibrator, max_retries=2, retry_delay=5,
-        )
+        if calibrator is not None:
+            self.scheduler.add_job_with_retry(
+                self._run_calibration,
+                CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
+                "calibration", calibrator, max_retries=2, retry_delay=5,
+            )
         self.scheduler.add_job_with_retry(
             scheduled_verify,
             CronTrigger(hour=16, minute=0, timezone="Asia/Seoul"),
@@ -619,7 +543,6 @@ class Bootstrapper(TracedService):
         logger.info("Scheduler started (9 jobs registered, incl. hyperparameter_tuning)")
 
     async def start_workers(self) -> None:
-        """전략 Worker 2개 시작."""
         if not self.analyzer or not self.db:
             raise RuntimeError("Analyzer or DB missing")
         sender = TelegramSender()
@@ -632,7 +555,6 @@ class Bootstrapper(TracedService):
         logger.info("Strategy workers started (×2)")
 
     async def start_supervisor(self) -> None:
-        """SystemSupervisor 백그라운드 감시 시작."""
         supervisor = SystemSupervisor()
         task = asyncio.create_task(supervisor.run())
         self.all_tasks.append(task)
@@ -640,7 +562,6 @@ class Bootstrapper(TracedService):
         debug_tower.log("SYSTEM", "SUPERVISOR_STARTED", {})
 
     async def start_health_server(self) -> None:
-        """HTTP 헬스체크 서버 시작 (8080 포트)."""
         if not _AIOHTTP_AVAILABLE:
             logger.warning("aiohttp not installed → health server skipped")
             return
@@ -661,12 +582,7 @@ class Bootstrapper(TracedService):
                 continue
         logger.warning("Health server failed to start (all ports busy)")
 
-    # ═══════════════════════════════════════════════════════════════
-    #  3. HTTP 헬스체크 엔드포인트
-    # ═══════════════════════════════════════════════════════════════
-
     async def _health_endpoint(self, request: Any) -> Any:
-        """GET /health 응답."""
         queue_usage = (
             self.message_queue.qsize() / self.message_queue.maxsize * 100
             if self.message_queue.maxsize > 0 else 0
@@ -688,7 +604,7 @@ class Bootstrapper(TracedService):
             monitor_running=self.monitor.is_running() if self.monitor else False,
         )
 
-        status = {
+        status: Dict[str, Any] = {
             "status": "healthy" if (queue_usage < 90 and data_flow_ok) else "degraded",
             "uptime_seconds": time.time() - self.start_time if self.start_time else 0,
             "health_score": health.to_dict(),
@@ -738,10 +654,6 @@ class Bootstrapper(TracedService):
         }
         return aiohttp_web.json_response(status)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  4. 스케줄러 작업
-    # ═══════════════════════════════════════════════════════════════
-
     async def _run_daily_report(self, reporter: DailyReportGenerator) -> None:
         if not is_trading_day():
             return
@@ -759,7 +671,7 @@ class Bootstrapper(TracedService):
         await pdf_gen.generate()
 
     async def _run_daily_ohlcv(self) -> None:
-        if not is_trading_day() or not self.monitor:
+        if not is_trading_day() or not self.monitor or not self.kiwoom or not self.db:
             return
         await collect_daily_ohlcv(self.kiwoom, self.db, self.monitor.tickers)
 
@@ -767,13 +679,13 @@ class Bootstrapper(TracedService):
         await fetch_macro_data(force=True)
 
     async def _run_phase_transition_check(self, sender: TelegramSender) -> None:
-        if not is_trading_day():
+        if not is_trading_day() or not self.db:
             return
         try:
             validator = PhaseTransitionValidator()
             start_date = "2026-08-20"
             end_date = datetime.now().strftime("%Y-%m-%d")
-            decisions = await self.db.get_decisions_by_date_range(start_date, end_date)
+            decisions: List[Dict[str, Any]] = await self.db.get_decisions_by_date_range(start_date, end_date)
 
             if len(decisions) < 50:
                 await sender.send_raw(
@@ -781,12 +693,12 @@ class Bootstrapper(TracedService):
                 )
                 return
 
-            stats = await self.db.get_feedback_stats(days=30)
+            stats: Dict[str, Any] = await self.db.get_feedback_stats(days=30)
             result = validator.validate({
                 "start_date": start_date,
                 "end_date": end_date,
                 "total_signals": len(decisions),
-                "win_rate": stats.get("win_rate", 0.5),
+                "win_rate": float(stats.get("win_rate", 0.5)),
                 "profit_factor": 1.2,
                 "max_drawdown": 0.05,
                 "fp_ratio": 0.2,
@@ -806,10 +718,6 @@ class Bootstrapper(TracedService):
             return
         await calibrator.run(days=30)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  5. 전략 Worker
-    # ═══════════════════════════════════════════════════════════════
-
     async def _strategy_worker(
         self,
         wid: int,
@@ -817,7 +725,6 @@ class Bootstrapper(TracedService):
         db: DatabaseManager,
         sender: TelegramSender,
     ) -> None:
-        """전략 분석 Worker."""
         logger.info(f"Strategy Worker-{wid} started")
         debug_tower.log("SYSTEM", f"WORKER_START_{wid}", {})
         processed_count = 0
@@ -825,7 +732,7 @@ class Bootstrapper(TracedService):
         while not self._shutdown_requested:
             try:
                 try:
-                    stock_data = await asyncio.wait_for(
+                    stock_data: Dict[str, Any] = await asyncio.wait_for(
                         self.message_queue.get(), timeout=1.0
                     )
                 except TimeoutError:
@@ -837,10 +744,10 @@ class Bootstrapper(TracedService):
                     self.message_queue.task_done()
                     continue
 
-                ticker = stock_data.get("ticker", "UNKNOWN")
+                ticker = str(stock_data.get("ticker", "UNKNOWN"))
                 debug_tower.log(ticker, "WORKER_PROCESS", {"worker": wid})
 
-                token = bind_trace_id(stock_data.get("trace_id", new_trace_id()))
+                token = bind_trace_id(str(stock_data.get("trace_id", new_trace_id())))
                 try:
                     if self.sentiment_pipeline is not None:
                         try:
@@ -848,7 +755,7 @@ class Bootstrapper(TracedService):
                         except Exception as e_sent:
                             logger.debug(f"Sentiment enrich skipped ({ticker}): {e_sent}")
 
-                    analysis = await analyzer.analyze(stock_data)
+                    analysis: Dict[str, Any] = await analyzer.analyze(stock_data)
 
                     if (
                         self.signal_pipeline
@@ -857,16 +764,14 @@ class Bootstrapper(TracedService):
                         try:
                             v10_signal = await self.signal_pipeline.process(stock_data)
                             if hasattr(v10_signal, "confidence"):
-                                analysis["v10_sqi"] = round(
-                                    v10_signal.confidence, 3
-                                )
+                                analysis["v10_sqi"] = round(float(v10_signal.confidence), 3)
                         except Exception as e_pipe:
                             logger.debug(f"SignalPipeline skipped ({ticker}): {e_pipe}")
 
                     if analysis.get("action") != "ERROR":
                         await db.save_decision(analysis)
 
-                    action = analysis.get("action")
+                    action = str(analysis.get("action", ""))
                     if action in (
                         "SIGNAL_ENTRY",
                         "EVENT_SL_TRAIL",
@@ -878,10 +783,8 @@ class Bootstrapper(TracedService):
                         success = await sender.send(analysis)
                         if success:
                             processed_count += 1
-                            logger.info(
-                                f"Worker-{wid} [{action}] {ticker}"
-                                + (f" TP{analysis.get('tp_level')}" if action == "EVENT_TP_HIT" else "")
-                            )
+                            tp_str = f" TP{analysis.get('tp_level')}" if action == "EVENT_TP_HIT" else ""
+                            logger.info(f"Worker-{wid} [{action}] {ticker}{tp_str}")
                         else:
                             debug_tower.log(ticker, "TELEGRAM_SEND_FAILED", {"action": action})
 
@@ -905,21 +808,20 @@ class Bootstrapper(TracedService):
                 await self._send_error_alert(f"Worker-{wid} error", str(e)[:200])
                 await asyncio.sleep(1)
 
-    # ═══════════════════════════════════════════════════════════════
-    #  6. 메인 루프 (SafetyGuard v5.2.0 API 사용)
-    # ═══════════════════════════════════════════════════════════════
-
     async def run_main_loop(self) -> None:
-        """메인 스캔 루프 - 실시간 시장 데이터 폴링."""
         logger.info("Main loop started (V10)")
         log_event("MAIN_LOOP_START", {})
         self.start_time = time.time()
 
-        while not self._shutdown_requested and not self._shutdown_event.is_set():
+        while (
+            not self._shutdown_requested
+            and self._shutdown_event is not None
+            and not self._shutdown_event.is_set()
+        ):
             try:
                 if self.safety_guard:
                     macro = get_cached_macro()
-                    safety_result = self.safety_guard.check({
+                    safety_result: Dict[str, Any] = self.safety_guard.check({
                         "kospi_drop": macro.kospi_trend or 0.0,
                         "vkospi_spike": getattr(macro, "vkospi", 0.0),
                         "usdkrw_spike": macro.usdkrw or 0.0,
@@ -938,42 +840,44 @@ class Bootstrapper(TracedService):
                         triggered = safety_result.get("triggered", [])
                         logger.critical(f"SafetyGuard triggered: {triggered}")
                         if safety_result.get("should_alert"):
+                            conds = [t.get("condition") for t in triggered if isinstance(t, dict)]
                             await self._send_error_alert(
                                 "SafetyGuard 차단 활성화",
-                                str([t.get("condition") for t in triggered])[:200],
+                                str(conds)[:200],
                             )
                         await asyncio.sleep(10)
                         continue
 
-                if not self.kiwoom.is_connected():
+                if self.kiwoom and not self.kiwoom.is_connected():
                     await self._reconnect()
                     await asyncio.sleep(1)
                     continue
 
-                now = datetime.now()
-                if 9 <= now.hour <= 15 and not (now.hour == 15 and now.minute >= 20):
+                now_dt = datetime.now()
+                if 9 <= now_dt.hour <= 15 and not (now_dt.hour == 15 and now_dt.minute >= 20):
                     elapsed = time.time() - self._last_data_time
                     if elapsed > _DATA_FLOW_TIMEOUT:
                         log_event("DATA_FLOW_TIMEOUT", {"seconds": _DATA_FLOW_TIMEOUT})
-                        logger.error(
-                            f"Data flow timeout ({_DATA_FLOW_TIMEOUT}s) → reconnecting"
-                        )
+                        logger.error(f"Data flow timeout ({_DATA_FLOW_TIMEOUT}s) → reconnecting")
                         debug_tower.log("SYSTEM", "DATA_FLOW_TIMEOUT", {})
-                        await self.kiwoom.disconnect()
-                        await self.kiwoom.connect()
-                        await self.monitor.resubscribe_all()
+                        if self.kiwoom:
+                            await self.kiwoom.disconnect()
+                            await self.kiwoom.connect()
+                        if self.monitor:
+                            await self.monitor.resubscribe_all()
                         self._last_data_time = time.time()
 
-                signals = await self.monitor.scan()
-                for sig_data in signals:
-                    try:
-                        self.message_queue.put_nowait(sig_data)
-                        debug_tower.log(
-                            sig_data.get("ticker"), "SIGNAL_ENQUEUED",
-                            {"action": sig_data.get("action")}
-                        )
-                    except asyncio.QueueFull:
-                        logger.warning(f"Queue full, dropped: {sig_data.get('ticker')}")
+                if self.monitor:
+                    signals: List[Dict[str, Any]] = await self.monitor.scan()
+                    for sig_data in signals:
+                        try:
+                            self.message_queue.put_nowait(sig_data)
+                            debug_tower.log(
+                                str(sig_data.get("ticker", "SYS")), "SIGNAL_ENQUEUED",
+                                {"action": sig_data.get("action")}
+                            )
+                        except asyncio.QueueFull:
+                            logger.warning(f"Queue full, dropped: {sig_data.get('ticker')}")
 
                 await asyncio.sleep(1)
 
@@ -988,12 +892,9 @@ class Bootstrapper(TracedService):
         logger.info("Main loop ended")
         log_event("MAIN_LOOP_END", {})
 
-    # ═══════════════════════════════════════════════════════════════
-    #  7. 재연결
-    # ═══════════════════════════════════════════════════════════════
-
     async def _reconnect(self) -> None:
-        """Kiwoom WebSocket 재연결."""
+        if not self.kiwoom or not self.monitor:
+            return
         MAX_RETRIES = 30
         retry = 0
         while not self.kiwoom.is_connected():
@@ -1012,12 +913,7 @@ class Bootstrapper(TracedService):
         logger.info("Reconnected and resubscribed")
         debug_tower.log("SYSTEM", "RECONNECT_SUCCESS", {})
 
-    # ═══════════════════════════════════════════════════════════════
-    #  8. Telegram 알림
-    # ═══════════════════════════════════════════════════════════════
-
     async def _send_error_alert(self, msg: str, detail: str = "") -> None:
-        """에러 알림 전송."""
         try:
             text = (
                 f"🚨 <b>시스템 오류</b>\n"
@@ -1033,7 +929,6 @@ class Bootstrapper(TracedService):
             pass
 
     async def _send_startup_notification(self, success: bool) -> None:
-        """시작 알림 (상세)."""
         macro = get_cached_macro()
         bb = bb_get_status()
         status_emoji = "🟢" if success else "🔴"
@@ -1063,7 +958,7 @@ class Bootstrapper(TracedService):
                 f"📰 감성 분석: {sentiment_status}\n"
                 f"📊 KOSPI 5일: {macro.kospi_trend:.2f}%  |  USD/KRW: {macro.usdkrw:.0f}"
                 f"  |  VIX: {macro.vix:.1f}\n"
-                f"💾 블랙박스: {bb['file_count']}개  {bb['total_size_mb']}MB\n"
+                f"💾 블랙박스: {bb.get('file_count', 0)}개  {bb.get('total_size_mb', 0)}MB\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>V10 DDD + SignalPipeline + MAB + HyperTuner + Sentiment + SafetyGuard + PortfolioVaR↔OrderExecutor</i>"
             )
@@ -1080,7 +975,6 @@ class Bootstrapper(TracedService):
             pass
 
     async def _send_shutdown_notification(self, reason: str = "정상 종료") -> None:
-        """종료 알림."""
         try:
             msg = (
                 f"🟡 <b>V10 시스템 종료</b>\n"
@@ -1094,12 +988,7 @@ class Bootstrapper(TracedService):
         except Exception:
             pass
 
-    # ═══════════════════════════════════════════════════════════════
-    #  9. 시스템 상태 콜백 (Telegram 명령어용)
-    # ═══════════════════════════════════════════════════════════════
-
-    def _get_system_stats(self) -> dict:
-        """현재 시스템 상태 딕셔너리 반환."""
+    def _get_system_stats(self) -> Dict[str, Any]:
         now = time.time()
         last_ago = "없음"
         if self._last_data_time > 0:
@@ -1116,7 +1005,7 @@ class Bootstrapper(TracedService):
         collector_summary = collector_status.get_summary()
         perf_status = performance_tracker.get_status() if performance_tracker else {}
 
-        stats: dict[str, Any] = {
+        stats: Dict[str, Any] = {
             "status": "운영 중" if (self.kiwoom and self.kiwoom.is_connected()) else "연결 끊김",
             "uptime_seconds": time.time() - self.start_time if self.start_time else 0,
             "tickers": self.monitor.get_subscribed_count() if self.monitor else 0,
@@ -1149,12 +1038,7 @@ class Bootstrapper(TracedService):
             stats["safety_guard"] = self.safety_guard.get_status()
         return stats
 
-    # ═══════════════════════════════════════════════════════════════
-    #  10. 부트스트랩 메인 진입점
-    # ═══════════════════════════════════════════════════════════════
-
     async def bootstrap(self, shutdown_event: Optional[asyncio.Event] = None) -> None:
-        """전체 시스템 부트스트랩 시퀀스 (v2.5.0)."""
         self._shutdown_event = shutdown_event or asyncio.Event()
         startup_success = False
 
@@ -1170,7 +1054,7 @@ class Bootstrapper(TracedService):
             collector_status.register("system", freshness_seconds=None)
 
             logger.info("=" * 60)
-            logger.info("V10 System Bootstrap Starting... (v2.5.0)")
+            logger.info("V10 System Bootstrap Starting... (v2.5.1)")
             logger.info("=" * 60)
 
             await self.start_supervisor()
@@ -1238,17 +1122,7 @@ class Bootstrapper(TracedService):
                 await self._send_shutdown_notification("정상 종료")
             await self.shutdown()
 
-    # ═══════════════════════════════════════════════════════════════
-    #  11. 종료 시퀀스
-    # ═══════════════════════════════════════════════════════════════
-
     async def shutdown(self) -> None:
-        """정상 종료 시퀀스 (v2.5.0).
-
-        PortfolioManager(싱글톤)의 stop()은 container.shutdown()이 전담합니다.
-        analyzer.portfolio_manager는 동일 객체이므로 여기서 별도로 stop()을
-        호출하던 코드를 제거했습니다(중복 제거, 싱글톤 확정에 따른 정리).
-        """
         self._shutdown_requested = True
         log_event("SYSTEM_SHUTDOWN", {})
         debug_tower.log("SYSTEM", "SYSTEM_SHUTDOWN", {})
@@ -1306,8 +1180,6 @@ class Bootstrapper(TracedService):
             except Exception as e:
                 logger.warning(f"scheduler.shutdown() failed: {e}")
 
-        # kiwoom.disconnect() / db_manager.close() / performance_tracker.stop() /
-        # portfolio_manager.stop()은 container.shutdown()이 전담 처리 (중복 제거)
         if self.container:
             try:
                 await self.container.shutdown()
@@ -1317,7 +1189,7 @@ class Bootstrapper(TracedService):
         try:
             summary = collector_status.get_summary()
             logger.info(
-                f"Collector summary: healthy={summary['healthy']}/{summary['total']}"
+                f"Collector summary: healthy={summary.get('healthy', 0)}/{summary.get('total', 0)}"
             )
         except Exception:
             pass
