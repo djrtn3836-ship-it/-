@@ -1,4 +1,4 @@
-# 🇰🇷 AI 퀀트 트레이딩 시스템 v8.0.0 FINAL
+﻿# 🇰🇷 AI 퀀트 트레이딩 시스템 v8.0.0 FINAL
 
 > 한국 주식 시장(KOSPI/KOSDAQ)을 실시간으로 분석하고, Telegram으로 신호를 전송하며, **자가 치유(Self-Healing) 및 알림 검증(Alert Verification)** 기능이 내장된 완전 자동화 시스템입니다.
 
@@ -60,7 +60,7 @@ bash
 cp .env.example .env
 3. 실행
 bash
-python scanner_main.py
+python app/main.py
 📱 Telegram 명령어
 명령어	설명
 현황, 오늘 장은?	시스템 실시간 상태 (가동 시간, 구독 종목, 큐 사용률, 국면)

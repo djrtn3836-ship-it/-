@@ -23,6 +23,7 @@ v7.4.0 (기존 유지):
 
 import asyncio
 import html
+import unicodedata
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -205,7 +206,8 @@ class TelegramSender:
     def _infer_advice_action(self, advice: Optional[Dict[str, Any]]) -> str:
         if not advice:
             return "HOLD"
-        rec = (advice.get("recommendation") or advice.get("action") or "").upper()
+        raw = (advice.get("recommendation") or advice.get("action") or "")
+        rec = unicodedata.normalize("NFKC", raw).upper()
         if rec in ("EXIT", "SELL", "CLOSE"):
             return "EXIT"
         if rec in ("PARTIAL_EXIT", "PARTIAL_SELL"):
@@ -219,6 +221,33 @@ class TelegramSender:
             return "REDUCE"
         return "HOLD"
 
+    def _calc_risk_score(self, data: Dict[str, Any]) -> Dict[str, float]:
+        """SNOWBALL 프로젝트 이식: 0~100 리스크 스코어 산출 (ATR/RSI/BB/거래량).
+        주의: ATR 스케일링 계수(1000)는 초기값이며 실데이터 검증 후 재조정이 필요합니다.
+        """
+        atr = float(data.get("atr", 0.0))
+        price = float(data.get("price", 1.0)) or 1.0
+        atr_ratio = atr / price
+        atr_score = max(0.0, 30.0 - atr_ratio * 1000.0)
+
+        tech = data.get("tech_data", {}) if isinstance(data.get("tech_data"), dict) else {}
+        rsi = float(tech.get("rsi", 50.0))
+        rsi_score = abs(rsi - 50.0) / 50.0 * 25.0
+
+        bb_pct = float(tech.get("pct_b", 0.5))
+        bb_score = (1.0 - bb_pct) * 25.0
+
+        vol_ratio = float(tech.get("volume_ratio", 1.0))
+        volume_score = min(20.0, vol_ratio * 10.0)
+
+        total = atr_score + rsi_score + bb_score + volume_score
+        return {
+            "risk_score": round(total, 1),
+            "atr_score": round(atr_score, 1),
+            "rsi_score": round(rsi_score, 1),
+            "bb_score": round(bb_score, 1),
+            "volume_score": round(volume_score, 1),
+        }
     def _format_signal_entry(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         name = html.escape(str(data.get("name", ticker)))

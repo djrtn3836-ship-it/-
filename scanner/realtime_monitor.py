@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 scanner/realtime_monitor.py - v5.7.1 (Session 38: mypy strict 적용 + 잠재 버그 수정)
 - 🔧 _on_data() 예외 처리부에서 ticker 변수가 아직 할당되지 않은 상태로 예외가
@@ -47,7 +47,7 @@ class RealtimeMonitor:
         self.price_change_ratio: float = config.get_float("price_change_ratio", 0.02)
         self.cooldown_seconds: int = config.get_int("cooldown_seconds", 300)
         self.emergency_threshold: float = config.get_float("emergency_threshold", 0.05)
-        self.max_subscriptions: int = 500
+        self.max_subscriptions: int = config.get_int("max_subscriptions", 200)
 
     def _get_current_regime(self) -> str:
         return str(regime_manager.get_regime())

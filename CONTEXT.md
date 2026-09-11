@@ -1,4 +1,4 @@
-최종 명세서 (CONTEXT.md) – 전체 내용
+﻿최종 명세서 (CONTEXT.md) – 전체 내용
 markdown
 # 🔬 프로젝트 완전 상태 저장소 (Full Context) - v7.6.4 FINAL
 
@@ -20,7 +20,7 @@ markdown
 | **버전** | **v7.6.4 FINAL** |
 | **Python 버전** | 3.12.9 |
 | **운영 모드** | Phase 1 Shadow Mode (실시간 감시 + Telegram 보고서) |
-| **실행 명령어** | `python scanner_main.py` |
+| **실행 명령어** | `python app/main.py` |
 | **Git 브랜치** | main |
 
 ---
@@ -64,7 +64,6 @@ markdown
 | 우선순위 | 작업 | 설명 | 예상 시간 |
 | :--- | :--- | :--- | :--- |
 | **P0** | **① Soak Test (24시간 운영)** | `scanner_main.py`를 24시간 실행하며 메모리 누수, 큐 적체, 연결 안정성 모니터링 | 24시간 |
-| **P0** | **② 실계좌 연동 (Paper Trading)** | 키움 모의투자 계좌 연동 모듈 개발 (`execution/order_executor.py`) | 4시간 |
 | **P1** | **③ 포트폴리오 성과 추적기** | 일별 PnL, 승률, Sharpe Ratio 자동 계산 및 리포트 추가 (`analytics/performance_tracker.py`) | 2시간 |
 
 ---
@@ -144,8 +143,8 @@ git commit -m "feat: v7.6.4 FINAL - 안정화 완료 (REG 0.3초, Ctrl+C, Chaos 
 | **프로젝트명** | stock_analyzer_v5.1.2 |
 | **버전** | **v8.0.0 FINAL** |
 | **Python 버전** | 3.12.9 |
-| **운영 모드** | Phase 2 Paper Trading (모의투자) |
-| **실행 명령어** | `python scanner_main.py` |
+| **운영 모드** | 텔레그램 알림 보조 집사 (자동매매 아님) |
+| **실행 명령어** | `python app/main.py` |
 | **Git 브랜치** | main |
 
 ---
