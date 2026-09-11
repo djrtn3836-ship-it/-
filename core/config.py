@@ -1,11 +1,26 @@
+# -*- coding: utf-8 -*-
 """
-core/config.py - v7.0.1 (int → float 자동 변환)
-- YAML에서 int로 입력된 float 설정값을 자동 변환
+core/config.py - v7.1.0 (Session 42: mypy strict 완전 적용)
+
+v7.1.0 변경 사항:
+    - 모든 메서드에 반환 타입 명시 (__new__, __init__, _get_yaml_mtime,
+      _load_defaults, _load_yaml, _update_from_dict, _validate_config,
+      reload_if_changed, get, get_int, get_float, get_bool, get_all)
+    - _initialized를 클래스 레벨에 bool로 선언하여 "Cannot determine type" 오류 해결
+      (실제 값 대입은 기존과 동일하게 __new__/__init__에서 수행 — 런타임 동작 무변경)
+    - _config, type_rules 등에 정확한 제네릭 타입 인자 부여
+    - ⚠️ 이 파일은 data/kiwoom_connector.py가 사용하는 core.config.get_config()의
+      원본이며, app/bootstrap.py가 사용하는 config/schema.py의 get_config()와는
+      별개의 모듈임에 주의(Session 42에서 확인된 사실). bootstrap.py의
+      config.scheduler / config.websocket 관련 타이핑 문제는 이 파일을 고쳐도
+      해결되지 않으므로, 이 파일에는 scheduler/websocket 관련 프로퍼티를
+      추가하지 않음(잘못된 전제에 기반한 수정 방지).
+    - 그 외 로직 100% 무변경 (int→float 자동 변환 등 기존 동작 완전 보존)
 """
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from dotenv import load_dotenv
@@ -20,22 +35,23 @@ class ConfigError(Exception):
 
 
 class ConfigManager:
-    _instance = None
-    _last_mtime: float = 0
+    _instance: Optional["ConfigManager"] = None
+    _last_mtime: float = 0.0
+    _initialized: bool
 
-    def __new__(cls):
+    def __new__(cls) -> "ConfigManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if self._initialized:
             return
         self._initialized = True
-        self._config: dict[str, Any] = {}
+        self._config: Dict[str, Any] = {}
         self._config_dir = Path(__file__).parent.parent / "config"
-        self._env_loaded = False
+        self._env_loaded: bool = False
 
         load_dotenv()
         self._env_loaded = True
@@ -50,7 +66,7 @@ class ConfigManager:
             return config_file.stat().st_mtime
         return 0.0
 
-    def _load_defaults(self):
+    def _load_defaults(self) -> None:
         self._config = {
             "ws_url": "wss://api.kiwoom.com:10000/api/dostk/websocket",
             "ws_mock_url": "wss://mockapi.kiwoom.com:10000/api/dostk/websocket",
@@ -107,7 +123,7 @@ class ConfigManager:
             "risk_var_update_interval": 300,
         }
 
-    def _load_yaml(self):
+    def _load_yaml(self) -> None:
         config_file = self._config_dir / "config.yaml"
         if config_file.exists():
             try:
@@ -119,7 +135,7 @@ class ConfigManager:
             except Exception as e:
                 logger.warning(f"⚠️ YAML 설정 로드 실패: {e}")
 
-    def _update_from_dict(self, data: dict, prefix: str = ""):
+    def _update_from_dict(self, data: Dict[str, Any], prefix: str = "") -> None:
         for key, value in data.items():
             full_key = f"{prefix}{key}" if prefix else key
             if isinstance(value, dict):
@@ -127,11 +143,11 @@ class ConfigManager:
             else:
                 self._config[full_key] = value
 
-    def _validate_config(self):
-        errors = []
-        warnings = []
+    def _validate_config(self) -> None:
+        errors: List[str] = []
+        warnings: List[str] = []
 
-        type_rules = {
+        type_rules: Dict[str, Tuple[type, float, float]] = {
             "ws_ping_interval": (int, 5, 120),
             "ws_ping_timeout": (int, 10, 300),
             "ws_close_timeout": (int, 5, 60),
@@ -189,7 +205,7 @@ class ConfigManager:
             warnings.append(f"⚠️ weekly_pdf_day='{self._config.get('weekly_pdf_day')}' → 'mon'으로 대체")
             self._config["weekly_pdf_day"] = "mon"
 
-        log_level = self._config.get("log_level", "DEBUG").upper()
+        log_level = str(self._config.get("log_level", "DEBUG")).upper()
         if log_level not in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             warnings.append(f"⚠️ log_level='{log_level}' → 'DEBUG'로 대체")
             self._config["log_level"] = "DEBUG"
@@ -222,12 +238,12 @@ class ConfigManager:
             elif isinstance(original, int):
                 try:
                     return int(env_value)
-                except:
+                except (ValueError, TypeError):
                     return original
             elif isinstance(original, float):
                 try:
                     return float(env_value)
-                except:
+                except (ValueError, TypeError):
                     return original
             return env_value
         return self._config.get(key, default)
@@ -254,11 +270,11 @@ class ConfigManager:
             return value.lower() in ("true", "yes", "1", "on")
         return bool(value)
 
-    def get_all(self) -> dict:
+    def get_all(self) -> Dict[str, Any]:
         return self._config.copy()
 
 
-_config_manager: ConfigManager | None = None
+_config_manager: Optional[ConfigManager] = None
 
 
 def get_config() -> ConfigManager:

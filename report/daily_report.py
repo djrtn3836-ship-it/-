@@ -1,14 +1,14 @@
-"""
-report/daily_report.py - v6.1 FINAL (성능 로깅 + 분할 전송 위임)
-- 리포트 생성 시간 측정 및 로깅 추가
-- TelegramSender의 자동 분할 기능을 활용하도록 수동 자르기 제거
-- ML/VaR 정보 포함 (v6.0 유지)
+﻿"""
+report/daily_report.py - v6.2 (Session 44: mypy strict 적용)
+- mypy strict 오류 7개 해결 (Optional 처리, 반환 타입, dict 제네릭, max() key 타입)
+- v6.1 로직 100% 무변경 (리포트 생성 시간 측정, TelegramSender 자동 분할 위임 유지)
 """
 
 import statistics
 import time
 import traceback
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
@@ -18,11 +18,15 @@ logger = setup_logger("daily_report")
 
 
 class DailyReportGenerator:
-    def __init__(self, db_manager: DatabaseManager = None, telegram_sender: TelegramSender = None):
+    def __init__(
+        self,
+        db_manager: Optional[DatabaseManager] = None,
+        telegram_sender: Optional[TelegramSender] = None,
+    ) -> None:
         self.db = db_manager or DatabaseManager()
         self.telegram = telegram_sender or TelegramSender()
 
-    async def generate_and_send(self):
+    async def generate_and_send(self) -> None:
         """전략 데일리 브리프 생성 및 발송 (v6.1 - 성능 로깅)"""
         start_time = time.time()
         logger.info("📊 [v6.1] 데일리 브리프 생성 시작...")
@@ -40,24 +44,25 @@ class DailyReportGenerator:
 
             regime, regime_desc, confidence = self._diagnose_regime(decisions)
 
-            lines = []
+            lines: List[str] = []
             lines.append("<b>🏛️ [QUANT DESK] 데일리 전략 브리프 v6.1</b>")
             lines.append(f"<i>{today} (KST) | Market Regime: {regime}</i>")
             lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-            # --- SECTION 1: EXECUTIVE SUMMARY ---
             lines.append("<b>📌 1. 오늘의 요약 & 전일 성과</b>")
+            ml_scores: List[float] = []
             if decisions:
                 total = len(decisions)
                 buy_cnt = sum(1 for d in decisions if d["action"] == "BUY")
                 sell_cnt = sum(1 for d in decisions if d["action"] == "SELL")
                 hold_cnt = sum(1 for d in decisions if d["action"] == "HOLD")
-                avg_score = statistics.mean([d["score"] for d in decisions]) if decisions else 0.0
-                avg_conf = statistics.mean([d["confidence"] for d in decisions]) if decisions else 0.0
 
-                ml_scores = [d.get("ml_score", 0.5) for d in decisions if d.get("ml_score") is not None]
+                avg_score = statistics.mean([float(d["score"]) for d in decisions]) if decisions else 0.0
+                avg_conf = statistics.mean([float(d["confidence"]) for d in decisions]) if decisions else 0.0
+
+                ml_scores = [float(d["ml_score"]) for d in decisions if d.get("ml_score") is not None]
                 risk_adjs = [
-                    d.get("risk_adjustment_factor", 1.0)
+                    float(d["risk_adjustment_factor"])
                     for d in decisions
                     if d.get("risk_adjustment_factor") is not None
                 ]
@@ -92,33 +97,27 @@ class DailyReportGenerator:
                     lines.append(f"• 📊 전일 신호: {len(yesterday_decisions)}건 발생")
             lines.append("")
 
-            # --- SECTION 2: TRAILING STOP ---
             if exits or updates:
                 lines.append("<b>🔄 2. 트레일링 스탑 이벤트</b>")
                 if exits:
                     lines.append("   <b>[청산 발생]</b>")
                     for e in exits[:3]:
-                        ticker = e.get("ticker", "")
-                        pnl = e.get("pnl", 0.0)
+                        ticker = str(e.get("ticker", ""))
+                        pnl = float(e.get("pnl", 0.0))
                         lines.append(f"   • 🔴 <b>{ticker}</b> 청산 (손익: {pnl:+.1f}%)")
                 if updates:
                     lines.append("   <b>[손절 상승]</b>")
                     for u in updates[:2]:
-                        ticker = u.get("ticker", "")
-                        old_s = u.get("old_stop", 0)
-                        new_s = u.get("new_stop", 0)
+                        ticker = str(u.get("ticker", ""))
+                        old_s = float(u.get("old_stop", 0))
+                        new_s = float(u.get("new_stop", 0))
                         lines.append(f"   • 📈 {ticker} 손절 상승: {old_s:,.0f} → {new_s:,.0f}원")
                 lines.append("")
 
-            # --- SECTION 3: DYNAMIC POSITIONING ---
             lines.append("<b>🎯 3. 동적 3-Tier 포지셔닝 (ML 반영)</b>")
             if decisions:
-                avg_score = statistics.mean([d["score"] for d in decisions]) if decisions else 0.5
-                avg_ml = (
-                    statistics.mean([d.get("ml_score", 0.5) for d in decisions if d.get("ml_score") is not None])
-                    if ml_scores
-                    else 0.5
-                )
+                avg_score = statistics.mean([float(d["score"]) for d in decisions]) if decisions else 0.5
+                avg_ml = statistics.mean(ml_scores) if ml_scores else 0.5
                 core = min(80, int(45 + avg_score * 30 + avg_ml * 20))
                 tactical = max(5, int(30 - avg_score * 15 - avg_ml * 10))
                 optionality = 5
@@ -131,28 +130,23 @@ class DailyReportGenerator:
                 lines.append("   • Core: 50% | Tactical: 20% | 현금: 30% (신호 부재)")
             lines.append("")
 
-            # --- SECTION 4: RISK ---
             lines.append("<b>⚠️ 4. 오늘의 3대 리스크</b>")
-            risks = self._get_daily_risks(regime, decisions)
-            for r in risks:
+            for r in self._get_daily_risks(regime, decisions):
                 lines.append(f"• {r}")
             lines.append("")
 
-            # --- SECTION 5: FACTOR DRIFT ---
             lines.append("<b>⚙️ 5. 팩터 드리프트 (7일 EMA)</b>")
             if weights:
-                drift_str = ", ".join([f"{k}:{v:.2f}" for k, v in weights.items()])
+                drift_str = ", ".join([f"{k}:{float(v):.2f}" for k, v in weights.items()])
                 lines.append(f"• <code>{drift_str}</code>")
-                top_factor = max(weights, key=weights.get)
-                lines.append(f"• <b>↑ 우세 팩터:</b> {top_factor} (가중치 {weights[top_factor]:.2f})")
+                top_factor = max(weights.keys(), key=lambda k: float(weights[k]))
+                lines.append(f"• <b>↑ 우세 팩터:</b> {top_factor} (가중치 {float(weights[top_factor]):.2f})")
             else:
                 lines.append("• <i>초기 가중치 (학습 전)</i>")
             lines.append("")
 
-            # --- SECTION 6: ACTION ITEMS ---
             lines.append("<b>📋 6. 오늘의 액션 아이템</b>")
-            actions = self._get_action_items(regime, decisions)
-            for a in actions:
+            for a in self._get_action_items(regime, decisions):
                 lines.append(f"• {a}")
             lines.append("")
 
@@ -161,10 +155,7 @@ class DailyReportGenerator:
             lines.append("<i>⚠️ 투자자문 아님 | 책임은 투자자 본인</i>")
             lines.append(f"<i>📊 브리프 ID: {datetime.now().strftime('%Y%m%d')}-{len(decisions)}</i>")
 
-            full_msg = "\n".join(lines)
-
-            # 🔥 v6.1: TelegramSender가 자동 분할 처리하므로 그냥 전송
-            await self.telegram.send_raw(full_msg)
+            await self.telegram.send_raw("\n".join(lines))
 
             elapsed = time.time() - start_time
             logger.info(f"📊 데일리 브리프 전송 완료 (신호 {len(decisions)}건, 소요 {elapsed:.2f}초)")
@@ -175,15 +166,12 @@ class DailyReportGenerator:
             logger.error(traceback.format_exc())
             raise
 
-    # ============================================================
-    # 내부 헬퍼 함수 (기존 유지)
-    # ============================================================
-    def _diagnose_regime(self, decisions: list[dict]) -> tuple[str, str, float]:
+    def _diagnose_regime(self, decisions: List[Dict[str, Any]]) -> Tuple[str, str, float]:
         if not decisions:
             return "🔄 횡보", "신호 부재로 관망 유지", 0.3
         buy_ratio = sum(1 for d in decisions if d["action"] == "BUY") / len(decisions)
-        avg_score = statistics.mean([d["score"] for d in decisions]) if decisions else 0.0
-        avg_conf = statistics.mean([d["confidence"] for d in decisions]) if decisions else 0.0
+        avg_score = statistics.mean([float(d["score"]) for d in decisions]) if decisions else 0.0
+        avg_conf = statistics.mean([float(d["confidence"]) for d in decisions]) if decisions else 0.0
         composite = (buy_ratio * 0.6 + avg_score * 0.4) * avg_conf
         if composite > 0.6 and buy_ratio > 0.55:
             return "🚀 강한 상승 (Risk-On)", "AI·로봇 축 자금 유입", min(0.95, composite)
@@ -194,7 +182,7 @@ class DailyReportGenerator:
         else:
             return "⚖️ 중립·전환", "멀티사이클 중첩 구간", 0.6
 
-    def _get_daily_risks(self, regime: str, decisions: list[dict]) -> list[str]:
+    def _get_daily_risks(self, regime: str, decisions: List[Dict[str, Any]]) -> List[str]:
         base = [
             "① 전력 인허가 지연 → AI 인프라 상단 제약",
             "② HBM 가격 피크아웃 조기화 가능성",
@@ -214,7 +202,7 @@ class DailyReportGenerator:
             ]
         return base
 
-    def _get_action_items(self, regime: str, decisions: list[dict]) -> list[str]:
+    def _get_action_items(self, regime: str, decisions: List[Dict[str, Any]]) -> List[str]:
         if "상승" in regime:
             return [
                 "✅ Core(반도체) 비중 유지, 추세 추종",

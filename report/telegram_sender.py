@@ -1,6 +1,23 @@
+﻿# -*- coding: utf-8 -*-
 """
-report/telegram_sender.py - v7.4.0 (Trace ID 전파 지원 추가)
-- 모든 알림 모을 하단에 trace_id 푸터 자동 주입
+report/telegram_sender.py - v7.4.1 (Session 43: mypy strict 적용)
+
+v7.4.1 변경 사항 (mypy strict 오류 11개 해결, 실제 mypy 출력 줄 번호 기준):
+    - __init__() 반환 타입 -> None 추가 (24번 줄)
+    - send()의 report 파라미터: dict -> Dict[str, Any] (35번 줄)
+    - _action_banner() 반환 타입: list -> List[str] (177번 줄)
+    - _infer_advice_action()의 advice 파라미터: dict | None -> Optional[Dict[str, Any]] (187번 줄)
+    - _format_signal_entry/_format_sl_trail/_format_atr_spike/_format_tp_hit/
+      _format_exit/_format_lifecycle_advice의 data 파라미터: dict -> Dict[str, Any]
+      (204/260/304/349/385/409번 줄)
+    - _calc_hold_time()의 entry_time_str 파라미터: str -> Optional[str]
+      (391번 줄 호출부의 arg-type 오류를 콜리 시그니처 수정으로 해결.
+       함수 내부에 이미 `if not entry_time_str: return "N/A"` 가드가 있어
+       None 입력을 그대로 안전하게 처리하므로 런타임 동작 100% 무변경)
+    - 그 외 로직/동작 100% 무변경 (mypy가 실제로 지적한 지점 외에는 손대지 않음)
+
+v7.4.0 (기존 유지):
+- 모든 알림 모음 하단에 trace_id 푸터 자동 주입
 - v7.3.1 유지: send_raw() 청크 간 0.1초 sleep + HTML 태그 분할
 """
 
@@ -8,6 +25,7 @@ import asyncio
 import html
 import os
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from telegram import Bot
@@ -21,7 +39,7 @@ logger = setup_logger("telegram")
 
 
 class TelegramSender:
-    def __init__(self):
+    def __init__(self) -> None:
         load_dotenv()
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -32,7 +50,7 @@ class TelegramSender:
         else:
             logger.warning("❌ Telegram bot not configured")
 
-    async def send(self, report: dict) -> bool:
+    async def send(self, report: Dict[str, Any]) -> bool:
         if not self.bot or not self.chat_id:
             return False
 
@@ -174,7 +192,7 @@ class TelegramSender:
         "EXECUTED": ("✅", "자동 실행 완료"),
     }
 
-    def _action_banner(self, action: str, price: float = 0.0, note: str = "") -> list:
+    def _action_banner(self, action: str, price: float = 0.0, note: str = "") -> List[str]:
         emoji, label = self._ACTION_STYLE.get(action, self._ACTION_STYLE["WATCH"])
         lines = [f"{emoji} <b>지금 할 일: {label}</b>"]
         if price > 0:
@@ -184,7 +202,7 @@ class TelegramSender:
         lines.append("")
         return lines
 
-    def _infer_advice_action(self, advice: dict | None) -> str:
+    def _infer_advice_action(self, advice: Optional[Dict[str, Any]]) -> str:
         if not advice:
             return "HOLD"
         rec = (advice.get("recommendation") or advice.get("action") or "").upper()
@@ -201,7 +219,7 @@ class TelegramSender:
             return "REDUCE"
         return "HOLD"
 
-    def _format_signal_entry(self, data: dict) -> str:
+    def _format_signal_entry(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         name = html.escape(str(data.get("name", ticker)))
         side = data.get("side", "BUY")
@@ -257,7 +275,7 @@ class TelegramSender:
         lines.append("<i>⚠️ Shadow Mode: 알림 전용 | 이후 알림은 시간이 아닌 '가격 도달' 기준으로 발송됩니다</i>")
         return "\n".join(lines)
 
-    def _format_sl_trail(self, data: dict) -> str:
+    def _format_sl_trail(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
         _ = data.get("entry_price", price)
@@ -301,7 +319,7 @@ class TelegramSender:
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | 가격 기준 자동 트리거 (시간 무관)</i>")
         return "\n".join(lines)
 
-    def _format_atr_spike(self, data: dict) -> str:
+    def _format_atr_spike(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
         _ = data.get("entry_price", 0.0)
@@ -346,7 +364,7 @@ class TelegramSender:
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.1</i>")
         return "\n".join(lines)
 
-    def _format_tp_hit(self, data: dict) -> str:
+    def _format_tp_hit(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         tp_level = data.get("tp_level", 1)
         tp_price = data.get("tp_price", 0.0)
@@ -382,7 +400,7 @@ class TelegramSender:
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST</i>")
         return "\n".join(lines)
 
-    def _format_exit(self, data: dict) -> str:
+    def _format_exit(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
         entry_price = data.get("entry_price", price)
@@ -406,7 +424,7 @@ class TelegramSender:
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST</i>")
         return "\n".join(lines)
 
-    def _format_lifecycle_advice(self, data: dict) -> str:
+    def _format_lifecycle_advice(self, data: Dict[str, Any]) -> str:
         ticker = html.escape(str(data.get("ticker", "N/A")))
         price = data.get("price", 0.0)
         entry_price = data.get("entry_price", price)
@@ -454,7 +472,7 @@ class TelegramSender:
         lines.append(f"<i>🕒 {datetime.now().strftime('%H:%M:%S')} KST | v7.3.1 Consensus (데이터 기반)</i>")
         return "\n".join(lines)
 
-    def _calc_hold_time(self, entry_time_str: str) -> str:
+    def _calc_hold_time(self, entry_time_str: Optional[str]) -> str:
         if not entry_time_str:
             return "N/A"
         try:

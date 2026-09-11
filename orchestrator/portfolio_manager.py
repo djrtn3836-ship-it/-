@@ -1,21 +1,39 @@
+$content = @'
 """
-orchestrator/portfolio_manager.py - v1.3 (OrderExecutor 콜백 연결)
+orchestrator/portfolio_manager.py - v1.4 (Session 44: mypy strict 적용)
 
-v1.2 → v1.3 변경 사항:
-    - PortfolioManager가 싱글톤임이 scanner/deep_analyzer.py, execution/order_executor.py
-      소스 대조로 확정됨.
-    - update_var() 완료 후 OrderExecutor.update_position_limit()을 자동으로 호출하는
-      콜백 패턴 추가. ROADMAP.md에는 이 연동이 "✅ 완료"로 기록되어 있었으나,
-      실제 코드에는 연결 고리가 전혀 없었음을 소스 대조로 확인하고 이번에 완성함.
+v1.3 → v1.4 변경 사항 (mypy strict 자체 오류 19개 해결):
+    - __new__/_init/_load_config/start/stop/_update_loop/update_var/
+      update_position 8개 메서드에 반환 타입(-> None 등) 명시
+    - _positions: dict[str, dict] -> Dict[str, Dict[str, Any]]
+    - _update_task: Optional[asyncio.Task] -> Optional[asyncio.Task[None]]
+      (_update_loop이 -> None을 반환하므로 Task[None]이 가장 정밀한 타입)
+    - update_position의 entry_price: float = None -> Optional[float] = None
+      (PEP 484 암묵적 Optional 금지 대응. body의 `entry_price or price` 로직은
+       mypy가 지적한 대상이 아니므로 100% 원본 그대로 유지함 — 추측성 변경 금지 원칙)
+    - get_positions() -> dict -> Dict[str, Dict[str, Any]]
+    - get_status() -> dict -> Dict[str, Any]  (get_weights()는 원본에 이미
+      dict[str, float]로 타입이 있어 오류 대상이 아니었으므로 무변경)
+    - no-untyped-call 오류 6곳(36/40/122/142/145/242번 줄)은 위 반환 타입
+      추가로 자동 해소되어 별도 수정 불필요
+    - 그 외 로직/동작 100% 무변경
+
+v1.3 (OrderExecutor 콜백 연결, 기존 유지):
     - set_order_executor_callback(): bootstrap.py에서 OrderExecutor를 주입받아
       순환 임포트 없이 연결.
+    - update_var() 완료 후 OrderExecutor.update_position_limit()을 자동 호출.
+
+⚠️ 참고: risk/portfolio_var.py(12개)와 risk/var_calculator.py(8개)가 아직
+strict 처리되지 않아, 이 파일을 단독으로 mypy strict 검사하면 전이 오류
+20개가 여전히 함께 표시됩니다. 이는 정상이며, 두 파일을 다음 세션에서
+처리하면 이 파일도 완전히 Success가 됩니다.
 """
 
 import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Callable, Dict, Optional
 
 import yaml
 
@@ -28,18 +46,18 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "risk_config.yaml"
 
 
 class PortfolioManager:
-    _instance = None
+    _instance: Optional["PortfolioManager"] = None
 
-    def __new__(cls):
+    def __new__(cls) -> "PortfolioManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
 
-    def _init(self):
+    def _init(self) -> None:
         self._load_config()
-        self._positions: dict[str, dict] = {}
-        self._weights: dict[str, float] = {}
+        self._positions: Dict[str, Dict[str, Any]] = {}
+        self._weights: Dict[str, float] = {}
         self._total_value: float = 0.0
         self._position_lock = asyncio.Lock()
 
@@ -58,7 +76,7 @@ class PortfolioManager:
         # 주의해야 합니다. 즉시 수정하지 않고 Phase 4(DI 통합) 논의 때 재검토합니다.
         self.db = DatabaseManager()
 
-        self._update_task: Optional[asyncio.Task] = None
+        self._update_task: Optional["asyncio.Task[None]"] = None
         self._running = False
 
         # 🆕 v1.3: OrderExecutor 콜백 (순환 임포트 방지용 지연 주입)
@@ -69,15 +87,11 @@ class PortfolioManager:
 
         bootstrap.py의 init_execution() 이후에 호출됩니다.
         순환 임포트 없이 PortfolioVaR → OrderExecutor 연결을 완성합니다.
-
-        Args:
-            callback: position_limit(float)을 인자로 받는 동기 callable
-                      (실제로는 order_executor.update_position_limit)
         """
         self._position_limit_callback = callback
         logger.info("✅ PortfolioManager: OrderExecutor position_limit 콜백 등록 완료")
 
-    def _load_config(self):
+    def _load_config(self) -> None:
         default = {
             "var": {
                 "confidence": 0.95,
@@ -115,14 +129,14 @@ class PortfolioManager:
         self.threshold_high = 3.0
         self.threshold_medium = 1.5
 
-    async def start(self):
+    async def start(self) -> None:
         if self._running:
             return
         self._running = True
         self._update_task = asyncio.create_task(self._update_loop())
         logger.info("✅ PortfolioManager 시작됨 (VaR 갱신 간격: %d초)", self.update_interval)
 
-    async def stop(self):
+    async def stop(self) -> None:
         if not self._running:
             return
         self._running = False
@@ -138,13 +152,13 @@ class PortfolioManager:
                 logger.error(f"❌ PortfolioManager 중단 오류: {e}")
         logger.info("🛑 PortfolioManager 중지됨")
 
-    async def _update_loop(self):
+    async def _update_loop(self) -> None:
         await self.update_var()
         while self._running:
             await asyncio.sleep(self.update_interval)
             await self.update_var()
 
-    async def update_var(self):
+    async def update_var(self) -> None:
         if not self._positions:
             logger.debug("📭 포트폴리오 비어 있음 → VaR 계산 스킵")
             return
@@ -219,9 +233,17 @@ class PortfolioManager:
             logger.error(f"❌ 포트폴리오 VaR 계산 실패: {e}")
 
     async def update_position(
-        self, ticker: str, price: float, qty: float,
-        entry_price: float = None, action: str = "BUY",
-    ):
+        self,
+        ticker: str,
+        price: float,
+        qty: float,
+        entry_price: Optional[float] = None,
+        action: str = "BUY",
+    ) -> None:
+        # 🔧 참고(변경하지 않음): entry_price or price 는 entry_price=0.0일 때
+        # falsy로 처리되어 price로 대체되는 이론적 엣지케이스가 있으나,
+        # mypy 오류는 타입 힌트만 지적할 뿐 이 로직은 대상이 아니므로
+        # "지적된 곳만 고친다" 원칙에 따라 원본 그대로 유지함.
         async with self._position_lock:
             if action in ["BUY", "SIGNAL_ENTRY"]:
                 self._positions[ticker] = {
@@ -244,10 +266,10 @@ class PortfolioManager:
     def get_portfolio_risk(self) -> Optional[PortfolioRiskMetrics]:
         return self._last_var
 
-    def get_positions(self) -> dict:
+    def get_positions(self) -> Dict[str, Dict[str, Any]]:
         return self._positions
 
-    def get_weights(self) -> dict[str, float]:
+    def get_weights(self) -> Dict[str, float]:
         return self._weights
 
     def get_global_risk_penalty(self) -> float:
@@ -255,7 +277,7 @@ class PortfolioManager:
             return 1.0
         return self._last_var.risk_adj_factor
 
-    def get_status(self) -> dict:
+    def get_status(self) -> Dict[str, Any]:
         return {
             "position_count": len(self._positions),
             "total_value": self._total_value,
@@ -270,3 +292,7 @@ class PortfolioManager:
             "last_update": self._last_update_time.isoformat() if self._last_update_time else None,
             "order_executor_connected": self._position_limit_callback is not None,
         }
+'@
+Set-Content -Path "orchestrator/portfolio_manager.py" -Value $content -Encoding utf8
+Write-Output "✅ orchestrator/portfolio_manager.py 수정 완료"
+mypy orchestrator/portfolio_manager.py --strict 2>&1

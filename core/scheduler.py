@@ -1,7 +1,18 @@
-"""
-core/scheduler.py - v2.1 — Claude 버그 수정 (시스템 시작 크래시)
+﻿"""
+core/scheduler.py - v2.2 (Session 43: mypy strict 적용)
 
-수정 사항 (v2.0 → v2.1):
+v2.1 → v2.2 변경 사항 (mypy strict 오류 11개 해결, 실제 mypy 출력 줄 번호 기준):
+    - __init__/start/shutdown에 반환 타입 -> None 추가 (30/34/38번 줄)
+    - add_job_with_retry()의 coro_func/trigger/job_id 파라미터 타입 및
+      반환 타입 -> None 추가 (42번 줄)
+    - 내부 함수 _wrapped_coro()/_wrapper()에 반환 타입 -> None 추가
+      (55/67번 줄) → 이 수정으로 70/72번 줄의 "Call to untyped function"
+      오류도 함께 자동 해결됨 (별도 수정 불필요)
+    - add_daily_report/add_feedback_learning의 coro_func/hour/minute
+      파라미터 타입 추가 (78/82번 줄)
+    - 그 외 로직/동작 100% 무변경
+
+v2.0 → v2.1 (기존 유지):
 - 🔥 CRITICAL: add_job_with_retry(self, coro_func, trigger, job_id,
   max_retries=3, retry_delay=5, *args, **kwargs) 시그니처에서
   max_retries/retry_delay가 *args보다 앞에 있어, scanner_main.py처럼
@@ -16,6 +27,8 @@ core/scheduler.py - v2.1 — Claude 버그 수정 (시스템 시작 크래시)
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,32 +40,38 @@ logger = setup_logger("scheduler")
 
 
 class SchedulerManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
-        self._jobs = []
+        self._jobs: list[Any] = []
 
-    def start(self):
+    def start(self) -> None:
         self.scheduler.start()
         logger.info("⏰ Scheduler started")
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self.scheduler.shutdown()
         logger.info("⏰ Scheduler shutdown")
 
     def add_job_with_retry(
-        self, coro_func, trigger, job_id, *args, max_retries: int = 3, retry_delay: int = 5, **kwargs
-    ):
+        self,
+        coro_func: Callable[..., Awaitable[Any]],
+        trigger: Any,
+        job_id: str,
+        *args: Any,
+        max_retries: int = 3,
+        retry_delay: int = 5,
+        **kwargs: Any,
+    ) -> None:
         """
         재시도 로직이 포함된 스케줄 작업 등록
 
-        🔥 수정됨: max_retries, retry_delay는 이제 키워드 전용(keyword-only)
-        인자입니다. coro_func에 전달할 실제 인자는 job_id 뒤에 위치인자로
-        자유롭게 넘기세요. 예:
+        🔥 max_retries, retry_delay는 키워드 전용(keyword-only) 인자입니다.
+        coro_func에 전달할 실제 인자는 job_id 뒤에 위치인자로 자유롭게 넘기세요. 예:
             add_job_with_retry(run_daily_report, trigger, "daily_report",
                                 daily_reporter, max_retries=3, retry_delay=5)
         """
 
-        async def _wrapped_coro():
+        async def _wrapped_coro() -> None:
             for attempt in range(max_retries + 1):
                 try:
                     await coro_func(*args, **kwargs)
@@ -64,7 +83,7 @@ class SchedulerManager:
                     else:
                         log_error(f"스케줄 작업 최종 실패: {job_id}", e)
 
-        def _wrapper():
+        def _wrapper() -> None:
             try:
                 asyncio.get_running_loop()  # ensure we're in async context
                 asyncio.create_task(_wrapped_coro())
@@ -75,10 +94,10 @@ class SchedulerManager:
         logger.info(f"📅 스케줄 등록: {job_id} (재시도 {max_retries}회)")
 
     # 기존 편의 메서드 (하위 호환성)
-    def add_daily_report(self, coro_func, hour=7, minute=0):
+    def add_daily_report(self, coro_func: Callable[..., Awaitable[Any]], hour: int = 7, minute: int = 0) -> None:
         trigger = CronTrigger(hour=hour, minute=minute, timezone="Asia/Seoul")
         self.add_job_with_retry(coro_func, trigger, "daily_report")
 
-    def add_feedback_learning(self, coro_func, hour=17, minute=0):
+    def add_feedback_learning(self, coro_func: Callable[..., Awaitable[Any]], hour: int = 17, minute: int = 0) -> None:
         trigger = CronTrigger(hour=hour, minute=minute, timezone="Asia/Seoul")
         self.add_job_with_retry(coro_func, trigger, "feedback_learning")

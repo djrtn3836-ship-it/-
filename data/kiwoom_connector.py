@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-data/kiwoom_connector.py - v6.1.7 (Session 38: mypy strict 적용)
-- _reconnect_websocket_impl()의 session close try/except/finally 패턴 유지 (v6.1.6)
-- websockets.ConnectionClosed 전용 예외 분기를 원본 그대로 보존
-  (초안 검토 과정에서 이 분기가 통째로 삭제된 회귀를 발견하고 복원함)
-- 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
+data/kiwoom_connector.py - v6.1.8 (Session 43: mypy strict 잔여 오류 완전 제거)
+
+v6.1.8 변경 사항:
+    - .post(..., timeout=10) 의 int 리터럴을 aiohttp.ClientTimeout(total=10)으로 교체
+      (5곳: request_tr()의 4개 분기 + _refresh_token()) — 순수 타입 수정, 실제 타임아웃
+      값(10초)은 완전히 동일하여 런타임 동작 변화 없음.
+    - log_error()의 두 번째 인자로 dict를 직접 넘기던 7곳을, 동일한 정보를 문자열로
+      포함한 Exception 객체(ValueError/RuntimeError/TimeoutError)로 감싸도록 수정.
+      log_error() 자체(오류 레벨 로깅)는 그대로 유지하며 log_event()로 바꾸지 않음
+      — 로그 심각도와 함수 의미를 원본과 100% 동일하게 보존.
+    - asyncio.wait_for(self._ws.recv(), ...)의 타입 불일치는 mypy가 실제로 오류를
+      보고한 단 한 곳(_connect_websocket의 LOGIN 응답 수신부, 원본 540번째 줄)에만
+      cast(Awaitable[str], ...)를 적용. _ws_receiver의 동일 패턴은 mypy 오류 목록에
+      없었으므로 의도적으로 손대지 않음(검증되지 않은 지점 임의 수정 금지 원칙).
+    - 그 외 로직/동작 100% 무변경.
 """
 
 import asyncio
@@ -16,7 +26,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, DefaultDict, Dict, List, Optional
+from typing import Any, Awaitable, DefaultDict, Dict, List, Optional, cast
 
 import aiohttp
 import websockets
@@ -32,6 +42,9 @@ logger = setup_logger("kiwoom_rest")
 config = get_config()
 
 DISCOVERED_KEYS_FILE = Path(__file__).parent.parent / "config" / "discovered_keys.json"
+
+# 🔧 Session 43: int 타임아웃을 aiohttp.ClientTimeout으로 교체 (5개 .post() 호출 공유)
+_POST_TIMEOUT_10 = aiohttp.ClientTimeout(total=10)
 
 
 class AsyncRateLimiter:
@@ -99,7 +112,7 @@ class KiwoomConnectorV512:
         self._priority_keys: List[str] = ["ticker", "symbol", "item", "stk_cd", "code", "item_cd"]
         self._discovered_keys: List[str] = self._load_discovered_keys()
 
-        log_event("KIWOOM_INIT", {"version": "v6.1.7", "rate_limit": rate_limit})
+        log_event("KIWOOM_INIT", {"version": "v6.1.8", "rate_limit": rate_limit})
 
     def _load_discovered_keys(self) -> List[str]:
         if DISCOVERED_KEYS_FILE.exists():
@@ -143,7 +156,9 @@ class KiwoomConnectorV512:
             keys = list(data.keys())
             if not (set(keys) - {"price", "timestamp", "time"}):
                 return
-            log_error("파싱실패 - 인식불가 키", {"keys": keys, "sample": str(data)[:200]})
+            # 🔧 log_error 2번째 인자는 Exception|None 이어야 함. dict 정보를
+            # 그대로 ValueError 문자열에 담아 전달(로그 레벨/의미 100% 동일 유지).
+            log_error("파싱실패 - 인식불가 키", ValueError(f"keys={keys}, sample={str(data)[:200]}"))
             return
 
         data["ticker"] = ticker
@@ -171,6 +186,9 @@ class KiwoomConnectorV512:
                 try:
                     if self._ws is None:
                         break
+                    # 🔧 이 지점은 mypy 오류 목록에 없었으므로 원본 그대로 유지
+                    # (self._ws가 Optional[Any]로 선언되어 있어 Any로 추론되므로
+                    #  wait_for와 충돌하지 않음 — 검증되지 않은 지점 임의 수정 금지)
                     raw: str = await asyncio.wait_for(self._ws.recv(), timeout=self._silence_timeout)
                     log_raw_data(raw, source="WEBSOCKET")
                     try:
@@ -198,7 +216,7 @@ class KiwoomConnectorV512:
                         await self._handle_ws_message(data)
 
                     except json.JSONDecodeError:
-                        log_error("JSON 디코딩 오류", {"raw": raw[:200]})
+                        log_error("JSON 디코딩 오류", ValueError(f"raw={raw[:200]}"))
                     except Exception as e:
                         log_error("메시지 처리 중 오류", e)
                         debug_tower.capture_snapshot("SYSTEM", e, "WS_PROCESS")
@@ -208,8 +226,6 @@ class KiwoomConnectorV512:
                         await self._backfill_missing_data()
                     break
         except websockets.ConnectionClosed:
-            # 🔧 이 분기는 원본에 존재하던 정상 종료 이벤트 처리입니다.
-            # 초안 검토 과정에서 이 분기가 누락된 회귀를 발견하고 복원했습니다.
             log_event("WEBSOCKET_CLOSED", {})
         except Exception as e:
             log_error("수신 루프 오류", e)
@@ -342,7 +358,7 @@ class KiwoomConnectorV512:
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
             body: Dict[str, Any] = {"dt": yesterday, "stk_cd": ticker, "amt_qty_tp": "1", "trde_tp": "0", "unit_tp": "1"}
             try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         chart_list = data.get("stk_invsr_orgn_chart", [])
@@ -380,7 +396,7 @@ class KiwoomConnectorV512:
             }
             body = {"stk_cd": ticker}
             try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         net_buy: Any = data.get("net_buy")
@@ -414,7 +430,7 @@ class KiwoomConnectorV512:
             }
             body = {"stk_cd": ticker}
             try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         net_buy = data.get("net_buy")
@@ -450,7 +466,7 @@ class KiwoomConnectorV512:
             }
             body = {"stk_cd": ticker}
             try:
-                async with self._session.post(url, headers=headers, json=body, timeout=10) as resp:
+                async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         price = float(data.get("buy_fpr_bid", 0) or data.get("sel_fpr_bid", 0))
@@ -473,7 +489,7 @@ class KiwoomConnectorV512:
         log_event("CONNECT_START", {})
         logger.info("🔑 키움 REST API 로그인 시도...")
         if not self.api_key or not self.api_secret:
-            log_error("API 키 없음", {"key": str(self.api_key), "secret": bool(self.api_secret)})
+            log_error("API 키 없음", ValueError(f"key={self.api_key}, secret={bool(self.api_secret)}"))
             debug_tower.capture_snapshot("SYSTEM", ValueError("API 키 없음"), "KIWOOM_CONNECT")
             return False
 
@@ -537,7 +553,13 @@ class KiwoomConnectorV512:
         try:
             if self._ws is None:
                 raise RuntimeError("WebSocket is None")
-            raw: str = await asyncio.wait_for(self._ws.recv(), timeout=20)
+            # 🔧 Session 43: mypy가 실제로 오류를 보고한 유일한 지점.
+            # self._ws.recv()가 Coroutine[Any, Any, str | bytes]로 좁혀져
+            # wait_for가 기대하는 Awaitable[str]과 불일치 → cast로 타입만 명시.
+            # 런타임 동작은 완전히 동일(cast는 순수 정적 타입 힌트, 실행 시 아무 영향 없음).
+            raw: str = await asyncio.wait_for(
+                cast(Awaitable[str], self._ws.recv()), timeout=20
+            )
             auth: Dict[str, Any] = json.loads(raw)
             if auth.get("return_code") == 0:
                 self._ws_logged_in = True
@@ -548,13 +570,13 @@ class KiwoomConnectorV512:
                 debug_tower.log("SYSTEM", "WS_LOGIN_SUCCESS", {})
             else:
                 error_msg = str(auth.get("return_msg", "Unknown"))
-                log_error("LOGIN 실패", {"msg": error_msg})
+                log_error("LOGIN 실패", RuntimeError(f"msg={error_msg}"))
                 logger.error(f"❌ LOGIN 실패: {error_msg}")
                 debug_tower.log("SYSTEM", "WS_LOGIN_FAIL", {"msg": error_msg})
                 self.access_token = None
                 raise Exception(f"LOGIN failed: {error_msg}")
         except TimeoutError:
-            log_error("LOGIN 타임아웃", {})
+            log_error("LOGIN 타임아웃", TimeoutError("LOGIN 응답 대기 시간 초과 (20초)"))
             logger.error("❌ LOGIN 응답 타임아웃 (20초)")
             debug_tower.capture_snapshot("SYSTEM", TimeoutError("LOGIN timeout"), "WS_LOGIN")
             self.access_token = None
@@ -642,13 +664,13 @@ class KiwoomConnectorV512:
             async with self._session.post(
                 f"{self.REST_BASE_URL}/oauth2/token",
                 json={"grant_type": "client_credentials", "appkey": self.api_key, "secretkey": self.api_secret},
-                timeout=10,
+                timeout=_POST_TIMEOUT_10,
             ) as resp:
                 if resp.status == 200:
                     data: Dict[str, Any] = await resp.json()
                     self.access_token = data.get("token")
                     if not self.access_token:
-                        log_error("토큰 응답 없음", data)
+                        log_error("토큰 응답 없음", ValueError(f"response_keys={list(data.keys())}"))
                         self.access_token = None
                         debug_tower.capture_snapshot("SYSTEM", ValueError("토큰 응답 없음"), "TOKEN_REFRESH")
                         if raise_on_fail:
@@ -660,7 +682,7 @@ class KiwoomConnectorV512:
                     debug_tower.log("SYSTEM", "TOKEN_REFRESH_SUCCESS", {})
                 else:
                     error_text = await resp.text()
-                    log_error(f"토큰 갱신 실패 (HTTP {resp.status})", {"body": error_text})
+                    log_error(f"토큰 갱신 실패 (HTTP {resp.status})", RuntimeError(f"body={error_text}"))
                     self.access_token = None
                     debug_tower.capture_snapshot("SYSTEM", Exception(f"HTTP {resp.status}"), "TOKEN_REFRESH")
                     if raise_on_fail:

@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-infrastructure/dart/client.py - DART Connector v5.4.2 (Session 39: mypy strict 적용)
-- 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
-- V10: data/dart_connector.py에서 이동 (CACHE_FILE 경로만 다름)
-- data/dart_connector.py와 동일한 두 가지 방어 기법 적용
-  (len(x or {}) Optional 가드, dict()/list() 래핑을 통한 warn_return_any 방지)
+infrastructure/dart/client.py - DART Connector v5.4.3 (Session 42: mypy strict 잔여 오류 제거)
+
+v5.4.3 변경 사항:
+    - search_notices_sync()의 params 딕셔너리에서 page_no(1)와 page_count(limit)가
+      int로 섞여 들어가 dict[str, object]로 추론되던 문제를 해결.
+      모든 값을 str()로 감싸 dict[str, str]이 되도록 수정 (requests 라이브러리는
+      내부적으로 어차피 모든 값을 문자열로 직렬화하여 쿼리스트링을 만들기 때문에
+      실제 HTTP 요청 결과는 완전히 동일함 — 순수 타입 수정, 런타임 동작 무변경).
+    - 그 외 모든 로직 100% 무변경 (mypy가 실제로 지적한 지점 외에는 손대지 않음).
 """
 
 import asyncio
@@ -25,7 +29,6 @@ from core.logger import setup_logger
 
 logger = setup_logger("dart_connector")
 
-# 🔧 data/dart_connector.py와 유일한 실질적 차이: .parent 한 단계 더 위로
 CACHE_FILE = Path(__file__).parent.parent.parent / "config" / "corp_code_cache.json"
 CACHE_TTL_DAYS = 7
 RETRY_INTERVAL_HOURS = 1
@@ -488,15 +491,19 @@ class DartConnector:
             start_date = datetime.now().replace(month=1, day=1).strftime("%Y%m%d")
 
         try:
+            # 🔧 Session 42: params 값을 전부 str()로 통일 → dict[str, str]로 추론되도록 하여
+            # mypy strict 오류 해결. requests는 어차피 모든 값을 문자열로 직렬화하므로
+            # 실제 HTTP 요청 결과는 완전히 동일함(런타임 동작 무변경).
+            params = {
+                "crtfc_key": str(self.api_key),
+                "corp_code": str(corp_code),
+                "bgn_de": str(start_date),
+                "page_no": "1",
+                "page_count": str(limit),
+            }
             resp = requests.get(
                 f"{self.base_url}/list.json",
-                params={
-                    "crtfc_key": self.api_key,
-                    "corp_code": corp_code,
-                    "bgn_de": start_date,
-                    "page_no": 1,
-                    "page_count": limit,
-                },
+                params=params,
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=10,
             )
