@@ -5,11 +5,13 @@ decision/hybrid_decider.py - v7.2.2 (액션 표준화)
 """
 
 
+from typing import Any
+
 class HybridDecider:
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
-    def decide(self, data: dict) -> dict:
+    def decide(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         점수(score) 기반 의사결정
         Returns:
@@ -55,7 +57,7 @@ class HybridDecider:
             "counterfactuals": self._generate_counterfactuals(data, action),
         }
 
-    def _generate_reasons(self, data: dict, action: str) -> list[str]:
+    def _generate_reasons(self, data: dict[str, Any], action: str) -> list[str]:
         reasons = []
         if action in ["BUY"]:
             if data.get("macro", {}).get("score", 0) > 0.6:
@@ -71,12 +73,12 @@ class HybridDecider:
                 reasons.append("섹터 모멘텀 약세")
         return reasons or ["다중 팩터 우위"]
 
-    def _generate_risks(self, data: dict, action: str) -> list[str]:
+    def _generate_risks(self, data: dict[str, Any], action: str) -> list[str]:
         risks = []
         if action in ["BUY"]:
             if data.get("stock", {}).get("volatility", 0) > 0.3:
                 risks.append("변동성 높음")
         return risks or ["시장 변동성 주의"]
 
-    def _generate_counterfactuals(self, data: dict, action: str) -> list[str]:
+    def _generate_counterfactuals(self, data: dict[str, Any], action: str) -> list[str]:
         return ["대체 시나리오 분석 필요"]

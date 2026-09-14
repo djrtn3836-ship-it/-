@@ -59,7 +59,7 @@ class AppContainer:
     _order_executor: OrderExecutor | None = field(default=None, init=False)
     _redis_cache: RedisCache | None = field(default=None, init=False)
 
-    config: dict = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
     # ============================================================
     # 프로퍼티 (지연 초기화)
@@ -148,7 +148,7 @@ class AppContainer:
     # 초기화 및 종료 (비동기)
     # ============================================================
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         """DI 컨테이너 초기화 (v1.4: Redis 초기화 추가).
 
         Redis 초기화는 db_manager 프로퍼티가 처음 접근되기 전에 완료되어야
@@ -189,7 +189,7 @@ class AppContainer:
         await self.portfolio_manager.start()
         logger.info("✅ DI 컨테이너 초기화 완료 (v1.4)")
 
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         await self.portfolio_manager.stop()
         await self.kiwoom.disconnect()
         await self.db_manager.close()

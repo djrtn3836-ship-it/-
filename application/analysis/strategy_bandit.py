@@ -26,7 +26,7 @@ import asyncio
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 
 # ─── Beta 분포 근사 헬퍼 ────────────────────────────────────────────
@@ -43,7 +43,7 @@ def _gamma_sample(alpha: float) -> float:
         float: 감마 분포 샘플
     """
     if alpha < 1.0:
-        return _gamma_sample(1.0 + alpha) * (random.random() ** (1.0 / alpha))
+        return float(_gamma_sample(1.0 + alpha) * (random.random() ** (1.0 / alpha)))
 
     d = alpha - 1.0 / 3.0
     c = 1.0 / math.sqrt(9.0 * d)
@@ -142,7 +142,7 @@ class BanditArm:
         self.total_plays += 1
         self.total_reward += reward
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """직렬화."""
         return {
             "name": self.name,
@@ -154,7 +154,7 @@ class BanditArm:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "BanditArm":
+    def from_dict(cls, d: dict[str, Any]) -> "BanditArm":
         """역직렬화."""
         arm = cls(name=d["name"])
         arm.alpha = d.get("alpha", 1.0)
@@ -281,7 +281,7 @@ class StrategyBandit:
             return {name: 1.0 / n for name in self._arms}
         return {name: v / total for name, v in means.items()}
 
-    def get_stats(self) -> List[Dict]:
+    def get_stats(self) -> list[dict[str, Any]]:
         """전략별 상세 통계 반환.
 
         Returns:
@@ -314,7 +314,7 @@ class StrategyBandit:
         best = max(self._arms.values(), key=lambda a: a.mean_reward)
         return best.name, best.mean_reward
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """전체 상태 직렬화 (DB 저장용).
 
         Returns:
@@ -326,7 +326,7 @@ class StrategyBandit:
         }
 
     @classmethod
-    def from_dict(cls, d: dict, decay: float = 0.99) -> "StrategyBandit":
+    def from_dict(cls, d: dict[str, Any], decay: float = 0.99) -> "StrategyBandit":
         """DB에서 복구.
 
         Args:

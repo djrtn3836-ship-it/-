@@ -33,7 +33,7 @@ application/analysis/bandit_feedback_bridge.py - StrategyBandit ↔ PerformanceT
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, cast, Any
 
 if TYPE_CHECKING:
     from data.db_manager import DatabaseManager
@@ -174,7 +174,7 @@ class BanditFeedbackBridge:
         old_days = self._feedback_days
         self._feedback_days = days_to_use
         try:
-            return await self.on_performance_updated()
+            return cast(Dict[str, float], await self.on_performance_updated())
         finally:
             self._feedback_days = old_days
             if self._last_feedback is None:
@@ -184,7 +184,7 @@ class BanditFeedbackBridge:
 
     @trace.traced
     def _compute_strategy_rewards(
-        self, outcomes: List[dict]
+        self, outcomes: list[dict[str, Any]]
     ) -> Dict[str, float]:
         """전략별 평균 보상 계산.
 
@@ -264,12 +264,12 @@ class BanditFeedbackBridge:
         """현재 Bandit 가중치 반환 (DeepAnalyzer 반영용)."""
         return self._bandit.get_weights()
 
-    def get_bandit_stats(self) -> List[dict]:
+    def get_bandit_stats(self) -> list[dict[str, Any]]:
         """전략별 상세 통계 반환."""
         return self._bandit.get_stats()
 
     @trace.traced
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         """브리지 상태 반환 (헬스체크용)."""
         return {
             "last_feedback": self._last_feedback.isoformat() if self._last_feedback else None,
@@ -280,7 +280,7 @@ class BanditFeedbackBridge:
             "bandit_stats": self.get_bandit_stats(),
         }
 
-    def get_recommended_strategy(self) -> tuple:
+    def get_recommended_strategy(self) -> tuple[str, float]:
         """현재 최우선 전략 반환 (탐욕적)."""
         return self._bandit.get_recommended_strategy()
 

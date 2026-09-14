@@ -69,13 +69,13 @@ class PerformanceTracker:
     _instance = None
     _lock = asyncio.Lock()
 
-    def __new__(cls):
+    def __new__(cls) -> "PerformanceTracker":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
 
-    def _init(self):
+    def _init(self) -> None:
         self.db: DatabaseManager | None = None
         self._equity_curve: list[float] = [100.0]
         self._daily_returns: list[float] = []
@@ -84,7 +84,7 @@ class PerformanceTracker:
         self._last_update: datetime | None = None
         self._update_interval = 300   # 5분
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._initialized = False
         # v3.0: StrategyBandit 연동 브리지 (선택적)
         self._bandit_bridge: Optional["BanditFeedbackBridge"] = None
@@ -394,4 +394,4 @@ class PerformanceTracker:
 
 
 # 전역 인스턴스
-performance_tracker = PerformanceTracker()
+performance_tracker: PerformanceTracker = PerformanceTracker()

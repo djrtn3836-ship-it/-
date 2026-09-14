@@ -58,22 +58,22 @@ from data.db_manager import DatabaseManager
 try:
     from infrastructure.dart.client import DartConnector
 except ImportError:
-    from data.dart_connector import DartConnector  # type: ignore
+    from data.dart_connector import DartConnector  # type: ignore[assignment]
 
 try:
     from infrastructure.news.crawler import NewsCrawler
 except ImportError:
-    from data.news_crawler import NewsCrawler  # type: ignore
+    from data.news_crawler import NewsCrawler  # type: ignore[assignment]
 
 try:
     from infrastructure.kiwoom import KiwoomConnectorV512
 except ImportError:
-    from data.kiwoom_connector import KiwoomConnectorV512  # type: ignore
+    from data.kiwoom_connector import KiwoomConnectorV512
 
 try:
     from infrastructure.kiwoom.monitor import RealtimeMonitor
 except ImportError:
-    from scanner.realtime_monitor import RealtimeMonitor  # type: ignore
+    from scanner.realtime_monitor import RealtimeMonitor
 
 from scanner.deep_analyzer import DeepAnalyzer
 
@@ -262,7 +262,7 @@ class Bootstrapper(TracedService):
         assert self.monitor is not None
 
         if hasattr(self.monitor, "set_telegram_sender"):
-            self.monitor.set_telegram_sender(TelegramSender())  # type: ignore[attr-defined]
+            self.monitor.set_telegram_sender(TelegramSender())
             logger.debug("RealtimeMonitor.set_telegram_sender 연결됨")
         else:
             logger.debug(

@@ -6,6 +6,7 @@ core/natural_language.py - v1.1 FINAL (감정 분석 + 유사도 검색)
 """
 
 import re
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,9 +115,9 @@ NEUTRAL_KEYWORDS = ["궁금", "알려줘", "뭐야", "어때", "어떻게"]
 # NaturalLanguageEngine (v1.1)
 # ============================================================
 class NaturalLanguageEngine:
-    def __init__(self):
-        self._intent_classifier = None
-        self._vectorizer = None
+    def __init__(self) -> None:
+        self._intent_classifier: Any = None
+        self._vectorizer: Any = None
         self._trained = False
         self._model_path = Path(__file__).parent.parent / "config" / "nlp_model.pkl"
 
@@ -151,7 +152,7 @@ class NaturalLanguageEngine:
         ("analyze", ["삼전", "005930", "현대차", "분석", "알려줘", "봐줘", "지금 가격", "현재가", "주가"]),
     ]
 
-    def _build_training_data(self):
+    def _build_training_data(self) -> tuple[list[str], list[str]]:
         texts, labels = [], []
         for intent, examples in self.TRAINING_DATA:
             for ex in examples:
@@ -159,7 +160,7 @@ class NaturalLanguageEngine:
                 labels.append(intent)
         return texts, labels
 
-    def train(self):
+    def train(self) -> None:
         """의도 분류기 학습 (최초 1회)"""
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer
@@ -185,7 +186,7 @@ class NaturalLanguageEngine:
         except:
             logger.warning("⚠️ NLU 모델 저장 실패")
 
-    def load(self):
+    def load(self) -> bool:
         """저장된 모델 로드"""
         if not self._model_path.exists():
             return False
@@ -248,7 +249,7 @@ class NaturalLanguageEngine:
 
             best_match = process.extractOne(text, STOCK_NAME_MAP.keys(), scorer=fuzz.partial_ratio)
             if best_match and best_match[1] >= threshold:
-                return STOCK_NAME_MAP[best_match[0]]
+                return str(STOCK_NAME_MAP[best_match[0]])
         except ImportError:
             try:
                 # difflib 폴백
@@ -256,7 +257,7 @@ class NaturalLanguageEngine:
 
                 matches = difflib.get_close_matches(text, STOCK_NAME_MAP.keys(), n=1, cutoff=threshold / 100)
                 if matches:
-                    return STOCK_NAME_MAP[matches[0]]
+                    return str(STOCK_NAME_MAP[matches[0]])
             except:
                 pass
         return None
@@ -269,7 +270,7 @@ class NaturalLanguageEngine:
         # 1. 6자리 숫자 → 티커
         ticker_match = re.search(r"\b(\d{6})\b", text)
         if ticker_match:
-            return ticker_match.group(1)
+            return str(ticker_match.group(1))
 
         # 2. 종목명 매핑 (fuzzy match 포함)
         fuzzy_result = self._fuzzy_match_ticker(text)
@@ -279,7 +280,7 @@ class NaturalLanguageEngine:
         # 3. 마지막 6자리 숫자 (주식 코드로 의심)
         numbers = re.findall(r"\d{6}", text)
         if numbers:
-            return numbers[-1]
+            return str(numbers[-1])
 
         return None
 

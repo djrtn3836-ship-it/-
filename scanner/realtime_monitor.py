@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 scanner/realtime_monitor.py - v5.7.1 (Session 38: mypy strict 적용 + 잠재 버그 수정)
 - 🔧 _on_data() 예외 처리부에서 ticker 변수가 아직 할당되지 않은 상태로 예외가

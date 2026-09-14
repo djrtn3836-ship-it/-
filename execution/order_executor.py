@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 
 from data.db_manager import DatabaseManager
@@ -66,12 +67,12 @@ class OrderExecutor:
         kiwoom_connector: KiwoomConnectorV512,
         db_manager: DatabaseManager,
         telegram_sender: TelegramSender | None = None,
-        mode: OrderMode = OrderMode.PAPER,
+        mode: OrderMode | str = OrderMode.PAPER,
     ):
         self.kiwoom = kiwoom_connector
         self.db = db_manager
         self.telegram = telegram_sender or TelegramSender()
-        self.mode = mode
+        self.mode = OrderMode(mode) if isinstance(mode, str) else mode
         self.exec_sim = RealisticExecutionSimulator(max_slippage_bps=100.0, num_slices=3)
 
         self._daily_pnl = 0.0
@@ -80,13 +81,13 @@ class OrderExecutor:
         self._position_lock = asyncio.Lock()
 
         # 현재 포지션 정보 (DB에서 주기적 갱신)
-        self._positions: dict[str, dict] = {}
+        self._positions: dict[str, dict[str, Any]] = {}
 
         # PortfolioVaR v2.0 position_limit 연동
         # 0.0 < position_limit ≤ 1.0 범위; 기본 1.0 (비정제)
         self._portfolio_position_limit: float = 1.0
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         """초기화: DB에서 현재 포지션 로드"""
         self._positions = {p["ticker"]: p for p in await self.db.get_positions()}
         logger.info(f"✅ OrderExecutor 초기화 완료 (포지션 {len(self._positions)}개)")
@@ -284,7 +285,7 @@ class OrderExecutor:
     # ============================================================
     # DB 업데이트 및 알림
     # ============================================================
-    async def _update_db_position(self, request: OrderRequest, result: OrderResult):
+    async def _update_db_position(self, request: OrderRequest, result: OrderResult) -> None:
         """DB 포지션 갱신"""
         if request.action in ["BUY", "SELL"]:
             # 포지션 테이블에 반영 (기존 포지션 업데이트 또는 신규)
@@ -305,7 +306,7 @@ class OrderExecutor:
                     else:
                         await self.db.save_position(request.ticker, current_pos["entry_price"], result.filled_price, new_qty)
 
-    async def _send_notification(self, request: OrderRequest, result: OrderResult):
+    async def _send_notification(self, request: OrderRequest, result: OrderResult) -> None:
         """주문 결과 텔레그램 알림"""
         msg = (
             f"📊 <b>Paper 주문 체결</b>\n"
@@ -326,8 +327,8 @@ class OrderExecutor:
     # ============================================================
     # 상태 조회
     # ============================================================
-    def get_open_orders(self) -> dict:
+    def get_open_orders(self) -> dict[str, OrderRequest]:
         return self._open_orders.copy()
 
-    def get_positions(self) -> dict:
+    def get_positions(self) -> dict[str, dict[str, Any]]:
         return self._positions.copy()

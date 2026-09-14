@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/scheduler.py - v2.2 (Session 43: mypy strict 적용)
 
 v2.1 → v2.2 변경 사항 (mypy strict 오류 11개 해결, 실제 mypy 출력 줄 번호 기준):

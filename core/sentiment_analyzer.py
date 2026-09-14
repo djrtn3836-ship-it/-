@@ -2,6 +2,7 @@
 core/sentiment_analyzer.py - v1.1 (지연 로딩 적용)
 """
 
+from typing import Any
 from core.logger import setup_logger
 
 logger = setup_logger("sentiment")
@@ -59,13 +60,13 @@ NEGATIVE_KEYWORDS = [
 
 
 class SentimentAnalyzer:
-    def __init__(self):
-        self._model = None
-        self._tokenizer = None
+    def __init__(self) -> None:
+        self._model: Any = None
+        self._tokenizer: Any = None
         self._use_transformers = False
         self._model_loaded = False  # 🔥 R-03 해결: 지연 로드 플래그
 
-    def _ensure_model_loaded(self):
+    def _ensure_model_loaded(self) -> None:
         """최초 호출 시에만 모델 로드 (시작 지연 방지)"""
         if self._model_loaded:
             return
@@ -131,4 +132,4 @@ class SentimentAnalyzer:
 
 
 # 전역 인스턴스 (이제 시작 시 블로킹 없음)
-sentiment_analyzer = SentimentAnalyzer()
+sentiment_analyzer: SentimentAnalyzer = SentimentAnalyzer()

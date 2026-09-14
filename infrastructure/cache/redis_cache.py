@@ -138,7 +138,7 @@ class RedisCache:
             keys = await self._client.keys(pattern)
             if not keys:
                 return 0
-            return await self._client.delete(*keys)
+            return cast(int, await self._client.delete(*keys))
         except Exception as e:
             logger.debug(f"RedisCache.delete_pattern 실패 ({pattern}): {e}")
             return 0
@@ -159,7 +159,7 @@ class RedisCache:
         """현재 Redis 연결이 활성화되어 있는지 반환."""
         return self._initialized
 
-    async def get_stats(self) -> dict:
+    async def get_stats(self) -> dict[str, Any]:
         """Redis 상태 정보 반환 (헬스체크용)."""
         if not self._initialized or self._client is None:
             return {"active": False, "url": "N/A"}

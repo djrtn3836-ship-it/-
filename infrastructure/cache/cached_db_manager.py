@@ -83,7 +83,7 @@ class CachedDbManager:
         """
         cache_key = f"{_OHLCV_KEY_PREFIX}:{ticker}:{period}"
 
-        cached = await self._cache.get(cache_key)
+        cached: list[dict[str, Any]] | None = await self._cache.get(cache_key)
         if cached is not None:
             self._cache_hits += 1
             logger.debug(f"OHLCV 캐시 히트: {cache_key}")
@@ -97,12 +97,12 @@ class CachedDbManager:
             await self._cache.set(cache_key, result, ttl=self._ohlcv_ttl)
         return result
 
-    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict) -> None:
+    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict[str, Any]) -> None:
         """OHLCV 저장 후 해당 종목 캐시 무효화."""
         await self._db.save_ohlcv(ticker, date, ohlcv)
         await self.invalidate_ohlcv(ticker)
 
-    async def save_ohlcv_batch(self, records: List[tuple]) -> int:
+    async def save_ohlcv_batch(self, records: list[tuple[Any, ...]]) -> int:
         """OHLCV 배치 저장 후 관련 종목 캐시 무효화."""
         count = await self._db.save_ohlcv_batch(records)
         if records:
@@ -147,7 +147,7 @@ class CachedDbManager:
     async def close(self) -> None:
         await self._db.close()
 
-    async def save_decision(self, analysis: dict) -> None:
+    async def save_decision(self, analysis: dict[str, Any]) -> None:
         await self._db.save_decision(analysis)
 
     async def get_decisions_by_date(self, date_str: str) -> List[Dict[str, Any]]:
@@ -175,7 +175,7 @@ class CachedDbManager:
     async def update_weight(self, factor_name: str, new_weight: float) -> None:
         await self._db.update_weight(factor_name, new_weight)
 
-    async def save_outcome(self, outcome: dict) -> None:
+    async def save_outcome(self, outcome: dict[str, Any]) -> None:
         await self._db.save_outcome(outcome)
 
     async def get_outcome(self, decision_id: int) -> Optional[Dict[str, Any]]:
@@ -187,10 +187,10 @@ class CachedDbManager:
     async def get_strategy_outcomes(self, days: int = 30) -> List[Dict[str, Any]]:
         return await self._db.get_strategy_outcomes(days)
 
-    async def save_trailing_stops(self, states: Dict[str, dict]) -> int:
+    async def save_trailing_stops(self, states: dict[str, dict[str, Any]]) -> int:
         return await self._db.save_trailing_stops(states)
 
-    async def load_trailing_stops(self) -> Dict[str, dict]:
+    async def load_trailing_stops(self) -> dict[str, dict[str, Any]]:
         return await self._db.load_trailing_stops()
 
     async def clear_trailing_stops(self) -> None:

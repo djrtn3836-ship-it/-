@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ class RealisticExecutionSimulator:
         market_cap: float,
         avg_daily_volume: int = 0,
         current_time: datetime | None = None,
-        orderbook: dict | None = None,
+        orderbook: dict[str, Any] | None = None,
     ) -> ExecutionResult:
         if current_time is None:
             current_time = datetime.now()
@@ -202,15 +203,15 @@ class RealisticExecutionSimulator:
         perm_impact = self.GAMMA * participation * 10000
 
         total_impact_bps = temp_impact + perm_impact
-        return min(total_impact_bps, self.max_slippage_bps)
+        return cast(float, min(total_impact_bps, self.max_slippage_bps))
 
-    def _has_valid_orderbook(self, orderbook: dict) -> bool:
+    def _has_valid_orderbook(self, orderbook: dict[str, Any]) -> bool:
         bids = orderbook.get("bids", [])
         asks = orderbook.get("asks", [])
         return isinstance(bids, list) and len(bids) > 0 and isinstance(asks, list) and len(asks) > 0
 
     def _execute_slice_with_orderbook(
-        self, action: str, ref_price: float, slice_size: int, orderbook: dict, impact_bps: float, slice_idx: int
+        self, action: str, ref_price: float, slice_size: int, orderbook: dict[str, Any], impact_bps: float, slice_idx: int
     ) -> ExecutionResult:
         if action.upper() == "BUY":
             levels = sorted(orderbook.get("asks", []), key=lambda x: x[0])
@@ -293,8 +294,8 @@ class RealisticExecutionSimulator:
     def _calculate_base_slippage(self, market_cap: float) -> float:
         for tier, config in sorted(self.SLIPPAGE_BY_CAP.items(), key=lambda x: x[1]["threshold"], reverse=True):
             if market_cap >= config["threshold"]:
-                return config["slippage"]
-        return self.SLIPPAGE_BY_CAP["small"]["slippage"]
+                return float(config["slippage"])
+        return float(self.SLIPPAGE_BY_CAP["small"]["slippage"])
 
     def _empty_result(self, ref_price: float, reason: str, remaining: int) -> ExecutionResult:
         return ExecutionResult(

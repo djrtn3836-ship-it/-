@@ -1,6 +1,6 @@
-﻿"""
-core/regime_manager.py - 중앙 국면 관리자 v1.2 (Whipsaw 방지 추가)
-- 백그라운드에서 주기적으로(60초) 시장 국면을 갱신
+"""
+core/regime_manager.py - v1.3 (mypy 오류 전면 해결 + Whipsaw 방지)
+- 반환 타입 전면 명시, _initialized 클래스 레벨 선언 (core/config.py 패턴과 일치)
 - 원시 신호가 연속 2회 동일하게 감지될 때만 공식 전환 (SNOWBALL 확정 카운터 패턴)
 """
 
@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 from regime.regime_detector import RegimeDetector
 from scheduler.macro_collector import get_cached_macro
@@ -18,32 +19,33 @@ logger = logging.getLogger(__name__)
 class RegimeManager:
     """싱글톤 국면 관리자"""
 
-    _instance = None
+    _instance: Optional["RegimeManager"] = None
     _lock = asyncio.Lock()
+    _initialized: bool
 
-    def __new__(cls):
+    def __new__(cls) -> "RegimeManager":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if self._initialized:
             return
         self._initialized = True
 
         self._detector = RegimeDetector()
-        self._current_regime = "Sideways"
-        self._raw_regime_candidate = "Sideways"
-        self._confirm_count = 0
-        self._CONFIRM_THRESHOLD = 2  # 일봉 기반이라 N=1~2로 설정 (ROADMAP 지침)
+        self._current_regime: str = "Sideways"
+        self._raw_regime_candidate: str = "Sideways"
+        self._confirm_count: int = 0
+        self._CONFIRM_THRESHOLD: int = 2
 
-        self._last_update_time = 0.0
-        self._update_interval = 60
-        self._task = None
-        self._running = False
+        self._last_update_time: float = 0.0
+        self._update_interval: int = 60
+        self._task: Optional["asyncio.Task[None]"] = None
+        self._running: bool = False
 
-    async def start(self):
+    async def start(self) -> None:
         if self._running:
             return
         self._running = True
@@ -53,7 +55,7 @@ class RegimeManager:
             self._update_interval, self._CONFIRM_THRESHOLD,
         )
 
-    async def stop(self):
+    async def stop(self) -> None:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
@@ -63,13 +65,13 @@ class RegimeManager:
                 pass
         logger.info("RegimeManager 중지됨")
 
-    async def _update_loop(self):
+    async def _update_loop(self) -> None:
         await self._update_regime()
         while self._running:
             await asyncio.sleep(self._update_interval)
             await self._update_regime()
 
-    async def _update_regime(self):
+    async def _update_regime(self) -> None:
         try:
             macro = get_cached_macro()
             data = {
@@ -87,7 +89,7 @@ class RegimeManager:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self._detector.detect, data)
 
-            raw_regime = result.get("regime", "Sideways")
+            raw_regime: str = str(result.get("regime", "Sideways"))
 
             if raw_regime == self._raw_regime_candidate:
                 self._confirm_count += 1
@@ -115,7 +117,7 @@ class RegimeManager:
     def get_last_update_time(self) -> float:
         return self._last_update_time
 
-    def get_status(self) -> dict:
+    def get_status(self) -> Dict[str, Any]:
         return {
             "current_regime": self._current_regime,
             "candidate_regime": self._raw_regime_candidate,
@@ -125,4 +127,4 @@ class RegimeManager:
         }
 
 
-regime_manager = RegimeManager()
+regime_manager: RegimeManager = RegimeManager()

@@ -1,4 +1,4 @@
-﻿최종 명세서 (CONTEXT.md) – 전체 내용
+최종 명세서 (CONTEXT.md) – 전체 내용
 markdown
 # 🔬 프로젝트 완전 상태 저장소 (Full Context) - v7.6.4 FINAL
 

@@ -20,6 +20,7 @@ v5.1.3 → v5.2.0 변경 사항:
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from observability.tracer import get_tracer
 
@@ -99,14 +100,14 @@ class SafetyGuard:
                                 이전에 app/bootstrap.py에 임시로 두었던 쿨다운
                                 로직을 이곳으로 이관했습니다.
         """
-        self._trigger_log: list[dict] = []
+        self._trigger_log: list[dict[str, Any]] = []
         self._alert_cooldown_sec = alert_cooldown_sec
         self._last_alert_time: float = 0.0
         self._last_block_time: float = 0.0
         self._was_blocked: bool = False
 
     @trace.traced
-    def check(self, data: dict) -> dict:
+    def check(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         모든 안전 조건 체크
 
@@ -121,7 +122,7 @@ class SafetyGuard:
                 'block_cleared': bool,   # 이번 체크에서 차단이 해제됐는지
             }
         """
-        triggered: list[dict] = []
+        triggered: list[dict[str, Any]] = []
 
         for condition, threshold in self.THRESHOLDS.items():
             current = data.get(condition)
@@ -221,7 +222,7 @@ class SafetyGuard:
         return "CRITICAL" if condition in self._CRITICAL_CONDITIONS else "HIGH"
 
     @trace.traced
-    def get_threshold_basis(self) -> dict:
+    def get_threshold_basis(self) -> dict[str, dict[str, Any]]:
         """임계값 근거 요약 반환"""
         return {
             condition: {
@@ -234,11 +235,11 @@ class SafetyGuard:
         }
 
     @trace.traced
-    def get_trigger_log(self, limit: int = 50) -> list[dict]:
+    def get_trigger_log(self, limit: int = 50) -> list[dict[str, Any]]:
         """최근 트리거 이력 반환 (모니터링/디버깅용)"""
         return self._trigger_log[-limit:]
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         """헬스체크용 상태 반환"""
         return {
             "was_blocked": self._was_blocked,

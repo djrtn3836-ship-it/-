@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 report/telegram_sender.py - v7.4.1 (Session 43: mypy strict 적용)
 

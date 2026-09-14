@@ -1,28 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-infrastructure/database/postgres_manager.py - PostgreSQL 비동기 매니저 v1.1.0
+infrastructure/database/postgres_manager.py - PostgreSQL 비동기 매니저 v1.1.1 (mypy strict 완전 적용)
 
-v1.0.0 → v1.1.0 (Session 23 — TimescaleDB 하이퍼테이블 전환 + PK 재설계):
-
-    검증된 사실: TimescaleDB는 PK뿐 아니라 테이블에 존재하는 모든 UNIQUE
-    제약(단독 인덱스 포함)이 파티션 컬럼을 포함해야 한다는 규칙을 가집니다.
-    이에 따라:
-    - decisions: PK를 (id, created_at) 복합으로만 유지. id 단독에 대한
-      추가 UNIQUE 제약/인덱스는 생성하지 않음(생성 시 create_hypertable
-      호출이 실패함).
-    - decision_outcomes: 하이퍼테이블로 전환하지 않고 일반 테이블 유지
-      (PK=decision_id 단독이라 파티션 컬럼 포함 불가). decisions(id)가
-      더 이상 단독 UNIQUE 제약을 갖지 않으므로 FK도 생성하지 않음 -
-      애플리케이션 레벨(save_outcome/get_outcome)에서 무결성 관리.
-    - ohlcv: 기존 id BIGSERIAL 단독 PK 제거, PK를 (ticker, date)로 재설계.
-      date를 TEXT -> DATE로 변경. id 미참조 확인 완료.
-    - create_hypertable() 호출에 migrate_data => TRUE 추가.
+v1.1.0 → v1.1.1:
+    - mypy strict 통과를 위해 제네릭 타입(Dict[str, Any], Tuple[Any, ...]) 명시
+    - Optional[Any]인 _write_pool, _read_pool 사용 전 assert로 타입 내로잉
+    - unused type: ignore 제거
 """
 
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +19,7 @@ try:
     import asyncpg
     _ASYNCPG_AVAILABLE = True
 except ImportError:
-    asyncpg = None  # type: ignore
+    asyncpg = None
     _ASYNCPG_AVAILABLE = False
 
 _DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -82,12 +71,13 @@ class PostgresManager:
             )
             await self._create_schema()
             self._initialized = True
-            logger.info("PostgresManager v1.1.0 초기화 완료 (TimescaleDB 하이퍼테이블)")
+            logger.info("PostgresManager v1.1.1 초기화 완료 (TimescaleDB 하이퍼테이블)")
         except Exception as e:
             logger.critical(f"PostgreSQL 연결/초기화 실패: {e}")
             raise
 
     async def _create_schema(self) -> None:
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             try:
                 await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
@@ -176,7 +166,7 @@ class PostgresManager:
                 except Exception as e:
                     logger.debug(f"하이퍼테이블 전환 스킵/무시 ({table}): {e}")
 
-        logger.info("PostgresManager v1.1.0: 스키마/인덱스/하이퍼테이블 검증 완료")
+        logger.info("PostgresManager v1.1.1: 스키마/인덱스/하이퍼테이블 검증 완료")
 
     async def close(self) -> None:
         if self._write_pool:
@@ -186,9 +176,10 @@ class PostgresManager:
         self._initialized = False
         logger.info("PostgresManager 커넥션 풀 종료 완료")
 
-    async def save_ohlcv(self, ticker: str, date: str, ohlcv: dict) -> None:
+    async def save_ohlcv(self, ticker: str, date: str, ohlcv: Dict[str, Any]) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO ohlcv (ticker, date, open, high, low, close, volume)
@@ -202,9 +193,10 @@ class PostgresManager:
                 int(ohlcv.get("volume", 0)),
             )
 
-    async def save_ohlcv_batch(self, records: List[tuple]) -> int:
+    async def save_ohlcv_batch(self, records: List[Tuple[Any, ...]]) -> int:
         if not self._initialized or not records:
             return 0
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.executemany(
                 """INSERT INTO ohlcv (ticker, date, open, high, low, close, volume)
@@ -216,9 +208,10 @@ class PostgresManager:
             )
         return len(records)
 
-    async def get_ohlcv(self, ticker: str, period: int = 14) -> List[Dict]:
+    async def get_ohlcv(self, ticker: str, period: int = 14) -> List[Dict[str, Any]]:
         if not self._initialized:
             return []
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT date::text AS date, open, high, low, close, volume
@@ -230,12 +223,13 @@ class PostgresManager:
         result.reverse()
         return result
 
-    async def save_decision(self, analysis: dict) -> None:
+    async def save_decision(self, analysis: Dict[str, Any]) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         features = analysis.pop("features", {})
         strategy_scores = analysis.get("strategy_result")
-        combined = {}
+        combined: Dict[str, Any] = {}
         if strategy_scores:
             combined["scores"] = strategy_scores
         if features:
@@ -262,9 +256,10 @@ class PostgresManager:
                 analysis.get("trace_id"),
             )
 
-    async def get_decisions_by_date(self, date_str: str) -> List[Dict]:
+    async def get_decisions_by_date(self, date_str: str) -> List[Dict[str, Any]]:
         if not self._initialized:
             return []
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT * FROM decisions
@@ -274,9 +269,10 @@ class PostgresManager:
             )
         return [dict(r) for r in rows]
 
-    async def get_decisions_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
+    async def get_decisions_by_date_range(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         if not self._initialized:
             return []
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT * FROM decisions
@@ -287,9 +283,10 @@ class PostgresManager:
             )
         return [dict(r) for r in rows]
 
-    async def get_positions(self) -> List[Dict]:
+    async def get_positions(self) -> List[Dict[str, Any]]:
         if not self._initialized:
             return []
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM portfolio_positions ORDER BY ticker")
         return [dict(r) for r in rows]
@@ -297,6 +294,7 @@ class PostgresManager:
     async def save_position(self, ticker: str, entry_price: float, current_price: float, qty: int) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO portfolio_positions
@@ -311,13 +309,15 @@ class PostgresManager:
     async def delete_position(self, ticker: str) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute("DELETE FROM portfolio_positions WHERE ticker = $1", ticker)
 
-    async def save_trailing_stops(self, states: Dict[str, dict]) -> int:
+    async def save_trailing_stops(self, states: Dict[str, Dict[str, Any]]) -> int:
         if not self._initialized or not states:
             return 0
         count = 0
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             async with conn.transaction():
                 for ticker, state in states.items():
@@ -331,12 +331,13 @@ class PostgresManager:
                     count += 1
         return count
 
-    async def load_trailing_stops(self) -> Dict[str, dict]:
+    async def load_trailing_stops(self) -> Dict[str, Dict[str, Any]]:
         if not self._initialized:
             return {}
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch("SELECT ticker, state_json FROM trailing_stop_states ORDER BY saved_at DESC")
-        result: Dict[str, dict] = {}
+        result: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             try:
                 val = row["state_json"]
@@ -348,12 +349,14 @@ class PostgresManager:
     async def clear_trailing_stops(self) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute("DELETE FROM trailing_stop_states")
 
-    async def save_outcome(self, outcome: dict) -> None:
+    async def save_outcome(self, outcome: Dict[str, Any]) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO decision_outcomes
@@ -367,17 +370,19 @@ class PostgresManager:
                 outcome.get("return_1d"), outcome.get("return_5d"), outcome.get("is_correct"),
             )
 
-    async def get_outcome(self, decision_id: int) -> Optional[Dict]:
+    async def get_outcome(self, decision_id: int) -> Optional[Dict[str, Any]]:
         if not self._initialized:
             return None
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM decision_outcomes WHERE decision_id = $1", decision_id)
         return dict(row) if row else None
 
-    async def get_feedback_stats(self, days: int = 30) -> Dict:
-        default = {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
+    async def get_feedback_stats(self, days: int = 30) -> Dict[str, Any]:
+        default: Dict[str, Any] = {"win_rate": 0.5, "sharpe": 1.0, "sample_count": 0, "avg_return": 0.0}
         if not self._initialized:
             return default
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT o.return_1d, o.is_correct
@@ -400,9 +405,10 @@ class PostgresManager:
             "sample_count": total, "avg_return": round(avg_ret, 3),
         }
 
-    async def get_strategy_outcomes(self, days: int = 30) -> List[Dict]:
+    async def get_strategy_outcomes(self, days: int = 30) -> List[Dict[str, Any]]:
         if not self._initialized:
             return []
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT d.id as decision_id, d.ticker, d.action, d.strategy_scores,
@@ -431,9 +437,10 @@ class PostgresManager:
         default_factors = ["momentum", "volume", "volatility", "macro", "sector"]
         if not self._initialized:
             return {f: 1.0 for f in default_factors}
+        assert self._read_pool is not None
         async with self._read_pool.acquire() as conn:
             rows = await conn.fetch("SELECT factor_name, weight FROM feedback_weights")
-        weights = {r["factor_name"]: r["weight"] for r in rows}
+        weights = {r["factor_name"]: float(r["weight"]) for r in rows}
         for f in default_factors:
             weights.setdefault(f, 1.0)
         return weights
@@ -441,6 +448,7 @@ class PostgresManager:
     async def update_weight(self, factor_name: str, new_weight: float) -> None:
         if not self._initialized:
             return
+        assert self._write_pool is not None
         async with self._write_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO feedback_weights (factor_name, weight, updated_at)
@@ -454,7 +462,7 @@ class PostgresManager:
 postgres_manager = PostgresManager()
 
 
-def get_active_db_manager():
+def get_active_db_manager() -> Any:
     if POSTGRES_ENABLED:
         return postgres_manager
     from data.db_manager import DatabaseManager

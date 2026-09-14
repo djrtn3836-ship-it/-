@@ -334,13 +334,13 @@ def get_universe() -> dict[str, str]:
 class StockUniverse:
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls) -> "StockUniverse":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
 
-    def _init(self):
+    def _init(self) -> None:
         self._stocks: dict[str, StockInfo] = {}
         universe = get_universe()
         for code, name in universe.items():

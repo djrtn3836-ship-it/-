@@ -1,4 +1,4 @@
-﻿"""
+"""
 risk/portfolio_var.py - v2.1 (Session 45: mypy strict 적용)
 
 v2.0 → v2.1 변경 사항 (mypy strict 오류 12개 해결, 실제 mypy 출력 줄 번호 기준):

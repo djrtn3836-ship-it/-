@@ -1,4 +1,4 @@
-﻿"""
+"""
 report/daily_report.py - v6.2 (Session 44: mypy strict 적용)
 - mypy strict 오류 7개 해결 (Optional 처리, 반환 타입, dict 제네릭, max() key 타입)
 - v6.1 로직 100% 무변경 (리포트 생성 시간 측정, TelegramSender 자동 분할 위임 유지)
