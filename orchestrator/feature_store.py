@@ -1,4 +1,4 @@
-"""
+﻿"""
 orchestrator/feature_store.py - v2.0 (Session 12)
 
 Feature Store: OHLCV → 기술지표 자동 계산 파이프라인
@@ -11,8 +11,8 @@ Feature Store: OHLCV → 기술지표 자동 계산 파이프라인
 import asyncio
 import math
 from dataclasses import dataclass
+from typing import Any, cast, Dict, List, Optional, Tuple
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
 
 from cachetools import TTLCache
 
@@ -168,7 +168,7 @@ class FeatureValidationResult:
     invalid_features: List[str]
     warnings: List[str]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "is_valid": self.is_valid,
             "invalid_features": self.invalid_features,
@@ -185,7 +185,7 @@ class FeatureLineage:
     indicators: List[str]
     cache_hit: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "computed_at": self.computed_at,
@@ -269,7 +269,7 @@ class FeatureStore:
                     ohlcv_rows=lin.ohlcv_rows, indicators=lin.indicators,
                     cache_hit=True,
                 )
-            return cached
+            return cast(Dict[str, float], cached)
 
         features = await self._compute(ticker, ohlcv_data)
         self._cache[cache_key] = features
@@ -389,7 +389,7 @@ class BatchFeatureComputer:
                 logger.warning(f"BatchFeatureComputer: {ticker} 계산 실패: {result}")
                 results[ticker] = {}
             else:
-                results[ticker] = result
+                results[ticker] = cast(Dict[str, float], result)
         return results
 
     async def validate_batch(
