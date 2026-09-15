@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 risk/correlation_matrix.py - 실시간 상관행렬 갱신 v1.0
 
@@ -277,7 +277,7 @@ class RollingCorrelation:
         if tickers is None:
             tickers = list(self._returns.keys())
 
-        seen: set = set()
+        seen: set[tuple[str, str]] = set()
         high_pairs = []
         for i, ta in enumerate(tickers):
             for tb in tickers[i + 1:]:

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 infrastructure/market_data/universe_provider.py - v5.8.0 FINAL (하드코딩 500종목 + CSV 우선)
 - CSV 파일이 있으면 CSV를 읽음
@@ -336,13 +336,13 @@ def get_universe() -> dict[str, str]:
 class StockUniverse:
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls) -> "StockUniverse":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._init()
         return cls._instance
 
-    def _init(self):
+    def _init(self) -> None:
         self._stocks: dict[str, StockInfo] = {}
         universe = get_universe()
         for code, name in universe.items():

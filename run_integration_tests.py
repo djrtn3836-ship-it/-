@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 run_integration_tests.py - 통합 테스트 실행기 v3.3 (UTF-8 강제 + ASCII 태그)
 - 각 테스트를 별도 프로세스로 실행하며, PYTHONIOENCODING=utf-8 강제 설정
@@ -74,7 +74,7 @@ def run_test(file_path: Path) -> tuple[bool, str, str]:
         return False, "", f"[ERROR] 실행 오류: {e}"
 
 
-def main():
+def main() -> None:
     # 콘솔 UTF-8 재설정 (메인 프로세스 자체도 보호)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -146,12 +146,13 @@ def main():
     print("=" * 70)
 
     # 보고서 저장
-    report_path = PROJECT_ROOT / "logs" / f"integration_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    report_path: Path = PROJECT_ROOT / "logs" / f"integration_test_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json"
     try:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         import json
 
-        with open(report_path, "w", encoding="utf-8") as f:
+        with open(str(report_path), "w", encoding="utf-8") as f:
+            import json
             json.dump(
                 {
                     "timestamp": datetime.now().isoformat(),

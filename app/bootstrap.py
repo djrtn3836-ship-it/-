@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 app/bootstrap.py - V10 DI Container and Boot Sequence v2.5.1
 
@@ -58,7 +58,7 @@ from data.db_manager import DatabaseManager
 try:
     from infrastructure.dart.client import DartConnector
 except ImportError:
-    from data.dart_connector import DartConnector  # type: ignore[assignment]
+    from data.dart_connector import DartConnector  # type: ignore
 
 try:
     from infrastructure.news.crawler import NewsCrawler

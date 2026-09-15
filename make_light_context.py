@@ -1,11 +1,11 @@
-# make_light_context.py - 새 세션 부트스트랩용 구조 개요 생성기
+﻿# make_light_context.py - 새 세션 부트스트랩용 구조 개요 생성기
 import os
 
 OUTPUT_FILE = "project_context_light.txt"
 EXCLUDE_DIRS = {'.git', '__pycache__', '.pytest_cache', '.mypy_cache', 'venv', '.venv', 'logs', 'fonts'}
 MAX_LINES_PER_FILE = 15
 
-def make_light(root_dir='.'):
+def make_light(root_dir: str = '.') -> None:
     lines = []
     for root, dirs, files in os.walk(root_dir):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
