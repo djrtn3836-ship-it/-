@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 analytics/alert_verifier.py - v1.0 (Alert Verification)
 - Verifies that all signals generated are sent via Telegram
@@ -18,7 +18,7 @@ telegram = TelegramSender()
 db = DatabaseManager()
 
 
-async def verify_today_alerts():
+async def verify_today_alerts() -> None:
     """Verify that all today's signals were sent via Telegram"""
     today = datetime.now().strftime("%Y-%m-%d")
     logger.info(f"Verifying alerts for {today}")
@@ -52,7 +52,7 @@ async def verify_today_alerts():
         missing = [
             d.get("ticker") for d in signal_entries if d.get("action") == "SIGNAL_ENTRY"
         ]
-        msg += f"Missing tickers: {', '.join(set(missing)[:10])}\n"
+        msg += f"Missing tickers: {", ".join([str(t) for t in list(missing)[:10]])}\n"
         msg += "Check logs: logs/scanner.log, logs/telegram.log\n"
     else:
         msg += "✅ All signals were sent successfully!\n"
@@ -65,5 +65,5 @@ async def verify_today_alerts():
 
 
 # Scheduled verification (daily at 16:00)
-async def scheduled_verify():
+async def scheduled_verify() -> None:
     await verify_today_alerts()

@@ -1,3 +1,4 @@
+﻿from typing import Any, Dict, List, Optional, Tuple
 """
 analytics/calibration_executor.py - v1.0 (P3-2: Slippage Calibration)
 - 실제 Paper 체결 결과와 시뮬레이션 예측 슬리피지 비교
@@ -130,7 +131,7 @@ class ExecutionCalibrator:
     # ============================================================
     # 내부 헬퍼
     # ============================================================
-    async def _get_paper_trades(self, days: int) -> list[dict]:
+    async def _get_paper_trades(self, days: int) -> list[dict[str, Any]]:
         """DB에서 Paper 체결 기록 조회 (paper_trades 테이블 가정)"""
         # 실제 구현: paper_trades 테이블이 없으면 decisions + outcomes로 대체
         # 여기서는 간단히 decisions 테이블에서 action이 "SIGNAL_ENTRY"인 것들의 가상 데이터 생성
@@ -150,7 +151,7 @@ class ExecutionCalibrator:
                 })
         return trades
 
-    async def _send_report(self, report: CalibrationReport):
+    async def _send_report(self, report: CalibrationReport) -> None:
         """텔레그램으로 Calibration 보고서 전송"""
         if report.status == "INSUFFICIENT_DATA":
             msg = (
@@ -175,7 +176,7 @@ class ExecutionCalibrator:
             )
         await self.telegram.send_raw(msg)
 
-    def _apply_calibration(self, alpha: float, gamma: float):
+    def _apply_calibration(self, alpha: float, gamma: float) -> None:
         """실제 execution_simulator.py의 전역 파라미터 업데이트"""
         try:
             from validation import execution_simulator

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 orchestrator/sentiment_pipeline.py - 뉴스 감성 분석 파이프라인 v1.0.3
 
@@ -26,7 +26,7 @@ import asyncio
 import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from typing import Dict, List, Optional, Tuple
+from typing import cast, Any, Dict, List, Optional, Tuple
 
 from core.logger import setup_logger
 from data.news_sentiment import (
@@ -80,7 +80,7 @@ class SentimentPipeline(TracedService):
 
     def __init__(
         self,
-        news_crawler=None,
+        news_crawler: Optional[Any] = None,
         analyzer: Optional[NewsSentimentAnalyzer] = None,
         max_news_per_ticker: int = 20,
     ) -> None:
@@ -90,7 +90,7 @@ class SentimentPipeline(TracedService):
         self._cache: Dict[str, Tuple[SentimentResult, float]] = {}
         self._lock = asyncio.Lock()
         self._running = False
-        self._refresh_task: Optional[asyncio.Task] = None
+        self._refresh_task: Optional[asyncio.Task[Any]] = None
         self._active_tickers: List[str] = []
 
     async def start(self) -> None:
@@ -114,7 +114,7 @@ class SentimentPipeline(TracedService):
         self._active_tickers = list(tickers)
 
     @trace.traced
-    async def enrich(self, data: Dict) -> Dict:
+    async def enrich(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """data['sentiment_score']에 impact_score(0~1)를 주입."""
         ticker = data.get("ticker", "")
         if not ticker or self._crawler is None:
@@ -147,7 +147,7 @@ class SentimentPipeline(TracedService):
             news_list = await self._fetch_news(ticker)
             result = await self._analyzer.analyze(ticker, news_list)
             self._cache[ticker] = (result, time.time())
-            return result
+            return cast(SentimentResult, result)
 
     async def _fetch_news(self, ticker: str) -> List[NewsItem]:
         """NewsCrawler에서 뉴스를 가져와 NewsItem 리스트로 변환.
@@ -218,7 +218,7 @@ class SentimentPipeline(TracedService):
                 logger.error(f"SentimentPipeline refresh loop error: {e}")
                 await asyncio.sleep(60)
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> Dict[str, Any]:
         now = time.time()
         fresh = sum(1 for _, ts in self._cache.values() if now - ts < _INTRADAY_REFRESH_INTERVAL)
         return {

@@ -1,3 +1,4 @@
+from aiohttp import ClientTimeout
 # -*- coding: utf-8 -*-
 """
 data/news_crawler.py - v6.3.1 (Session 40: mypy strict 적용)
@@ -94,7 +95,7 @@ class NewsCrawler:
             try:
                 if self._session is None:
                     break
-                async with self._session.get(url, headers=headers, params=params, timeout=10) as resp:
+                async with self._session.get(url, headers=headers, params=params, timeout=ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data: Dict[str, Any] = {}
                         try:

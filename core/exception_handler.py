@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 core/exception_handler.py - v1.1 (Session 40: mypy strict 적용 + 실제 버그 수정)
 
@@ -15,7 +15,7 @@ import sys
 import traceback
 import types
 from collections.abc import Awaitable, Callable
-from typing import Any, Dict, Optional
+from typing import cast, Coroutine, Any, Any, Dict, Optional
 
 from core.logger import setup_logger
 
@@ -38,10 +38,10 @@ def _send_alert_sync(error_msg: str, error_detail: str = "") -> None:
 
     try:
         asyncio.get_running_loop()
-        asyncio.create_task(_send_alert_func(error_msg, error_detail))
+        asyncio.create_task(cast(Coroutine[Any, Any, None], _send_alert_func(error_msg, error_detail)))
     except RuntimeError:
         try:
-            asyncio.run(_send_alert_func(error_msg, error_detail))
+            asyncio.run(cast(Coroutine[Any, Any, None], _send_alert_func(error_msg, error_detail)))
         except Exception:
             pass
     except Exception:

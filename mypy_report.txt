@@ -1,0 +1,2 @@
+﻿data\dart_connector.py:498: error: Argument "params" to "get" has incompatible type "dict[str, object]"; expected "SupportsItems[str | bytes | int | float, str | bytes | int | float | Iterable[str | bytes | int | float] | None] | tuple[str | bytes | int | float, str | bytes | int | float | Iterable[str | bytes | int | float] | None] | Iterable[tuple[str | bytes | int | float, str | bytes | int | float | Iterable[str | bytes | int | float] | None]] | str | bytes | None"  [arg-type]
+Found 1 error in 1 file (checked 1 source file)

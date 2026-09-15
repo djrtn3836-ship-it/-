@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 data/news_sentiment.py - 뉴스 감성 분석기 v1.0
 
@@ -20,7 +20,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.logger import setup_logger
 from observability.tracer import get_tracer
@@ -133,7 +133,7 @@ class SentimentResult:
         normalized = (self.score + 1.0) / 2.0
         return round(normalized * self.confidence, 4)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "ticker": self.ticker, "score": round(self.score, 4),
             "label": self.label.value, "confidence": round(self.confidence, 4),
@@ -298,7 +298,7 @@ class NewsSentimentAnalyzer:
         else:
             self._cache.clear()
 
-    def get_cache_stats(self) -> Dict:
+    def get_cache_stats(self) -> Dict[str, Any]:
         now = time.time()
         valid = sum(1 for _, ts in self._cache.values() if now - ts <= self._cache_ttl)
         return {

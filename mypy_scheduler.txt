@@ -1,0 +1,2 @@
+﻿scheduler\daily_collector.py:21: error: Function is missing a return type annotation  [no-untyped-def]
+Found 1 error in 1 file (checked 1 source file)

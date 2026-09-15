@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 application/analysis/hyperparameter_tuner.py - Optuna 기반 전략 파라미터 자동 튜닝 v1.1
 
@@ -35,6 +35,8 @@ v1.1 변경 (Session 15):
     result = tuner.optimize(dataset)
     tuner.apply_to_pipeline(signal_pipeline)   # ← 즉시 반영
 """
+
+from typing import cast, Any, Dict, List, Optional, Tuple
 
 import math
 import time
@@ -239,7 +241,7 @@ class HyperparameterTuner:
     def optimize(
         self,
         dataset: List[HistoricalSample],
-        callbacks: Optional[List[Callable]] = None,
+        callbacks: Optional[List[Callable[..., Any]]] = None,
     ) -> TuningResult:
         """주어진 데이터셋으로 하이퍼파라미터를 최적화합니다."""
         if not dataset:
@@ -340,7 +342,7 @@ class HyperparameterTuner:
 
         result = TuningResult(
             best_params=dict(best.params),
-            best_value=best.value,
+            best_value=float(best.value) if best.value is not None else 0.0,
             n_trials=len(study.trials),
             study_name=self._study_name,
             elapsed_sec=elapsed,
@@ -383,7 +385,7 @@ class HyperparameterTuner:
             "[HyperparameterTuner] 파이프라인 반영 완료: %s (best_value=%.4f, trials=%d)",
             applied, r.best_value, r.n_trials,
         )
-        return applied
+        return cast(dict[str, float], applied)
 
     # ── 편의 메서드 ────────────────────────────────────────────────
 
@@ -415,3 +417,4 @@ def quick_tune(
     """빠른 튜닝용 편의 함수."""
     tuner = HyperparameterTuner(n_trials=n_trials, seed=seed)
     return tuner.optimize(dataset)
+

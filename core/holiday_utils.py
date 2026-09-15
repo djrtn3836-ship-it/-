@@ -23,8 +23,7 @@ try:
         # 테스트: 2026년에 공휴일이 있는지 확인
         test_2026 = [d for d in _holidays_instance.keys() if d.year == 2026]
         if not test_2026:
-            # 방법 B: KR 클래스 직접 사용
-            _holidays_instance = holidays.KR()
+            # 방법 B: KR 클래스 직접 사용            # _holidays_instance = holidays.KR()  # holidays 최신버전 호환성
             test_2026 = [d for d in _holidays_instance.keys() if d.year == 2026]
             if not test_2026:
                 # 방법 C: years 매개변수 지정
@@ -47,14 +46,14 @@ except ImportError:
 # ============================================================
 # 2. 공휴일 캐시
 # ============================================================
-_holiday_cache = {}
+_holiday_cache: dict[int, set[date]] = {}
 
 
-def _get_holidays(year: int) -> set:
+def _get_holidays(year: int) -> set[date]:
     if year in _holiday_cache:
         return _holiday_cache[year]
 
-    holidays_set = set()
+    holidays_set: set[date] = set()
 
     # 1) holidays 패키지 사용
     if HAS_HOLIDAYS and _holidays_instance is not None:

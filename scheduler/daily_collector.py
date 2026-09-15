@@ -1,4 +1,4 @@
-"""
+﻿"""
 scheduler/daily_collector.py - v1.1 FINAL (재시도 + CollectorStatus 연동)
 - OHLCV 수집 실패 시 개별 종목 재시도 (최대 2회)
 - CollectorStatusManager에 성공/실패 기록
@@ -18,7 +18,7 @@ logger = setup_logger("daily_collector")
 collector_status.register("ohlcv_collector", freshness_seconds=86400)  # 1일
 
 
-async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, tickers: list[str]):
+async def collect_daily_ohlcv(kiwoom: KiwoomConnectorV512, db: DatabaseManager, tickers: list[str]) -> None:
     """구독 종목들의 전일 OHLCV 데이터를 수집하여 DB에 저장"""
     if not tickers:
         logger.warning("⚠️ 수집할 종목 목록이 비어 있습니다.")

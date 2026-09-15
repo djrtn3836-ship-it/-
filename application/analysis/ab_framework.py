@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 application/analysis/ab_framework.py - A/B Testing Framework v1.0 (Phase 3)
 
@@ -34,7 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from observability.tracer import get_tracer
 
@@ -203,7 +203,7 @@ class ABVariant:
         clipped = max(_CLIP_MIN, min(_CLIP_MAX, value))
         self.results.append(clipped)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "traffic_weight": self.traffic_weight,
@@ -227,7 +227,7 @@ class StatResult:
     reason: str = "미검정"                # 결과 설명
     effect_size: float = 0.0              # Cohen's d
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tested": self.tested,
             "winner": self.winner,
@@ -411,7 +411,7 @@ class ABTest:
 
     # ── 상태 조회 ──────────────────────────────────────────────────────────
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         elapsed = time.time() - self.start_time
         stat = self.analyze()
         return {
@@ -578,7 +578,7 @@ class ABTestManager:
         return test.analyze(bonferroni=bonferroni).winner
 
     @trace.traced
-    def get_stats(self, test_name: str) -> Optional[dict]:
+    def get_stats(self, test_name: str) -> Optional[dict[str, Any]]:
         """실험 전체 상태 + 통계 반환.
 
         Args:
@@ -609,7 +609,7 @@ class ABTestManager:
         """전체 실험 목록 {name: status}."""
         return {name: t.status.value for name, t in self._tests.items()}
 
-    def get_all_status(self) -> List[dict]:
+    def get_all_status(self) -> List[dict[str, Any]]:
         """전체 실험 상태 리스트."""
         return [t.get_status() for t in self._tests.values()]
 
@@ -627,3 +627,4 @@ def get_ab_manager() -> ABTestManager:
     if _ab_manager is None:
         _ab_manager = ABTestManager()
     return _ab_manager
+

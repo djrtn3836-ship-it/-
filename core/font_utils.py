@@ -16,7 +16,7 @@ FONT_NAME = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 
 
-def register_korean_fonts():
+def register_korean_fonts() -> None:
     """한글 폰트를 등록하고 전역 변수 FONT_NAME, FONT_BOLD 설정"""
     global FONT_NAME, FONT_BOLD
     try:
