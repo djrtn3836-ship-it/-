@@ -1,4 +1,4 @@
-"""
+﻿"""
 regime/regime_detector.py - v5.2.0 FINAL (글로벌 매크로 + KOSPI 융합)
 """
 
@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 
 from scheduler.macro_collector import get_cached_macro
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,12 @@ class KoreanSpecialFactors:
 
 
 class RegimeDetector:
-    def __init__(self):
+    def __init__(self) -> None:
         self.korean = KoreanSpecialFactors()
         self.current_regime = "Sideways"
         self.current_date = datetime.now()
 
-    def detect(self, data: dict) -> dict:
+    def detect(self, data: dict[str, Any]) -> dict[str, Any]:
         macro = get_cached_macro()
         if data is None:
             data = {}

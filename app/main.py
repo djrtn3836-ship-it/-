@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 app/main.py - V10 Application Entry Point (유일한 진입점)
@@ -25,14 +25,15 @@ import os
 
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     except AttributeError:
         pass
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("PYTHONUTF8", "1")
 
 import asyncio
+from typing import Any, cast
 import signal
 from pathlib import Path
 
@@ -44,10 +45,10 @@ from core.holiday_utils import is_trading_day
 
 trace = get_tracer(__name__)
 
-_shutdown_event: asyncio.Event = None
+_shutdown_event: asyncio.Event | None = None
 
 
-def _signal_handler(sig, frame) -> None:
+def _signal_handler(sig: int, frame: Any) -> None:
     """SIGINT / SIGTERM 수신 시 그레이스풀 셧다운 이벤트 설정."""
     print(f"\nSignal {sig} received, shutting down gracefully...")
     trace.info(f"Signal {sig} received → shutdown event set")

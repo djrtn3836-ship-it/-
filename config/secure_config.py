@@ -1,4 +1,4 @@
-"""
+﻿"""
 config/secure_config.py - 환경 변수 암호화 로더 (D)
 """
 
@@ -20,7 +20,7 @@ except ImportError:
     logger.warning("⚠️ cryptography 패키지 미설치 → 암호화 비활성화 (pip install cryptography)")
 
 
-def load_encrypted_env(env_file=".env.encrypted", key_env_var="ENCRYPTION_KEY"):
+def load_encrypted_env(env_file: str = ".env.encrypted", key_env_var: str = "ENCRYPTION_KEY") -> None:
     project_root = Path(__file__).parent.parent
     encrypted_path = project_root / env_file
     env_path = project_root / ".env"
