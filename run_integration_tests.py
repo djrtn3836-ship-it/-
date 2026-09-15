@@ -151,7 +151,7 @@ def main() -> None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         import json
 
-        with open(str(report_path), "w", encoding="utf-8") as f:
+        with open(str(report_path), "w", encoding="utf-8") as f:  # type: ignore
             import json
             json.dump(
                 {
@@ -161,7 +161,7 @@ def main() -> None:
                     "failed": failed,
                     "results": {str(k): v for k, v in results.items()},
                 },
-                f,
+                f,  # type: ignore
                 indent=2,
                 ensure_ascii=False,
             )
