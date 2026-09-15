@@ -1,4 +1,4 @@
-"""
+﻿"""
 Shadow Logger v5.1.2
 Shadow Mode 로거 (의사결정 전체 기록)
 """
@@ -8,6 +8,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+from typing import Any
 from core.logger import setup_logger
 
 logger = setup_logger("shadow")
@@ -19,10 +20,10 @@ class ShadowLogger:
     def __init__(self, log_dir: str = "./logs/shadow"):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._running = False
 
-    async def run(self):
+    async def run(self) -> None:
         """로거 실행"""
         self._running = True
         logger.info("ShadowLogger started")
@@ -37,11 +38,11 @@ class ShadowLogger:
             except Exception as e:
                 logger.error(f"ShadowLogger error: {e}")
 
-    async def log(self, data: dict):
+    async def log(self, data: dict[str, Any]) -> None:
         """의사결정 로그 저장"""
         await self._queue.put(data)
 
-    async def _flush(self):
+    async def _flush(self) -> None:
         """큐에 쌓인 로그 저장"""
         if self._queue.empty():
             return

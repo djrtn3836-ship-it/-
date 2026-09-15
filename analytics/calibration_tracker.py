@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Calibration Tracker v5.2.0
 Confidence Calibration Drift 감지 (Regime별 분리) + ABTest 연동
@@ -12,7 +12,7 @@ Confidence Calibration Drift 감지 (Regime별 분리) + ABTest 연동
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Optional
+from typing import Any, List, Optional, Tuple
 
 from core.logger import setup_logger
 from observability.tracer import get_tracer
@@ -41,15 +41,15 @@ class CalibrationTracker:
         await tracker.record_ab_result("trend", cal)
     """
 
-    def __init__(self, ab_manager=None) -> None:
+    def __init__(self, ab_manager: Optional[Any] = None) -> None:
         """
         Args:
             ab_manager: ABTestManager 인스턴스 (None이면 lazy import로 전역 싱글톤 사용)
         """
-        self.data: dict[str, list[dict]] = defaultdict(list)   # regime별 저장
+        self.data: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._ab_manager = ab_manager
 
-    def _get_ab_manager(self):
+    def _get_ab_manager(self) -> Any:
         """Lazy import: 순환 임포트 방지."""
         if self._ab_manager is None:
             try:
@@ -77,7 +77,7 @@ class CalibrationTracker:
         )
 
     @trace.traced
-    def get_calibration(self, regime: str) -> dict:
+    def get_calibration(self, regime: str) -> dict[str, Any]:
         """Regime별 Calibration 계산.
 
         Returns:
@@ -93,7 +93,7 @@ class CalibrationTracker:
             return {"status": "insufficient_data", "sample": len(records)}
 
         # Confidence 구간별 승률 계산
-        buckets = [
+        buckets: list[tuple[float, float, list[float]]] = [
             (0.90, 1.00, []),
             (0.80, 0.89, []),
             (0.70, 0.79, []),
@@ -138,7 +138,7 @@ class CalibrationTracker:
 
     @trace.traced
     async def record_ab_result(
-        self, regime: str, calibration_result: Optional[dict] = None
+        self, regime: str, calibration_result: Optional[dict[str, Any]] = None
     ) -> bool:
         """Calibration 품질을 ABTest에 피드백.
 

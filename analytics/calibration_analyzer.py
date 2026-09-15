@@ -1,4 +1,4 @@
-"""
+﻿"""
 analytics/calibration_analyzer.py - v2.0 FINAL (자동 임계값 튜닝 + 설정 파일 생성)
 """
 
@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import statistics
 from datetime import datetime, timedelta
 
+from typing import Any
 from core.logger import setup_logger
 
 logger = setup_logger("calibration")
@@ -23,13 +24,13 @@ REPORT_DIR = PROJECT_ROOT / "logs" / "calibration"
 
 
 class CalibrationAnalyzer:
-    def __init__(self):
+    def __init__(self) -> None:
         self.trace_file = TRACE_FILE
         self.config_file = CONFIG_FILE
         self.report_dir = REPORT_DIR
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
-    def load_traces(self, hours: int = 72) -> list[dict]:
+    def load_traces(self, hours: int = 72) -> list[dict[str, Any]]:
         if not self.trace_file.exists():
             return []
         cutoff = datetime.now() - timedelta(hours=hours)
@@ -50,7 +51,7 @@ class CalibrationAnalyzer:
             logger.error(f"트레이스 로드 오류: {e}")
         return traces
 
-    def generate_config(self, hours: int = 72) -> dict:
+    def generate_config(self, hours: int = 72) -> dict[str, Any]:
         traces = self.load_traces(hours)
         fill_ratios = []
         for entry in traces:
@@ -94,7 +95,7 @@ class CalibrationAnalyzer:
 
         return config
 
-    def _get_default_config(self) -> dict:
+    def _get_default_config(self) -> dict[str, Any]:
         return {
             "FILL_RATIO_REJECT": 0.30,
             "FILL_RATIO_REDUCE": 0.70,
@@ -106,7 +107,7 @@ class CalibrationAnalyzer:
         }
 
 
-def main():
+def main() -> None:
     analyzer = CalibrationAnalyzer()
     analyzer.generate_config(hours=72)
 

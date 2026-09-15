@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Daily Monitor v5.2.0
 일일 모니터링 대시보드
@@ -12,6 +12,7 @@ Daily Monitor v5.2.0
 import asyncio
 from datetime import datetime
 
+from typing import Any
 from core.circuit_breaker import DART_API_CB, KIWOOM_TR_CB
 from core.logger import setup_logger
 from observability.tracer import get_tracer
@@ -24,12 +25,12 @@ trace = get_tracer(__name__)
 class DailyMonitor:
     """일일 모니터링 대시보드"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.feature_store = FeatureStore()
-        self.report: dict = {}
+        self.report: dict[str, Any] = {}
 
     @trace.traced
-    async def run(self):
+    async def run(self) -> None:
         """모니터링 실행 (1시간 주기)"""
         logger.info("DailyMonitor started")
 
@@ -39,7 +40,7 @@ class DailyMonitor:
             logger.info(f"DailyMonitor report: {self.report}")
 
     @trace.traced
-    async def _generate_report(self) -> dict:
+    async def _generate_report(self) -> dict[str, Any]:
         """모니터링 리포트 생성"""
         # 1. Feature Freshness
         stats = await self.feature_store.get_stats()
