@@ -1,4 +1,4 @@
-"""
+﻿"""
 orchestrator/event_bus.py - v2.0 (Session 14)
 
 Event-Driven Architecture 핵심 컴포넌트
@@ -41,7 +41,7 @@ class EventMessage:
     timeout: float = 5.0
     version: str = "1.0"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id, "event_type": self.event_type, "priority": self.priority.name,
             "timestamp": self.timestamp, "trace_id": self.trace_id,
@@ -95,13 +95,13 @@ class EventBus:
         return cls._instance
 
     def _init(self) -> None:
-        self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
-        self._queues: Dict[Priority, asyncio.Queue] = {p: asyncio.Queue() for p in Priority}
-        self.dlq: asyncio.Queue = asyncio.Queue()
+        self._subscribers: Dict[str, List[Callable[..., Any]]] = defaultdict(list)
+        self._queues: Dict[Priority, asyncio.Queue[EventMessage]] = {p: asyncio.Queue() for p in Priority}
+        self.dlq: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.store = EventStore()
         self._is_running = False
-        self._consumer_tasks: List[asyncio.Task] = []
-        self._retry_tasks: List[asyncio.Task] = []
+        self._consumer_tasks: List[asyncio.Task[None]] = []
+        self._retry_tasks: List[asyncio.Task[None]] = []
         self.retry_backoff_base: float = 2.0
         self.retry_jitter_max: float = 1.0
 
@@ -109,11 +109,11 @@ class EventBus:
     def reset_for_testing(cls) -> None:
         cls._instance = None
 
-    def subscribe(self, event_type: str, callback: Callable) -> None:
+    def subscribe(self, event_type: str, callback: Callable[..., Any]) -> None:
         self._subscribers[event_type].append(callback)
         logger.debug(f"Subscribed to {event_type}")
 
-    def unsubscribe(self, event_type: str, callback: Callable) -> bool:
+    def unsubscribe(self, event_type: str, callback: Callable[..., Any]) -> bool:
         if event_type in self._subscribers and callback in self._subscribers[event_type]:
             self._subscribers[event_type].remove(callback)
             return True
@@ -189,7 +189,7 @@ class EventBus:
             logger.error(f"Event {event.id} exhausted retries → DLQ ({reason})")
             await self.dlq.put({"event": event, "reason": reason, "timestamp": datetime.now().timestamp()})
 
-    async def drain_dlq(self) -> List[dict]:
+    async def drain_dlq(self) -> List[dict[str, Any]]:
         items = []
         while not self.dlq.empty():
             items.append(await self.dlq.get())
