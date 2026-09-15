@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 domain/models/market_tick.py - V10 Pure Domain Model
 - Converts WebSocket raw data to validated object
@@ -8,7 +8,7 @@ domain/models/market_tick.py - V10 Pure Domain Model
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,9 @@ class MarketTick:
     volume: int
     timestamp: float
     trace_id: Optional[str] = None
-    raw: Optional[dict] = None
+    raw: Optional[dict[str, Any]] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate fields after initialization"""
         if not self.ticker or len(self.ticker) != 6 or not self.ticker.isdigit():
             raise ValueError(f"Invalid ticker: {self.ticker}")
@@ -41,7 +41,7 @@ class MarketTick:
             raise ValueError(f"Invalid volume: {self.volume}")
 
     @classmethod
-    def from_raw(cls, data: dict, trace_id: Optional[str] = None) -> "MarketTick":
+    def from_raw(cls, data: dict[str, Any], trace_id: Optional[str] = None) -> "MarketTick":
         """
         Create MarketTick from raw WebSocket data.
         Extracts price from key "10" and volume from key "13" in values dict.
@@ -72,7 +72,7 @@ class MarketTick:
             raw=data if trace_id else None,
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary (serialization)"""
         return {
             "ticker": self.ticker,

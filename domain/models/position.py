@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 domain/models/position.py - V10 Pure Domain Models (Position, TrailingStopState)
 - Position and trailing stop state models
@@ -7,6 +7,7 @@ domain/models/position.py - V10 Pure Domain Models (Position, TrailingStopState)
 """
 
 from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -49,8 +50,7 @@ class Position:
     entry_time: datetime = field(default_factory=datetime.now)
     pnl: float = 0.0
     pnl_pct: float = 0.0
-
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initial PnL calculation"""
         self.update_price(self.current_price)
 
@@ -79,8 +79,7 @@ class Position:
     def is_profit(self) -> bool:
         """Whether position is in profit"""
         return self.pnl > 0
-
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "side": self.side.value,
@@ -120,8 +119,7 @@ class TrailingStopState:
     remaining_qty: float = 1.0
     last_advice_time: float = 0.0
     last_update_time: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.last_update_time = datetime.now().isoformat()
 
     def update_prices(self, current_price: float, atr: float = 0.0) -> None:
@@ -152,8 +150,7 @@ class TrailingStopState:
             return (self.position.current_price - self.current_stop) / self.position.current_price * 100
         else:
             return (self.current_stop - self.position.current_price) / self.position.current_price * 100
-
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.position.ticker,
             "side": self.position.side.value,
