@@ -1,4 +1,4 @@
-"""
+﻿"""
 observability/trace_tree.py - v1.0 (Session 11)
 
 Trace ID 기반 의사결정 경로 트리 시각화.
@@ -8,7 +8,7 @@ SignalPipeline → RiskCheck → OrderExecution 전체 경로 추적.
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.logger import setup_logger
 
@@ -32,9 +32,9 @@ class TraceNode:
     success: bool
     error: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "node_id": self.node_id,
             "trace_id": self.trace_id,
@@ -69,7 +69,7 @@ class TraceTree:
     def __init__(self, max_traces: int = _MAX_TRACES) -> None:
         self._max_traces = max_traces
         self._traces: Dict[str, List[TraceNode]] = {}
-        self._trace_order: deque = deque(maxlen=max_traces)
+        self._trace_order: deque[str] = deque(maxlen=max_traces)
         self._node_index: Dict[str, TraceNode] = {}
 
     def add_node(self, node: TraceNode) -> None:
@@ -181,7 +181,7 @@ class TraceTree:
         """특정 trace에서 실패한 노드만 반환."""
         return [n for n in self.get_tree(trace_id) if not n.success]
 
-    def summary(self, trace_id: str) -> dict:
+    def summary(self, trace_id: str) -> dict[str, Any]:
         """trace 요약 통계 반환."""
         nodes = self.get_tree(trace_id)
         if not nodes:

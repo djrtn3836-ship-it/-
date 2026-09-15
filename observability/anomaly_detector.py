@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 observability/anomaly_detector.py - 비정상 패턴 자동 탐지 v1.0 (Isolation Forest)
 
@@ -152,6 +152,8 @@ class _IsolationTree:
         if self._is_leaf or self._split_feature is None:
             return current_depth + _c_factor(self._size)
 
+        assert self._split_feature is not None and self._split_value is not None
+        assert self._left is not None and self._right is not None
         if x[self._split_feature] < self._split_value:
             return self._left.path_length(x, current_depth + 1)
         else:

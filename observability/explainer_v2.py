@@ -1,4 +1,4 @@
-"""
+﻿"""
 observability/explainer_v2.py - v2.0 (Session 11)
 
 SHAP-style Feature Attribution + Local/Global Explanation + Counterfactual
@@ -13,7 +13,7 @@ SHAP-style Feature Attribution + Local/Global Explanation + Counterfactual
 import random
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.logger import setup_logger
 
@@ -37,7 +37,7 @@ class FeatureContribution:
     direction: str          # "+" (긍정) 또는 "-" (부정)
     magnitude: float        # abs(contribution_value)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "feature_name": self.feature_name,
             "contribution_value": round(self.contribution_value, 6),
@@ -56,7 +56,7 @@ class LocalExplanation:
     counterfactual: Optional[str]                   # "X가 Y였다면 Z 결정"
     confidence_gap: float                           # 결정 경계까지의 거리
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "decision_id": self.decision_id,
             "action": self.action,
@@ -243,7 +243,7 @@ class ExplainerV2:
         """
         self._max_samples = max_shapley_samples
         self._seed = seed
-        self._global_history: deque = deque(maxlen=max_history)
+        self._global_history: deque[dict[str, Any]] = deque(maxlen=max_history)
 
     def explain_local(
         self,
