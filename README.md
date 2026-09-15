@@ -1,6 +1,6 @@
-# 🇰🇷 AI 퀀트 트레이딩 시스템 v8.0.0 FINAL
+﻿# 🇰🇷 AI 퀀트 트레이딩 시스템 v8.0.0 FINAL
 
-> 한국 주식 시장(KOSPI/KOSDAQ)을 실시간으로 분석하고, Telegram으로 신호를 전송하며, **자가 치유(Self-Healing) 및 알림 검증(Alert Verification)** 기능이 내장된 완전 자동화 시스템입니다.
+> 한국 주식 시장(KOSPI/KOSDAQ)을 실시간으로 감시하며, Telegram으로 **신호를 알리는 보조 집사**입니다. (자동매매 X, 사용자 판단 기반)
 
 ---
 
@@ -22,10 +22,9 @@
 
 ```text
 stock_analyzer_v5.1.2/
-├── scanner_main.py          # 메인 엔트리 포인트 (Supervisor 내장)
-├── core/
-│   ├── supervisor.py        # 🆕 프로세스 감시 및 자동 재시작
-│   ├── container.py         # DI 컨테이너 (의존성 주입)
+├── app/main.py             # 🔴 현재 공식 진입점 (V10 DDD)
+├── scanner_main.py         # 🟡 레거시 진입점 (v8.0.0, DeprecationWarning)
+├── main.py                 # 🟠 초기 진입점 (v5.1.2, Phase 1 Shadow Mode - 롤백용)
 │   ├── config.py            # 중앙 설정 관리
 │   ├── logger.py            # JSON/컬러 로깅
 │   └── debug_tower.py       # 블랙박스 디버깅

@@ -1,14 +1,14 @@
-최종 명세서 (CONTEXT.md) – 전체 내용
+﻿최종 명세서 (CONTEXT.md) – 전체 내용
 markdown
-# 🔬 프로젝트 완전 상태 저장소 (Full Context) - v7.6.4 FINAL
+# 🔬 프로젝트 완전 상태 저장소 (Full Context) - v8.0.0 FINAL
 
 > 📌 **이 문서의 목적**: 새 대화를 시작하거나 다른 AI에게 인수인계할 때, 10분 만에 시스템의 완전한 상태를 복원할 수 있는 **초정밀 명세서**입니다.
-> 📅 **최종 업데이트**: 2026-08-19 (수) 12:50 KST
+> 📅 **최종 업데이트**: 2026-09-15 (월) Session 52 보안/구조 정리
 > ✅ **현재 상태**:
-> - **v7.6.4 FINAL (안정화 완료)**
+> - **v8.0.0 FINAL (mypy --strict 100% 완료, Session 51 달성)**
 > - 60개 이상 파일 전수 검사 완료
 > - 11개 통합 테스트 + 16개 단위 테스트 + 3개 Chaos 장애 테스트 **전면 통과**
-> - **Phase 1 Shadow Mode 운영 준비 완료 (자동매매 없음, 알림 전용)**
+> - **Phase 1 Shadow Mode 운영 중 (자동매매 없음, Telegram 알림 보조 집사)**
 
 ---
 
@@ -17,10 +17,10 @@ markdown
 | 항목 | 값 |
 | :--- | :--- |
 | **프로젝트명** | stock_analyzer_v5.1.2 |
-| **버전** | **v7.6.4 FINAL** |
+| **버전** | **v8.0.0 FINAL (mypy --strict: 113/113 파일 0 오류)** |
 | **Python 버전** | 3.12.9 |
-| **운영 모드** | Phase 1 Shadow Mode (실시간 감시 + Telegram 보고서) |
-| **실행 명령어** | `python app/main.py` |
+| **운영 모드** | Phase 1 Shadow Mode (실시간 감시 + Telegram 신호 전송, 자동매매 X) |
+| **실행 명령어** | `python app/main.py` (V10 DDD, 공식 진입점) |
 | **Git 브랜치** | main |
 
 ---
