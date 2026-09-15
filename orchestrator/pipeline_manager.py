@@ -1,4 +1,4 @@
-"""
+﻿"""
 orchestrator/pipeline_manager.py - v2.0 (Session 12)
 
 Pipeline Manager: 단계별 지연 추적 + 실패 재시도 + HealthCheck 통합.
@@ -29,7 +29,7 @@ class StepResult:
     error: Optional[str] = None
     retries: int = 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "step_name": self.step_name,
             "success": self.success,
@@ -53,7 +53,7 @@ class PipelineResult:
         if not result.success:
             self.success = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "pipeline_name": self.pipeline_name,
             "steps": [s.to_dict() for s in self.steps],
@@ -91,7 +91,7 @@ class PipelineManager:
         self._running = False
         logger.info("PipelineManager stopped")
 
-    async def run(self, pipeline_name: str, steps: List[tuple]) -> PipelineResult:
+    async def run(self, pipeline_name: str, steps: List[tuple[str, Any]]) -> PipelineResult:
         result = PipelineResult(pipeline_name=pipeline_name)
 
         for step_name, step_fn in steps:
@@ -109,7 +109,7 @@ class PipelineManager:
     async def _run_step_with_retry(
         self,
         step_name: str,
-        step_fn: Callable[[], Coroutine],
+        step_fn: Callable[[], Coroutine[Any, Any, Any]],
         max_retries: Optional[int] = None,
     ) -> StepResult:
         retries_limit = max_retries if max_retries is not None else self._max_retries
