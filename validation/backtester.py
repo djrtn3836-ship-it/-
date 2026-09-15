@@ -1,4 +1,4 @@
-"""
+﻿"""
 validation/backtester.py - v9.0 (Session 13)
 
 Backtester 고도화 + Walk-Forward 자동화
@@ -181,7 +181,7 @@ class BacktestResult:
         self.mar_ratio = _mar(annual_return, self.max_drawdown)
         return self
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "fold_id": self.fold_id,
             "start_date": self.start_date,
@@ -244,7 +244,7 @@ class AggregatedResult:
 
         return self
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "fold_count": len(self.fold_results),
             "mean_sharpe": round(self.mean_sharpe, 4),
