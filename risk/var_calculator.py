@@ -24,7 +24,7 @@ v2.0 (기존 유지):
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from observability.tracer import get_tracer
 
@@ -384,7 +384,7 @@ class VaRCalculator:
     def calculate(self, returns: List[float]) -> Dict[str, Any]:
         """하위 호환 dict API (v7.x 코드와 호환 유지)."""
         metrics = self.calculate_metrics(returns)
-        return metrics.to_dict()
+        return cast(dict[str, Any], metrics.to_dict())
 
     @trace.traced
     def calculate_kelly(

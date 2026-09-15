@@ -33,7 +33,7 @@ v1.0.1 수정 사항:
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 

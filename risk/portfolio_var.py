@@ -21,7 +21,7 @@ v2.0 (기존 유지):
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 
@@ -109,7 +109,7 @@ class PortfolioVaR:
         """포트폴리오 합산 수익률로 Kelly fraction 계산."""
         try:
             vc = self._get_var_calculator()
-            return vc.calculate_kelly(portfolio_returns, var=var_estimate)
+            return cast(dict[str, Any], vc.calculate_kelly(portfolio_returns, var=var_estimate))
         except Exception as exc:
             logger.warning("⚠️ Portfolio Kelly 계산 실패 (비치명): %s", exc)
             return {
@@ -155,7 +155,7 @@ class PortfolioVaR:
             logger.warning(
                 "⚠️ 포트폴리오 VaR: 데이터 부족 (최소 %d일, 30일 필요) → 개별 VaR 합산", min_len
             )
-            return self._fallback_individual_var(returns_dict, normalized_weights)
+            return cast(PortfolioRiskMetrics, self._fallback_individual_var(returns_dict, normalized_weights))
 
         aligned_returns = []
         for t in tickers:

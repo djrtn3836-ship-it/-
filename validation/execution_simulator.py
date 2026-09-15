@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
