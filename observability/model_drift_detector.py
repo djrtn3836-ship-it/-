@@ -1,4 +1,4 @@
-"""
+﻿"""
 observability/model_drift_detector.py - v1.0 (Session 10)
 
 Model Drift Detection: 전략 예측 성능 저하 자동 감지
@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.logger import setup_logger
 
@@ -49,7 +49,7 @@ class DriftReport:
     sample_count: int
     timestamp: datetime = field(default_factory=datetime.now)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "strategy_name": self.strategy_name,
             "drift_level": self.drift_level.value,
@@ -151,7 +151,7 @@ class _WinRateTracker:
     """슬라이딩 윈도우 승률 추적기 (내부 헬퍼)"""
 
     def __init__(self, window_size: int = _DEFAULT_WINDOW_SIZE):
-        self._window: deque = deque(maxlen=window_size)
+        self._window: deque[float] = deque(maxlen=window_size)
         self._baseline_win_rate: Optional[float] = None
         self._baseline_sample_count: int = 0
 
@@ -162,7 +162,7 @@ class _WinRateTracker:
     def current_win_rate(self) -> float:
         if not self._window:
             return 0.0
-        return sum(self._window) / len(self._window)
+        return float(sum(self._window)) / len(self._window)
 
     @property
     def baseline_win_rate(self) -> float:
@@ -221,10 +221,10 @@ class ModelDriftDetector:
         self._baseline_size = baseline_size
         self._psi_bins = psi_bins
 
-        self._pred_windows: Dict[str, deque] = {}
+        self._pred_windows: Dict[str, deque[float]] = {}
         self._pred_baselines: Dict[str, List[float]] = {}
         self._win_trackers: Dict[str, _WinRateTracker] = {}
-        self._recent_reports: deque = deque(maxlen=100)
+        self._recent_reports: deque[DriftReport] = deque(maxlen=100)
 
     def _ensure_strategy(self, strategy_name: str) -> None:
         if strategy_name not in self._pred_windows:
@@ -374,7 +374,7 @@ class ModelDriftDetector:
         reports = list(self._recent_reports)
         return list(reversed(reports))[:n]
 
-    def strategy_status(self, strategy_name: str) -> dict:
+    def strategy_status(self, strategy_name: str) -> dict[str, Any]:
         try:
             self._ensure_strategy(strategy_name)
             baseline = self._pred_baselines[strategy_name]
@@ -398,5 +398,5 @@ class ModelDriftDetector:
             logger.warning(f"strategy_status 실패 [{strategy_name}]: {e}")
             return {"strategy_name": strategy_name, "error": str(e)}
 
-    def all_strategy_statuses(self) -> List[dict]:
+    def all_strategy_statuses(self) -> List[dict[str, Any]]:
         return [self.strategy_status(name) for name in self._pred_windows]

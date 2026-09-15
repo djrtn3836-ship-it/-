@@ -1,4 +1,4 @@
-"""
+﻿"""
 observability/root_cause_analyzer.py - v1.0 (Session 10)
 
 Root Cause Analysis (RCA): 장애/드리프트 발생 시 원인 자동 추론
@@ -12,7 +12,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from core.logger import setup_logger
 
@@ -79,7 +79,7 @@ class RootCauseReport:
     circuit_breaker_input: Optional[CircuitBreakerInput]
     timestamp: datetime = field(default_factory=datetime.now)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "primary_cause": self.primary_cause.value,
             "confidence": round(self.confidence, 3),
@@ -205,7 +205,7 @@ class RootCauseAnalyzer:
 
     def __init__(self, max_history: int = 200):
         self._rule_engine = _RuleEngine()
-        self._reports: deque = deque(maxlen=max_history)
+        self._reports: deque[RootCauseReport] = deque(maxlen=max_history)
 
     def analyze(
         self,
@@ -258,9 +258,9 @@ class RootCauseAnalyzer:
 
     def analyze_from_dict(
         self,
-        anomaly_dict: Optional[dict] = None,
-        drift_dict: Optional[dict] = None,
-        cb_dict: Optional[dict] = None,
+        anomaly_dict: Optional[dict[str, Any]] = None,
+        drift_dict: Optional[dict[str, Any]] = None,
+        cb_dict: Optional[dict[str, Any]] = None,
     ) -> RootCauseReport:
         anomaly_in: Optional[AnomalyInput] = None
         drift_in: Optional[DriftInput] = None
@@ -313,13 +313,13 @@ class RootCauseAnalyzer:
     def action_required_count(self) -> int:
         return sum(1 for r in self._reports if r.requires_action)
 
-    def summary(self) -> dict:
+    def summary(self) -> dict[str, Any]:
         all_reports = list(self._reports)
         if not all_reports:
             return {"total": 0, "critical": 0, "by_cause": {}, "by_action": {}}
 
-        by_cause: dict = {}
-        by_action: dict = {}
+        by_cause: dict[str, int] = {}
+        by_action: dict[str, int] = {}
         critical_count = 0
 
         for r in all_reports:
