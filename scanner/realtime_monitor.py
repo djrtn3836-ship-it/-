@@ -56,7 +56,7 @@ class RealtimeMonitor:
             logger.warning("?좑툘 紐⑤땲?곌? ?대? ?ㅽ뻾 以묒엯?덈떎.")
             return
 
-        logger.info(f"?뱻 RealtimeMonitor ?쒖옉 以?.. (理쒕? {self.max_subscriptions}醫낅ぉ)")
+        logger.info(f"✅ 1차 등록 완료: 성공 {len(self._subscribed_tickers)}개, 실패 {len(failed_tickers)}개")
 
         try:
             universe = get_universe()
