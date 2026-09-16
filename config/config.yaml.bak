@@ -1,0 +1,107 @@
+﻿# v5.6.6 FINAL - ?듯빀 ?ㅼ젙 ?뚯씪
+
+system:
+  name: "援?궡二쇱떇 ?꾨갑??媛먯떆 ?쒖뒪??
+  version: "5.6.6"
+  mode: "shadow"
+
+# ?뵦 WebSocket ?ㅼ젙
+websocket:
+  url: "wss://api.kiwoom.com:10000/api/dostk/websocket"
+  ping_interval: 20
+  ping_timeout: 60
+  login_timeout: 10
+
+# ?뵦 Rate Limit
+rate_limit:
+  capacity: 5
+  refill: 5.0
+
+# ?뵦 ?좏샇 媛먯?
+signal:
+  price_change_ratio: 0.02
+  cooldown_seconds: 300
+  emergency_threshold: 0.05
+  max_subscriptions: 195
+
+# ?뵦 ???ㅼ젙
+queue_maxsize: 100000
+
+# ?뵦 ?ㅼ?以꾨윭
+scheduler:
+  daily_report_hour: 7
+  daily_report_minute: 0
+  feedback_hour: 17
+  feedback_minute: 0
+  weekly_pdf_day: "mon"
+  weekly_pdf_hour: 6
+  weekly_pdf_minute: 0
+  ohlcv_hour: 16
+  ohlcv_minute: 30
+
+# ?뵦 ?ъ뿰寃?
+reconnect:
+  max_attempts: 5
+  base_delay: 2
+  max_delay: 60
+  interval: 30
+
+# ?뵦 醫낅ぉ 媛먯떆
+monitoring:
+  tier1_count: 500
+  tier2_count: 400
+  tier3_count: 1850
+  cooldown_seconds: 300
+
+# ?뵦 ?ъ????ъ씠吏?
+position_sizing:
+  method: "fractional_kelly"
+  kelly_fraction: 0.25
+  max_single_position_pct: 8.0
+  max_sector_concentration_pct: 25.0
+
+# ?뵦 ?붾젅洹몃옩
+telegram:
+  enabled: true
+  # chat_id??.env?먯꽌 濡쒕뱶??
+
+# config/config.yaml - v7.0 (?ㅼ젙 以묒븰??
+
+# 湲곗〈 ?ㅼ젙 (WebSocket, Rate Limit ??? 洹몃?濡??좎?
+# ?꾨옒???좉퇋 異붽??섎뒗 ?몃젅?대뵫/?꾨왂/由ъ뒪???ㅼ젙
+
+trading:
+  # DeepAnalyzer 湲곕낯媛?
+  max_hold_hours: 2.0
+  trail_aggressive_threshold: 5.0
+  atr_multiplier_stop: 2.0
+  atr_multiplier_trail: 1.5
+  atr_spike_threshold: 0.3
+
+  # 媛以묒튂 (ML/?꾨왂 ??
+  momentum_weight: 0.08
+  ml_weight: 0.18
+  sentiment_weight: 0.02
+  base_weight: 0.42
+  strategy_weight: 0.30
+
+  # 泥닿껐/二쇰Ц??
+  fill_ratio_reject: 0.30
+  fill_ratio_reduce: 0.70
+  order_volume_ratio: 0.008
+  order_volume_min: 10
+  order_volume_max: 500
+
+strategy:
+  # ?꾨왂蹂?湲곕낯 媛以묒튂 (strategies.yaml?먯꽌 ??뼱?곌린 媛??
+  default_trend_weight: 0.40
+  default_reversal_weight: 0.30
+  default_breakout_weight: 0.30
+
+risk:
+  # VaR 湲곕낯媛?(portfolio_var.py?먯꽌 ?ъ슜)
+  var_confidence: 0.95
+  var_num_simulations: 10000
+  var_lookback_days: 252
+  var_update_interval: 300
+
