@@ -164,7 +164,7 @@ def _p_value_two_tail(t: float, df: float) -> float:
 #  도메인 모델
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestStatus(Enum):
+class AbStatus(Enum):
     RUNNING = "running"
     CONCLUDED = "concluded"
     STOPPED = "stopped"
@@ -258,7 +258,7 @@ class ABTest:
         self.variants: Dict[str, ABVariant] = {v.name: v for v in variants}
         self.alpha = alpha
         self.min_samples = min_samples
-        self.status = TestStatus.RUNNING
+        self.status = AbStatus.RUNNING
         self.start_time: float = time.time()
         self.end_time: Optional[float] = None
         self.test_id: str = str(uuid.uuid4())[:8]
@@ -313,7 +313,7 @@ class ABTest:
                     "ABTest[%s]: 알 수 없는 변형 '%s' — 무시", self.name, variant_name
                 )
                 return
-            if self.status != TestStatus.RUNNING:
+            if self.status != AbStatus.RUNNING:
                 logger_std.debug(
                     "ABTest[%s]: 종료된 테스트에 결과 기록 시도 — 무시", self.name
                 )
@@ -400,13 +400,13 @@ class ABTest:
 
     def conclude(self) -> StatResult:
         """실험 종료 및 최종 통계 반환."""
-        self.status = TestStatus.CONCLUDED
+        self.status = AbStatus.CONCLUDED
         self.end_time = time.time()
         return self.analyze()
 
     def stop(self) -> None:
         """실험 강제 중지 (결과 없음)."""
-        self.status = TestStatus.STOPPED
+        self.status = AbStatus.STOPPED
         self.end_time = time.time()
 
     # ── 상태 조회 ──────────────────────────────────────────────────────────
@@ -533,7 +533,7 @@ class ABTestManager:
         if test is None:
             logger_std.debug("ABTestManager: '%s' 실험 없음", test_name)
             return None
-        if test.status != TestStatus.RUNNING:
+        if test.status != AbStatus.RUNNING:
             logger_std.debug("ABTestManager: '%s' 실험이 실행 중이 아님", test_name)
             return None
         return test.assign(user_id)

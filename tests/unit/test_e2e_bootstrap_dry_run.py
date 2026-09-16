@@ -388,7 +388,7 @@ class TestBootstrapStartAbFramework:
         mgr = self._fresh_manager()
         self.simulate_start_ab_framework(mgr)
         for name, status in mgr.list_tests().items():
-            assert status == TestStatus.RUNNING.value, f"{name}: {status}"
+            assert status == AbStatus.RUNNING.value, f"{name}: {status}"
 
     def test_assign_variant_deterministic(self):
         """user_id 해시 기반 배정 재현성."""

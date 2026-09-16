@@ -20,7 +20,7 @@ from application.analysis.ab_framework import (
     ABTestManager,
     ABVariant,
     StatResult,
-    TestStatus,
+    AbStatus,
     _mean,
     _p_value_two_tail,
     _t_cdf,
@@ -218,7 +218,7 @@ class TestABTest:
             t.variants["control"].record(0.01)
             t.variants["variant"].record(0.01)
         t.conclude()
-        assert t.status == TestStatus.CONCLUDED
+        assert t.status == AbStatus.CONCLUDED
         assert t.end_time is not None
 
     def test_get_status_contains_required_keys(self):
