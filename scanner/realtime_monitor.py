@@ -47,7 +47,7 @@ class RealtimeMonitor:
         self.price_change_ratio = config.get_float("price_change_ratio", 0.02)
         self.cooldown_seconds = config.get_int("cooldown_seconds", 300)
         self.emergency_threshold = config.get_float("emergency_threshold", 0.05)
-        self.max_subscriptions = 500
+        self.max_subscriptions = config.get_int("max_subscriptions", 500)
 
     def _get_current_regime(self) -> str:
         return regime_manager.get_regime()
@@ -369,3 +369,4 @@ class RealtimeMonitor:
         self._orderbook_history.clear()
         logger.info("🛑 RealtimeMonitor 중지 완료")
         debug_tower.log("SYSTEM", "MONITOR_STOPPED", {})
+
