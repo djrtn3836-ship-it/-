@@ -1,125 +1,88 @@
-"""
-tests/conftest.py - pytest 공통 픽스처 및 설정
-"""
-
-import sys
-import types
-from pathlib import Path
-from unittest.mock import MagicMock
-
-# 프로젝트 루트를 PYTHONPATH에 추가
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-
-# ─── telegram mock 전역 설치 ─────────────────────────────────────────────────
-# execution/order_executor.py → report/telegram_sender.py → telegram (외부 패키지)
-# telegram 패키지가 없어도 테스트가 가능하도록 mock을 pytest 수집 전에 등록합니다.
-
-def _install_telegram_mock_if_needed():
-    """telegram 패키지가 없는 경우에만 mock 설치."""
-    try:
-        import telegram  # 실제 패키지가 있으면 건너뜀
-        return
-    except ImportError:
-        pass
-
-    tg = types.ModuleType("telegram")
-    tg.Bot = MagicMock
-    tg.Update = MagicMock
-    sys.modules["telegram"] = tg
-
-    tg_err = types.ModuleType("telegram.error")
-    tg_err.NetworkError = type("NetworkError", (Exception,), {})
-    tg_err.TelegramError = type("TelegramError", (Exception,), {})
-    tg_err.TimedOut = type("TimedOut", (Exception,), {})
-    sys.modules["telegram.error"] = tg_err
-    tg.error = tg_err
-
-    tg_ext = types.ModuleType("telegram.ext")
-    tg_ext.Application = MagicMock
-    tg_ext.ApplicationBuilder = MagicMock
-    tg_ext.CommandHandler = MagicMock
-    tg_ext.MessageHandler = MagicMock
-    tg_ext.filters = MagicMock()
-    sys.modules["telegram.ext"] = tg_ext
-    tg.ext = tg_ext
-
-
-_install_telegram_mock_if_needed()
-# ─────────────────────────────────────────────────────────────────────────────
-
+﻿# tests/conftest.py
+\"\"\"
+Pytest 공용 설정 및 Fixtures
+\"\"\"
 
 import pytest
+import asyncio
+from unittest.mock import Mock, AsyncMock, patch
+from core.config import get_config
+from core.logger import setup_logger
+
+# ============================================================
+# Asyncio Fixture
+# ============================================================
+@pytest.fixture(scope='session')
+def event_loop():
+    \"\"\"세션 전체에서 사용할 asyncio 이벤트 루프\"\"\"
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+# ============================================================
+# Config Fixture
+# ============================================================
+@pytest.fixture
+def config():
+    \"\"\"테스트용 설정 객체\"\"\"
+    cfg = get_config()
+    return cfg
+
+
+# ============================================================
+# Logger Fixture
+# ============================================================
+@pytest.fixture
+def logger():
+    \"\"\"테스트용 로거\"\"\"
+    return setup_logger("test")
+
+
+# ============================================================
+# Mock Fixtures
+# ============================================================
+@pytest.fixture
+def mock_kiwoom():
+    \"\"\"Kiwoom 커넥터 Mock\"\"\"
+    mock = AsyncMock()
+    mock.register_realtime = AsyncMock(return_value=True)
+    mock.unregister_realtime = AsyncMock(return_value=True)
+    mock.get_price = AsyncMock(return_value=70000.0)
+    return mock
 
 
 @pytest.fixture
-def sample_orderbook() -> dict:
-    """샘플 호가 데이터"""
+def mock_telegram():
+    \"\"\"Telegram 봇 Mock\"\"\"
+    mock = Mock()
+    mock.send_message = Mock(return_value=True)
+    return mock
+
+
+# ============================================================
+# Test Data Fixture
+# ============================================================
+@pytest.fixture
+def sample_market_data():
+    \"\"\"테스트용 시장 데이터\"\"\"
     return {
-        "bids": [
-            (82000, 1000),
-            (81500, 500),
-            (81000, 200),
-        ],
-        "asks": [
-            (83000, 800),
-            (83500, 600),
-            (84000, 300),
-        ],
+        'ticker': '005930',
+        'name': '삼성전자',
+        'price': 70000,
+        'volume': 1000000,
+        'change_ratio': 0.02,
+        'timestamp': 1726521600.0
     }
 
 
 @pytest.fixture
-def sample_tech_data() -> dict:
-    """샘플 기술적 지표"""
+def sample_signal():
+    \"\"\"테스트용 신호 데이터\"\"\"
     return {
-        "ema5": 82500.0,
-        "ema20": 81800.0,
-        "ema60": 80500.0,
-        "rsi": 65.0,
-        "volume_ratio": 1.8,
-        "avg_volume": 1500000,
-        "current_price": 83000.0,
+        'ticker': '005930',
+        'action': 'BUY',
+        'score': 0.85,
+        'confidence': 0.9,
+        'timestamp': 1726521600.0
     }
-
-
-@pytest.fixture
-def sample_stock_data() -> dict:
-    """샘플 종목 데이터"""
-    return {
-        "ticker": "005930",
-        "price": 83000.0,
-        "entry_price": 82000.0,
-        "imbalance": 0.65,
-        "regime": "Bull",
-        "momentum": 0.025,
-        "volume": 1500000,
-        "atr": 1200.0,
-        "high_52w": 90000.0,
-        "low_52w": 70000.0,
-        "bb_upper": 85000.0,
-        "bb_lower": 79000.0,
-        "adx": 32.0,
-        "tech_data": {
-            "ema5": 82500.0,
-            "ema20": 81800.0,
-            "ema60": 80500.0,
-            "rsi": 65.0,
-            "volume_ratio": 1.8,
-            "avg_volume": 1500000,
-        },
-    }
-
-
-@pytest.fixture
-def sample_returns() -> list[float]:
-    """샘플 수익률 데이터 (252일)"""
-    import random
-
-    random.seed(42)
-    returns = []
-    for i in range(300):
-        returns.append(random.gauss(0.0005, 0.015))
-    return returns
