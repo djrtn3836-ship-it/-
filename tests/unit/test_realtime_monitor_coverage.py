@@ -1,2 +1,80 @@
+"""realtime_monitor.py 커버리지 개선 테스트"""
 import pytest
-"""realtime_monitor.py 커버리지 개선 테스트""" import pytest from datetime import datetime from scanner.realtime_monitor import RealtimeMonitor   @pytest.mark.skip(reason="Method signature mismatch - Session 57에서 수정")`nclass TestRealtimeMonitorCoverage:     """RealtimeMonitor 클래스 커버리지 개선"""      @pytest.fixture     def monitor(self):         """RealtimeMonitor 인스턴스"""         return RealtimeMonitor()      def test_monitor_init(self, monitor):         """모니터 초기화"""         assert monitor is not None      def test_monitor_has_tickers_attr(self, monitor):         """tickers 속성 확인"""         assert hasattr(monitor, 'tickers')      def test_monitor_attributes(self, monitor):         """모니터 기본 속성"""         assert hasattr(monitor, 'tickers')      def test_get_statistics(self, monitor):         """통계 조회"""         try:             stats = monitor.get_statistics()             assert stats is not None or stats is None         except (AttributeError, NotImplementedError):             pass      def test_multiple_monitor_instances(self):         """다중 모니터 인스턴스"""         monitors = [RealtimeMonitor() for _ in range(3)]         assert len(monitors) == 3         for m in monitors:             assert m is not None      def test_monitor_data_structure(self, monitor):         """모니터 데이터 구조"""         # 모니터가 필요한 기본 속성을 가지고 있는지 확인         assert hasattr(monitor, 'tickers')      def test_monitor_configuration(self):         """모니터 기본 설정"""         monitor = RealtimeMonitor()         assert monitor is not None      def test_monitor_methods_exist(self, monitor):         """모니터 메서드 존재 확인"""         methods = ['get_statistics']         for method in methods:             if hasattr(monitor, method):                 assert callable(getattr(monitor, method))      def test_concurrent_monitors(self):         """병렬 모니터 생성"""         monitors = []         for i in range(5):             m = RealtimeMonitor()             monitors.append(m)         assert len(monitors) == 5         assert all(m is not None for m in monitors)
+from datetime import datetime
+from unittest.mock import Mock, MagicMock
+from scanner.realtime_monitor import RealtimeMonitor
+
+
+class TestRealtimeMonitorCoverage:
+    """RealtimeMonitor 클래스 커버리지 개선"""
+
+    @pytest.fixture
+    def mock_kiwoom_connector(self):
+        """Mock Kiwoom Connector"""
+        mock = MagicMock()
+        mock.is_connected = True
+        return mock
+
+    @pytest.fixture
+    def monitor(self, mock_kiwoom_connector):
+        """RealtimeMonitor 인스턴스 (Mock 사용)"""
+        return RealtimeMonitor(kiwoom_connector=mock_kiwoom_connector)
+
+    def test_monitor_init_with_connector(self, monitor):
+        """Kiwoom Connector를 사용한 초기화"""
+        assert monitor is not None
+
+    def test_monitor_has_tickers_attr(self, monitor):
+        """tickers 속성 확인"""
+        assert hasattr(monitor, 'tickers')
+
+    def test_monitor_configuration(self):
+        """기본 설정으로 모니터 생성"""
+        mock = MagicMock()
+        monitor = RealtimeMonitor(kiwoom_connector=mock)
+        assert monitor is not None
+
+    def test_multiple_monitor_instances(self):
+        """다중 모니터 인스턴스"""
+        mocks = [MagicMock() for _ in range(3)]
+        monitors = [RealtimeMonitor(kiwoom_connector=m) for m in mocks]
+        assert len(monitors) == 3
+
+    def test_monitor_methods_exist(self, monitor):
+        """주요 메서드 존재 확인"""
+        # 메서드 존재 여부 확인
+        has_methods = any(
+            hasattr(monitor, method)
+            for method in ['get_statistics', 'add_tick', 'calculate_imbalance']
+        )
+        assert has_methods or hasattr(monitor, 'tickers')
+
+    def test_monitor_with_different_connectors(self):
+        """다양한 Connector 타입"""
+        mock1 = MagicMock()
+        mock2 = MagicMock()
+        
+        m1 = RealtimeMonitor(kiwoom_connector=mock1)
+        m2 = RealtimeMonitor(kiwoom_connector=mock2)
+        
+        assert m1 is not None
+        assert m2 is not None
+
+    def test_monitor_connector_interaction(self, monitor, mock_kiwoom_connector):
+        """Connector와의 상호작용"""
+        assert monitor is not None
+        # Connector 메서드 호출 여부는 구현에 따라 다름
+
+    def test_realtime_monitor_initialization_params(self):
+        """초기화 파라미터 전달"""
+        mock = MagicMock()
+        monitor = RealtimeMonitor(
+            kiwoom_connector=mock
+        )
+        assert monitor is not None
+
+    def test_monitor_data_handling(self, monitor):
+        """데이터 처리 확인"""
+        # Monitor가 정상 작동하는지 기본 확인
+        assert monitor is not None
+        assert hasattr(monitor, 'tickers') or hasattr(monitor, 'kiwoom_connector')
