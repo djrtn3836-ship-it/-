@@ -2,7 +2,7 @@
 """
 report/weekly_pdf.py - v6.2 (Session 38: mypy strict 적용)
 - 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
-# from data.dart_connector import DartConnector  # Not available in current version  # type: ignore[attr-defined]
+# from infrastructure.dart.client import DartConnector  # type: ignore
   (이 import 자체가 data/dart_connector.py가 죽은 코드가 아니라는 확정적 증거임)
 """
 
@@ -24,7 +24,7 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, 
 
 from core.font_utils import FONT_BOLD, FONT_NAME, register_korean_fonts
 from core.logger import setup_logger
-from data.dart_connector import DartConnector  # type: ignore
+from infrastructure.dart.client import DartConnector  # type: ignore
 from data.db_manager import DatabaseManager
 from data.news_crawler import NewsCrawler
 
