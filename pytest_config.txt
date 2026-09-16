@@ -1,0 +1,11 @@
+﻿[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "asyncio: asyncio 테스트",
+    "integration: 통합 테스트",
+    "slow: 느린 테스트"
+]
