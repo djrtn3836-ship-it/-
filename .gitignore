@@ -55,3 +55,5 @@ project_packed.txt
 data/*.db-shm
 data/*.db-wal
 
+# Naver API cache (contains credentials)
+config/naver_api_cache.json

@@ -159,3 +159,8 @@ _config_manager = ConfigManager()
 
 def get_config() -> AppConfig:
     return _config_manager.get()
+# config/schema.py 수정 (헤더에 추가)
+"""
+⚠️ max_subscriptions은 여기서만 정의합니다.
+다른 파일에서 사용할 때는 config_manager.get_config().max_subscriptions을 참조하세요.
+"""

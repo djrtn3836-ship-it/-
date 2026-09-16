@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-scanner/realtime_monitor.py - v5.7.1 (Session 38: mypy strict 적용 + 잠재 버그 수정)
-- 🔧 _on_data() 예외 처리부에서 ticker 변수가 아직 할당되지 않은 상태로 예외가
-  발생할 경우 발생하던 잠재적 UnboundLocalError를 안전한 폴백 변수로 제거
-- 모든 메서드 반환 타입/제네릭 타입 명시, 그 외 로직 100% 무변경
-"""
+scanner/realtime_monitor.py - v5.7.1 (Session 38: mypy strict ?곸슜 + ?좎옱 踰꾧렇 ?섏젙)
+- ?뵩 _on_data() ?덉쇅 泥섎━遺?먯꽌 ticker 蹂?섍? ?꾩쭅 ?좊떦?섏? ?딆? ?곹깭濡??덉쇅媛
+  諛쒖깮??寃쎌슦 諛쒖깮?섎뜕 ?좎옱??UnboundLocalError瑜??덉쟾???대갚 蹂?섎줈 ?쒓굅
+- 紐⑤뱺 硫붿꽌??諛섑솚 ????쒕꽕由????紐낆떆, 洹???濡쒖쭅 100% 臾대?寃?"""
 
 import asyncio
 import time
@@ -54,10 +53,10 @@ class RealtimeMonitor:
 
     async def start(self) -> None:
         if self._is_running:
-            logger.warning("⚠️ 모니터가 이미 실행 중입니다.")
+            logger.warning("?좑툘 紐⑤땲?곌? ?대? ?ㅽ뻾 以묒엯?덈떎.")
             return
 
-        logger.info(f"📡 RealtimeMonitor 시작 중... (최대 {self.max_subscriptions}종목)")
+        logger.info(f"?뱻 RealtimeMonitor ?쒖옉 以?.. (理쒕? {self.max_subscriptions}醫낅ぉ)")
 
         try:
             universe = get_universe()
@@ -65,13 +64,13 @@ class RealtimeMonitor:
             if not self.tickers:
                 raise ValueError("Universe is empty")
             self._name_cache = universe
-            logger.info(f"📊 Universe 로드 완료: {len(self.tickers)}개 종목")
+            logger.info(f"?뱤 Universe 濡쒕뱶 ?꾨즺: {len(self.tickers)}媛?醫낅ぉ")
             debug_tower.log("SYSTEM", "UNIVERSE_LOADED", {"count": len(self.tickers)})
         except Exception as e:
-            logger.warning(f"⚠️ Universe 로드 실패 ({e}), 기본 종목 사용")
+            logger.warning(f"?좑툘 Universe 濡쒕뱶 ?ㅽ뙣 ({e}), 湲곕낯 醫낅ぉ ?ъ슜")
             debug_tower.capture_snapshot("SYSTEM", e, "UNIVERSE_LOAD")
             self.tickers = list(self.DEFAULT_TICKERS)
-            self._name_cache = {t: f"종목_{t}" for t in self.tickers}
+            self._name_cache = {t: f"醫낅ぉ_{t}" for t in self.tickers}
 
         REGISTER_INTERVAL = 0.3
         RETRY_INTERVAL = 0.2
@@ -85,21 +84,21 @@ class RealtimeMonitor:
                 try:
                     await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
                     self._subscribed_tickers.append(ticker)
-                    logger.debug(f"✅ {ticker} 등록 성공 ({idx+1}/{len(self.tickers)})")
+                    logger.debug(f"??{ticker} ?깅줉 ?깃났 ({idx+1}/{len(self.tickers)})")
                 except Exception as e:
-                    logger.warning(f"⚠️ {ticker} 등록 실패: {e}")
+                    logger.warning(f"?좑툘 {ticker} ?깅줉 ?ㅽ뙣: {e}")
                     failed_tickers.append(ticker)
 
                 await asyncio.sleep(REGISTER_INTERVAL)
 
             except Exception as e:
-                logger.error(f"❌ {ticker} 등록 중 오류: {e}")
+                logger.error(f"??{ticker} ?깅줉 以??ㅻ쪟: {e}")
                 failed_tickers.append(ticker)
 
-        logger.info(f"✅ 1차 등록 완료: 성공 {len(self._subscribed_tickers)}개, 실패 {len(failed_tickers)}개")
+        logger.info(f"??1李??깅줉 ?꾨즺: ?깃났 {len(self._subscribed_tickers)}媛? ?ㅽ뙣 {len(failed_tickers)}媛?)
 
         if failed_tickers:
-            logger.info(f"⏳ {len(failed_tickers)}개 종목 2차 재등록 시도 (3초 후)...")
+            logger.info(f"??{len(failed_tickers)}媛?醫낅ぉ 2李??щ벑濡??쒕룄 (3珥???...")
             await asyncio.sleep(RETRY_DELAY)
 
             retry_success = 0
@@ -108,23 +107,23 @@ class RealtimeMonitor:
                     await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
                     self._subscribed_tickers.append(ticker)
                     retry_success += 1
-                    logger.debug(f"✅ {ticker} 재등록 성공")
+                    logger.debug(f"??{ticker} ?щ벑濡??깃났")
                 except Exception as e:
-                    logger.warning(f"⚠️ {ticker} 재등록 실패 (최종): {e}")
+                    logger.warning(f"?좑툘 {ticker} ?щ벑濡??ㅽ뙣 (理쒖쥌): {e}")
                 await asyncio.sleep(RETRY_INTERVAL)
 
             logger.info(
-                f"✅ 2차 재등록 완료: 추가 성공 {retry_success}개, 최종 실패 {len(failed_tickers) - retry_success}개"
+                f"??2李??щ벑濡??꾨즺: 異붽? ?깃났 {retry_success}媛? 理쒖쥌 ?ㅽ뙣 {len(failed_tickers) - retry_success}媛?
             )
 
         self._is_running = True
         self._last_scan_time = time.time()
-        logger.info(f"✅ RealtimeMonitor 시작 완료 (구독 종목: {len(self._subscribed_tickers)}개)")
+        logger.info(f"??RealtimeMonitor ?쒖옉 ?꾨즺 (援щ룆 醫낅ぉ: {len(self._subscribed_tickers)}媛?")
         debug_tower.log("SYSTEM", "MONITOR_STARTED", {"count": len(self._subscribed_tickers)})
 
     def _on_data(self, data: Dict[str, Any]) -> None:
-        # 🔧 예외 발생 시 참조할 안전한 폴백 변수 (원본은 ticker 변수를 직접 참조하여
-        # 만약 아래 첫 줄에서 예외가 나면 UnboundLocalError가 발생할 잠재적 위험이 있었음)
+        # ?뵩 ?덉쇅 諛쒖깮 ??李몄“???덉쟾???대갚 蹂??(?먮낯? ticker 蹂?섎? 吏곸젒 李몄“?섏뿬
+        # 留뚯빟 ?꾨옒 泥?以꾩뿉???덉쇅媛 ?섎㈃ UnboundLocalError媛 諛쒖깮???좎옱???꾪뿕???덉뿀??
         ticker_val: Any = data.get("ticker") or data.get("symbol") or data.get("item") or "UNKNOWN"
         try:
             ticker = data.get("ticker") or data.get("symbol") or data.get("item")
@@ -204,25 +203,25 @@ class RealtimeMonitor:
             try:
                 self._message_queue.put_nowait(parsed)
             except asyncio.QueueFull:
-                logger.warning(f"⚠️ 메시지 큐 가득 참 → 데이터 드롭 ({ticker})")
+                logger.warning(f"?좑툘 硫붿떆吏 ??媛??李????곗씠???쒕∼ ({ticker})")
                 debug_tower.log(ticker, "QUEUE_FULL", {"queue_size": self._message_queue.qsize()})
 
         except Exception as e:
-            logger.error(f"❌ 데이터 핸들링 오류: {e}", exc_info=True)
+            logger.error(f"???곗씠???몃뱾留??ㅻ쪟: {e}", exc_info=True)
             debug_tower.capture_snapshot(str(ticker_val), e, "MONITOR_HANDLER")
 
     def _calculate_imbalance(self, bids: List[Tuple[float, int]], asks: List[Tuple[float, int]]) -> Tuple[float, str]:
         total_bid = sum(qty for _, qty in bids) if bids else 0
         total_ask = sum(qty for _, qty in asks) if asks else 0
         if total_bid + total_ask == 0:
-            return 0.5, "⚖️ 데이터 없음"
+            return 0.5, "?뽳툘 ?곗씠???놁쓬"
         imbalance = total_bid / (total_bid + total_ask)
         if imbalance > 0.65:
-            pressure = f"🔥 강한 매수 압력 ({imbalance:.1%})"
+            pressure = f"?뵦 媛뺥븳 留ㅼ닔 ?뺣젰 ({imbalance:.1%})"
         elif imbalance < 0.35:
-            pressure = f"💀 강한 매도 압력 ({imbalance:.1%})"
+            pressure = f"?? 媛뺥븳 留ㅻ룄 ?뺣젰 ({imbalance:.1%})"
         else:
-            pressure = f"⚖️ 중립 ({imbalance:.1%})"
+            pressure = f"?뽳툘 以묐┰ ({imbalance:.1%})"
         return imbalance, pressure
 
     async def scan(self) -> List[Dict[str, Any]]:
@@ -275,12 +274,12 @@ class RealtimeMonitor:
 
             if abs(change_ratio) >= self.price_change_ratio:
                 action = "BUY" if change_ratio > 0 else "SELL"
-                positives = ["급등 감지"] if change_ratio > 0 else ["급락 감지"]
+                positives = ["湲됰벑 媛먯?"] if change_ratio > 0 else ["湲됰씫 媛먯?"]
                 insight = ""
                 if support_level and price > support_level:
-                    insight += f" | 📈 지지선 {support_level:,.0f}원 상향 이탈"
+                    insight += f" | ?뱢 吏吏??{support_level:,.0f}???곹뼢 ?댄깉"
                 if resistance_level and price < resistance_level:
-                    insight += f" | 📉 저항선 {resistance_level:,.0f}원 하향 이탈"
+                    insight += f" | ?뱣 ???꽑 {resistance_level:,.0f}???섑뼢 ?댄깉"
 
                 last_time = self._last_signal_time.get(ticker, 0.0)
                 last_action = self._last_signal_action.get(ticker, "")
@@ -306,8 +305,8 @@ class RealtimeMonitor:
                         "action": action,
                         "score": score,
                         "confidence": confidence,
-                        "positives": positives + [f"변동률: {change_ratio:+.2%}{insight}"],
-                        "negatives": ["시장 변동성 주의"],
+                        "positives": positives + [f"蹂?숇쪧: {change_ratio:+.2%}{insight}"],
+                        "negatives": ["?쒖옣 蹂?숈꽦 二쇱쓽"],
                         "timestamp": current_time,
                         "momentum": change_ratio,
                         "volume": int(data.get("volume", 0)),
@@ -331,16 +330,16 @@ class RealtimeMonitor:
     async def resubscribe_all(self) -> None:
         if not self._subscribed_tickers:
             return
-        logger.info(f"🔄 저장된 {len(self._subscribed_tickers)}개 종목 재구독 시작...")
+        logger.info(f"?봽 ??λ맂 {len(self._subscribed_tickers)}媛?醫낅ぉ ?ш뎄???쒖옉...")
         debug_tower.log("SYSTEM", "RESUBSCRIBE_START", {"count": len(self._subscribed_tickers)})
         for ticker in self._subscribed_tickers:
             try:
                 await self.kiwoom.register_realtime(ticker, self._handler, types=["0B"])
                 await asyncio.sleep(0.15)
             except Exception as e:
-                logger.error(f"❌ 재구독 실패 ({ticker}): {e}")
+                logger.error(f"???ш뎄???ㅽ뙣 ({ticker}): {e}")
                 debug_tower.capture_snapshot(ticker, e, "RESUBSCRIBE")
-        logger.info("✅ 전체 종목 재구독 완료")
+        logger.info("???꾩껜 醫낅ぉ ?ш뎄???꾨즺")
         debug_tower.log("SYSTEM", "RESUBSCRIBE_COMPLETE", {})
 
     def get_latest_price(self, ticker: str) -> Optional[float]:
@@ -368,5 +367,5 @@ class RealtimeMonitor:
         self._latest_data.clear()
         self._history.clear()
         self._orderbook_history.clear()
-        logger.info("🛑 RealtimeMonitor 중지 완료")
+        logger.info("?썞 RealtimeMonitor 以묒? ?꾨즺")
         debug_tower.log("SYSTEM", "MONITOR_STOPPED", {})
