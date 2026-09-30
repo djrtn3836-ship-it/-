@@ -1,4 +1,4 @@
-﻿"""
+"""
 regime/regime_detector.py - v5.2.0 FINAL (글로벌 매크로 + KOSPI 융합)
 """
 

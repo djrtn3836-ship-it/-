@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 orchestrator/sentiment_pipeline.py - 뉴스 감성 분석 파이프라인 v1.0.3
 

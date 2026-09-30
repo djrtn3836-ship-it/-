@@ -57,3 +57,9 @@ data/*.db-wal
 
 # Naver API cache (contains credentials)
 config/naver_api_cache.json
+
+# 정리 아카이브 (스테일 산출물, 재생성 가능)
+_archive/
+project_structure.txt
+dependency_map.json
+app_session*.log

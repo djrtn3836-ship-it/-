@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 report/weekly_pdf.py - v6.2 (Session 38: mypy strict 적용)
 - 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경

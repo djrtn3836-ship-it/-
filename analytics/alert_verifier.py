@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 analytics/alert_verifier.py - v1.0 (Alert Verification)
 - Verifies that all signals generated are sent via Telegram

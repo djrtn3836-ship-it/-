@@ -1,4 +1,4 @@
-﻿# tests/unit/test_stock_filter.py
+# tests/unit/test_stock_filter.py
 """
 StockFilter 필터링 테스트
 """

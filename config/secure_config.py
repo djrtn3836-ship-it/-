@@ -1,4 +1,4 @@
-﻿"""
+"""
 config/secure_config.py - 환경 변수 암호화 로더 (D)
 """
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 scheduler/daily_collector.py - v1.1 FINAL (재시도 + CollectorStatus 연동)
 - OHLCV 수집 실패 시 개별 종목 재시도 (최대 2회)
 - CollectorStatusManager에 성공/실패 기록

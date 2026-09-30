@@ -1,4 +1,4 @@
-﻿from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 """
 analytics/calibration_executor.py - v1.0 (P3-2: Slippage Calibration)
 - 실제 Paper 체결 결과와 시뮬레이션 예측 슬리피지 비교

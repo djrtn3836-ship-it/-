@@ -1,4 +1,4 @@
-﻿"""
+"""
 observability/trace_tree.py - v1.0 (Session 11)
 
 Trace ID 기반 의사결정 경로 트리 시각화.

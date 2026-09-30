@@ -1,2 +1,0 @@
-﻿data\news_crawler.py:97: error: Argument "timeout" to "get" of "ClientSession" has incompatible type "int"; expected "ClientTimeout | _SENTINEL | None"  [arg-type]
-Found 1 error in 1 file (checked 1 source file)

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 application/analysis/ab_framework.py - A/B Testing Framework v1.0 (Phase 3)
 

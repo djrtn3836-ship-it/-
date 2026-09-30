@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 infrastructure/market_data/universe_provider.py - v5.8.0 FINAL (하드코딩 500종목 + CSV 우선)
 - CSV 파일이 있으면 CSV를 읽음
@@ -17,6 +17,20 @@ from core.logger import setup_logger
 logger = setup_logger("universe")
 
 CSV_PATH = Path(__file__).parent.parent.parent / "data" / "krx_universe.csv"
+
+# 마지막 get_universe() 호출이 어떤 소스를 사용했는지 기록 ("csv" | "fallback" | "unknown")
+# 폴백(하드코딩) 사용 여부를 상위 계층(부트스트랩)이 감지해 CRITICAL 알림을 보낼 수 있도록 노출한다.
+_LAST_SOURCE: str = "unknown"
+
+
+def get_last_source() -> str:
+    """마지막 유니버스 로드에 사용된 소스를 반환한다."""
+    return _LAST_SOURCE
+
+
+def is_fallback() -> bool:
+    """마지막 유니버스 로드가 하드코딩 폴백을 사용했는지 여부."""
+    return _LAST_SOURCE == "fallback"
 
 
 @dataclass
@@ -294,6 +308,7 @@ def validate_universe(stock_dict: dict[str, str]) -> dict[str, str]:
 
 
 def get_universe() -> dict[str, str]:
+    global _LAST_SOURCE
     # 1순위: CSV 파일 (있으면 읽기)
     if CSV_PATH.exists():
         try:
@@ -321,15 +336,21 @@ def get_universe() -> dict[str, str]:
                             if code and name and code.isdigit() and len(code) == 6:
                                 universe[code] = name
                         if universe:
-                            logger.info(f"✅ CSV에서 {len(universe)}개 종목 로드 완료")
-                            return validate_universe(universe)
-                except:
+                            result = validate_universe(universe)
+                            _LAST_SOURCE = "csv"
+                            logger.info(f"✅ CSV에서 {len(result)}개 종목 로드 완료")
+                            return result
+                except Exception:
                     continue
         except Exception as e:
             logger.warning(f"⚠️ CSV 읽기 실패: {e}")
 
-    # 2순위: 하드코딩 500종목 (CSV 없거나 실패 시)
-    logger.info("📦 하드코딩 500종목 사용 (CSV 없음 또는 읽기 실패)")
+    # 2순위: 하드코딩 폴백 (CSV 없거나 실패 시) — 조용한 폴백 금지: CRITICAL 로그
+    _LAST_SOURCE = "fallback"
+    logger.critical(
+        f"🚨 유니버스 폴백(하드코딩 {len(FALLBACK_500)}종목) 사용 — CSV 없음/읽기 실패. "
+        f"신규상장/시총변동이 반영되지 않습니다. data/krx_universe.csv 갱신 필요."
+    )
     return validate_universe(FALLBACK_500)
 
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 observability/explainer_v2.py - v2.0 (Session 11)
 
 SHAP-style Feature Attribution + Local/Global Explanation + Counterfactual

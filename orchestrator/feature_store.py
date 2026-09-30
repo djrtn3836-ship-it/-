@@ -1,4 +1,4 @@
-﻿"""
+"""
 orchestrator/feature_store.py - v2.0 (Session 12)
 
 Feature Store: OHLCV → 기술지표 자동 계산 파이프라인

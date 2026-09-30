@@ -1,4 +1,4 @@
-﻿# tests/unit/test_config.py
+# tests/unit/test_config.py
 """
 config 모듈 단위 테스트
 """

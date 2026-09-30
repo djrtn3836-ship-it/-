@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 domain/models/market_tick.py - V10 Pure Domain Model
 - Converts WebSocket raw data to validated object

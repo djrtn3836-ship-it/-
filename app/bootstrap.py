@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 app/bootstrap.py - V10 DI Container and Boot Sequence v2.5.1
 
@@ -41,6 +41,7 @@ from config.schema import get_config
 from core.container import AppContainer
 from core.logger import setup_logger
 from core.exception_handler import set_alert_handler
+from core.runtime_mode import get_runtime_mode, load_runtime_mode
 from core.holiday_utils import is_trading_day
 from core.regime_manager import regime_manager
 from core.scheduler import SchedulerManager
@@ -143,6 +144,8 @@ class Bootstrapper(TracedService):
         self.ab_manager: Optional[ABTestManager] = None
         self.tuning_executor: Optional[TuningExecutor] = None
         self.sentiment_pipeline: Optional[SentimentPipeline] = None
+        self.news_crawler: Optional[Any] = None
+        self.dart_connector: Optional[Any] = None
         self._error_sender: Optional[TelegramSender] = None
         self._original_exception_handlers: Optional[Dict[str, Any]] = None
 
@@ -161,43 +164,88 @@ class Bootstrapper(TracedService):
         if env_path.exists():
             load_dotenv(env_path, override=True)
             logger.info(f".env loaded: {env_path}")
+        self._normalize_env_aliases()
+
+    @staticmethod
+    def _normalize_env_aliases() -> None:
+        """구버전 env 변수명을 표준명으로 정규화한다 (하위 호환).
+
+        .env / .env.example / 코드 간 네이밍 불일치로 부팅이 실패하는 문제를
+        방지한다. 표준명이 이미 설정되어 있으면 그대로 둔다(덮어쓰지 않음).
+        """
+        aliases: Dict[str, tuple] = {
+            "KIWOOM_APP_KEY": ("KIWOOM_API_KEY",),
+            "KIWOOM_APP_SECRET": ("KIWOOM_SECRET_KEY", "KIWOOM_API_SECRET"),
+        }
+        for canonical, legacy_names in aliases.items():
+            if os.getenv(canonical):
+                continue
+            for legacy in legacy_names:
+                value = os.getenv(legacy)
+                if value:
+                    os.environ[canonical] = value
+                    logger.warning(
+                        f"env 별칭 정규화: {legacy} → {canonical} "
+                        f"(.env 변수명을 {canonical}로 정정 권장)"
+                    )
+                    break
 
     def validate_env(self) -> None:
         missing = [k for k in _REQUIRED_ENV_KEYS if not os.getenv(k)]
         if missing:
+            if get_runtime_mode().test_mode:
+                logger.warning(
+                    f"🧪 [SAFE MODE] 필수 환경변수 누락({', '.join(missing)}) — "
+                    f"TEST_MODE이므로 부팅을 계속합니다(외부 연결 없음)"
+                )
+                debug_tower.log("SYSTEM", "ENV_VALIDATED_TEST_MODE", {"missing": missing})
+                return
             msg = f"필수 환경변수 누락: {', '.join(missing)}"
             logger.critical(msg)
-            print(f"❌ {msg}")
+            print(f"[ERROR] {msg}")
             sys.exit(1)
         logger.info("환경변수 검증 완료")
         debug_tower.log("SYSTEM", "ENV_VALIDATED", {})
 
+    def _is_process_alive(self, pid: int) -> bool:
+        """PID가 실제 살아있는 python 프로세스인지 확인한다(PID 재사용 오탐 방지)."""
+        try:
+            if sys.platform == "win32":
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True,
+                )
+                out = (result.stdout or "").strip()
+                if not out or str(pid) not in out:
+                    return False
+                return "python" in out.lower()
+            return Path(f"/proc/{pid}").exists()
+        except Exception:
+            return False
+
     def manage_pid(self) -> None:
+        """단일 인스턴스 보장: 살아있는 인스턴스가 있으면 중복 실행을 차단한다."""
+        my_pid = os.getpid()
         if PID_FILE.exists():
             try:
-                old_pid = int(PID_FILE.read_text().strip())
-                if sys.platform == "win32":
-                    result = subprocess.run(
-                        ["tasklist", "/FI", f"PID eq {old_pid}"],
-                        capture_output=True, text=True
-                    )
-                    running = str(old_pid) in result.stdout
-                else:
-                    running = Path(f"/proc/{old_pid}").exists()
-
-                if running:
-                    print(f"❌ 이미 실행 중 (PID: {old_pid})")
-                    sys.exit(1)
-                else:
-                    PID_FILE.unlink()
+                old_pid = int((PID_FILE.read_text() or "0").strip() or "0")
             except Exception:
-                try:
-                    PID_FILE.unlink()
-                except Exception:
-                    pass
+                old_pid = 0
 
-        PID_FILE.write_text(str(os.getpid()))
-        logger.info(f"PID 파일 생성: {os.getpid()}")
+            if old_pid and old_pid != my_pid and self._is_process_alive(old_pid):
+                msg = f"이미 실행 중인 인스턴스 발견 (PID: {old_pid}) : 중복 실행을 중단합니다"
+                logger.critical(msg)
+                print(f"[ERROR] {msg}")
+                sys.exit(1)
+
+            try:
+                PID_FILE.unlink()
+                logger.info(f"스테일 PID 파일 정리 (이전 PID {old_pid})")
+            except Exception:
+                pass
+
+        PID_FILE.write_text(str(my_pid))
+        logger.info(f"PID 파일 생성: {my_pid}")
 
     def cleanup_pid(self) -> None:
         try:
@@ -221,17 +269,50 @@ class Bootstrapper(TracedService):
         logger.info("Telegram alert handler connected")
 
     async def connect_kiwoom(self) -> None:
+        if get_runtime_mode().test_mode:
+            from infrastructure.market_data.mock_kiwoom_connector import MockKiwoomConnector
+
+            mock = MockKiwoomConnector()
+            await mock.connect()
+            self.kiwoom = mock
+            if self.container is not None:
+                try:
+                    self.container.kiwoom = mock
+                except Exception:
+                    pass
+            logger.warning("🧪 [SAFE MODE] 실제 키움 연결 생략 — 모의 커넥터로 대체")
+            log_event("KIWOOM_MOCK_CONNECTED", {})
+            return
+
         if not self.kiwoom:
             raise RuntimeError("Kiwoom connector missing")
         logger.info("Waiting for Kiwoom connection...")
+        ws = config.websocket
+        max_attempts = ws.reconnect_max_attempts
+        base_delay = ws.reconnect_base_delay
+        max_delay = ws.reconnect_max_delay
         retry_count = 0
         while not self.kiwoom.is_connected():
+            if retry_count >= max_attempts:
+                msg = (
+                    f"Kiwoom 연결 실패: 최대 재시도({max_attempts}회) 초과 → 시작 중단 "
+                    f"(자격증명/네트워크/방화벽 확인 필요)"
+                )
+                logger.critical(msg)
+                log_event("KIWOOM_CONNECT_FAILED", {"attempts": retry_count})
+                debug_tower.log("SYSTEM", "KIWOOM_CONNECT_FAILED", {"attempts": retry_count})
+                await self._send_error_alert(msg)
+                raise RuntimeError(msg)
             retry_count += 1
             await self.kiwoom.connect()
-            if not self.kiwoom.is_connected():
-                if retry_count % 5 == 0:
-                    await self._send_error_alert(f"Kiwoom failed (retry {retry_count})")
-                await asyncio.sleep(config.websocket.connect_retry_interval)
+            if self.kiwoom.is_connected():
+                break
+            delay = min(base_delay * (2 ** (retry_count - 1)), max_delay)
+            logger.warning(
+                f"⚠️ Kiwoom 연결 실패 ({retry_count}/{max_attempts}) → {delay}초 후 재시도"
+            )
+            debug_tower.log("SYSTEM", "KIWOOM_RETRY", {"attempt": retry_count, "delay": delay})
+            await asyncio.sleep(delay)
         logger.info(f"Kiwoom connected (retries={retry_count})")
         log_event("KIWOOM_CONNECTED", {"retries": retry_count})
 
@@ -276,6 +357,29 @@ class Bootstrapper(TracedService):
 
         log_event("MONITOR_STARTED", {"count": self.startup_details["ticker_count"]})
         logger.info(f"RealtimeMonitor started (tickers={self.startup_details['ticker_count']})")
+
+    async def _check_universe_source(self) -> None:
+        """유니버스가 하드코딩 폴백으로 로드되면 CRITICAL 알림을 보낸다(조용한 폴백 금지)."""
+        try:
+            from infrastructure.market_data.universe_provider import get_last_source
+            source = get_last_source()
+        except Exception as e:
+            logger.warning(f"유니버스 소스 확인 실패: {e}")
+            return
+
+        self.startup_details["universe_source"] = source
+        if source == "fallback":
+            logger.critical(
+                "🚨 유니버스가 하드코딩 폴백으로 로드됨 — data/krx_universe.csv 확인 필요"
+            )
+            await self._send_error_alert(
+                "유니버스 폴백 사용: data/krx_universe.csv 없음/읽기 실패 → "
+                "하드코딩 종목으로 동작 중 (신규상장/시총변동 미반영)"
+            )
+        elif source == "csv":
+            logger.info("✅ 유니버스 소스: CSV (data/krx_universe.csv)")
+        else:
+            logger.warning(f"유니버스 소스 미확인: {source}")
 
     async def start_regime_manager(self) -> None:
         await regime_manager.start()
@@ -333,6 +437,10 @@ class Bootstrapper(TracedService):
         await self.tuning_executor.run(days=30)
 
     async def init_sentiment_pipeline(self) -> None:
+        if get_runtime_mode().external_io_disabled:
+            logger.warning("🧪 [SAFE MODE] SentimentPipeline 생략 (뉴스 크롤링 비활성)")
+            return
+
         news_crawler = None
         try:
             news_crawler = NewsCrawler()
@@ -344,6 +452,7 @@ class Bootstrapper(TracedService):
             )
             news_crawler = None
 
+        self.news_crawler = news_crawler
         self.sentiment_pipeline = SentimentPipeline(
             news_crawler=news_crawler,
             max_news_per_ticker=20,
@@ -364,10 +473,15 @@ class Bootstrapper(TracedService):
         )
 
     async def init_data_sources(self) -> None:
+        if get_runtime_mode().external_io_disabled:
+            logger.warning("🧪 [SAFE MODE] DART 커넥터 생략 (외부 API 비활성)")
+            return
+
         dart_key = os.getenv("DART_API_KEY")
         if dart_key:
             dart = DartConnector(api_key=dart_key)
             await dart.connect()
+            self.dart_connector = dart
             logger.info("DART connector initialized")
         else:
             logger.warning("DART_API_KEY missing → financial data excluded")
@@ -444,6 +558,10 @@ class Bootstrapper(TracedService):
             logger.info("ExecutionCalibrator initialized")
 
     async def start_telegram_commands(self) -> None:
+        if not get_runtime_mode().telegram_enabled:
+            logger.warning("🧪 [SAFE MODE] 텔레그램 명령어 폴링 생략 (TELEGRAM_ENABLED=0/DRY_RUN)")
+            return
+
         self.telegram_cmd = TelegramCommandHandler(
             token=os.getenv("TELEGRAM_BOT_TOKEN") or "",
             chat_id=os.getenv("TELEGRAM_CHAT_ID") or "",
@@ -466,10 +584,19 @@ class Bootstrapper(TracedService):
             kiwoom=self.kiwoom,
         )
         try:
-            await self.telegram_cmd.start()
+            started = await self.telegram_cmd.start()
             logging.getLogger("telegram.ext").setLevel(logging.INFO)
             logging.getLogger("telegram.request").setLevel(logging.INFO)
-            logger.info("Telegram commands activated (natural language + analysis)")
+            if started:
+                logger.info("Telegram commands activated (natural language + analysis)")
+            else:
+                logger.warning(
+                    "⚠️ Telegram commands 비활성 — 중복 폴링 Conflict (다른 인스턴스 실행 중?)"
+                )
+                await self._send_error_alert(
+                    "텔레그램 중복 폴링 감지(getUpdates Conflict): 다른 인스턴스가 실행 중인 것 같아 "
+                    "명령어 수신을 시작하지 않았습니다. 중복 실행을 확인하세요."
+                )
         except Exception as e:
             logger.warning(f"Telegram start failed: {e}")
             self.telegram_cmd = None
@@ -1044,6 +1171,10 @@ class Bootstrapper(TracedService):
 
         try:
             self.load_env()
+            mode = load_runtime_mode(force=True)
+            self.startup_details["runtime_mode"] = mode.label
+            if mode.is_safe:
+                logger.warning(f"🧪 안전모드 활성: {mode.summary()}")
             self.validate_env()
             self.manage_pid()
 
@@ -1060,14 +1191,18 @@ class Bootstrapper(TracedService):
             await self.start_supervisor()
             await self.init_telegram()
 
-            logger.info("Initial macro data collection...")
-            await fetch_macro_data(force=True)
+            if mode.external_io_disabled:
+                logger.warning("🧪 [SAFE MODE] 거시 데이터 수집 생략 (외부 연결 없음)")
+            else:
+                logger.info("Initial macro data collection...")
+                await fetch_macro_data(force=True)
             macro = get_cached_macro()
             logger.info(f"  KOSPI: {macro.kospi_trend:.2f}%  USD/KRW: {macro.usdkrw:.0f}  VIX: {macro.vix:.1f}")
 
             await self.init_container()
             await self.connect_kiwoom()
             await self.start_monitor()
+            self._check_universe_source()
             await self.start_regime_manager()
             await self.init_analyzer()
             await self.init_hyperparameter_tuner()
@@ -1168,6 +1303,16 @@ class Bootstrapper(TracedService):
                 await self.telegram_cmd.stop()
             except Exception as e:
                 logger.warning(f"telegram_cmd.stop() failed: {e}")
+
+        # aiohttp 클라이언트 세션 정리 (Unclosed client session 경고 방지)
+        for attr in ("news_crawler", "dart_connector"):
+            obj = getattr(self, attr, None)
+            if obj is not None and hasattr(obj, "disconnect"):
+                try:
+                    await obj.disconnect()
+                    logger.info(f"{attr} disconnected (session closed)")
+                except Exception as e:
+                    logger.warning(f"{attr}.disconnect() failed: {e}")
 
         try:
             await regime_manager.stop()

@@ -1,4 +1,4 @@
-﻿# make_light_context.py - 새 세션 부트스트랩용 구조 개요 생성기
+# make_light_context.py - 새 세션 부트스트랩용 구조 개요 생성기
 import os
 
 OUTPUT_FILE = "project_context_light.txt"

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 run_integration_tests.py - 통합 테스트 실행기 v3.3 (UTF-8 강제 + ASCII 태그)
 - 각 테스트를 별도 프로세스로 실행하며, PYTHONIOENCODING=utf-8 강제 설정

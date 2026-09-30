@@ -34,6 +34,7 @@ from telegram.error import NetworkError, TelegramError, TimedOut
 
 from core.debug_tower import debug_tower
 from core.logger import setup_logger
+from core.runtime_mode import get_runtime_mode
 from observability.trace_propagation import format_trace_footer
 
 logger = setup_logger("telegram")
@@ -96,6 +97,12 @@ class TelegramSender:
     # 🔥 P1-5: 청크 간 sleep 추가
     # ============================================================
     async def send_raw(self, message: str, max_retries: int = 4) -> bool:
+        # 안전모드(TEST_MODE/DRY_RUN/TELEGRAM_ENABLED=0): 실발송 차단, 로그로만 대체
+        if not get_runtime_mode().telegram_enabled:
+            preview = message.replace("\n", " ")[:80]
+            logger.info("🧪 [SAFE MODE] 텔레그램 발송 차단(로그만): %s", preview)
+            return True
+
         if not self.bot or not self.chat_id:
             return False
 

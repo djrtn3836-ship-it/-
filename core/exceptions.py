@@ -55,6 +55,21 @@ class ConfigError(Exception):
     pass
 
 
+class ValidationError(Exception):
+    """입력/데이터 검증 실패 예외"""
+    pass
+
+
+class DataError(Exception):
+    """데이터 조회/처리 실패 예외"""
+    pass
+
+
+class ExecutionError(Exception):
+    """주문/실행 단계 실패 예외"""
+    pass
+
+
 class DatabaseError(Exception):
     """데이터베이스 관련 예외"""
     pass

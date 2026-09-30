@@ -1,4 +1,4 @@
-﻿"""
+"""
 orchestrator/event_bus.py - v2.0 (Session 14)
 
 Event-Driven Architecture 핵심 컴포넌트

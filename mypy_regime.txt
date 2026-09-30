@@ -1,8 +1,0 @@
-﻿python : mypy: error: Cannot read file 'core\regime_detector.py': No such file or directory
-위치 줄:1 문자:1
-+ python -m mypy core/regime_detector.py --strict 2>&1 > mypy_regime.tx ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (mypy: error: Ca...le or directory:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-Found 1 error in 1 file (errors prevented further checking)

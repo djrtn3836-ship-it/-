@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 core/exception_handler.py - v1.1 (Session 40: mypy strict 적용 + 실제 버그 수정)
 

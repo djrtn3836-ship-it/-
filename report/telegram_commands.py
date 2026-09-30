@@ -45,9 +45,9 @@ class TelegramCommandHandler:
         self._news = news
         self._kiwoom = kiwoom
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
         if self._running:
-            return
+            return True
 
         self.app = Application.builder().token(self.token).build()
         self.app.add_handler(CommandHandler("status", self._status_command))
@@ -55,10 +55,37 @@ class TelegramCommandHandler:
 
         await self.app.initialize()
         await self.app.start()
+
+        # 🔒 중복 인스턴스 가드: 다른 프로세스가 같은 봇을 폴링 중이면 Conflict 발생.
+        # offset을 지정하지 않아 대기 중인 업데이트를 소비하지 않는다(비파괴 프로브).
+        conflict = False
+        try:
+            await self.app.bot.get_updates(timeout=0, limit=1)
+        except Exception as e:
+            if "conflict" in str(e).lower():
+                conflict = True
+                logger.critical(
+                    "🚨 텔레그램 중복 폴링 감지(getUpdates Conflict) — 다른 인스턴스가 "
+                    "같은 봇을 사용 중입니다. 명령어 폴링을 시작하지 않습니다."
+                )
+            else:
+                logger.warning(f"Telegram 프리플라이트 확인 실패(무시): {e}")
+
+        if conflict:
+            try:
+                await self.app.stop()
+                await self.app.shutdown()
+            except Exception:
+                pass
+            self.app = None
+            self._running = False
+            return False
+
         await self.app.updater.start_polling(allowed_updates=["message", "callback_query"])
 
         self._running = True
         logger.info("📱 Telegram 봇 시작됨 (v7.3.1)")
+        return True
 
     # ============================================================
     # 자연어 처리
@@ -218,7 +245,7 @@ class TelegramCommandHandler:
             await update.message.reply_text(f"🔍 {ticker} 종합 분석 중... (30초 이내)")
 
             try:
-                from data.stock_universe import get_universe
+                from infrastructure.market_data.universe_provider import get_universe
                 universe = get_universe()
                 stock_name = str(universe.get(ticker, ticker))
             except:

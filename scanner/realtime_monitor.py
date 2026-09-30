@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 scanner/realtime_monitor.py - v5.7.0 FINAL (REG 요청 최적화 + 재시도 강화)
 - 등록 간격 0.05 → 0.15초로 증가 (초당 요청 수 제한 초과 방지)
@@ -15,7 +15,7 @@ from core.config import get_config
 from core.debug_tower import debug_tower
 from core.logger import setup_logger
 from core.regime_manager import regime_manager
-from data.stock_universe import get_universe
+from infrastructure.market_data.universe_provider import get_universe
 
 logger = setup_logger("monitor")
 config = get_config()

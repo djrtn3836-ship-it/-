@@ -1,4 +1,4 @@
-﻿"""
+"""
 validation/backtester.py - v9.0 (Session 13)
 
 Backtester 고도화 + Walk-Forward 자동화
@@ -39,12 +39,19 @@ def _std(values: List[float], ddof: int = 1) -> float:
 
 
 def _sharpe(returns: List[float]) -> float:
-    """연간화 Sharpe Ratio. 데이터 2개 미만이면 0.0."""
+    """연간화 Sharpe Ratio. 데이터 2개 미만이면 0.0.
+
+    표본이 적어 표준편차가 0에 가까우면 값이 폭발하므로(예: 거래 2건),
+    다른 지표와 동일하게 ±_METRIC_CAP으로 클램프한다.
+    """
     if len(returns) < 2:
         return 0.0
     m = _mean(returns) - _RISK_FREE_RATE / _ANNUALIZATION
     s = _std(returns)
-    return (m / s * _ANNUALIZATION) if s > 1e-9 else 0.0
+    if s <= 1e-9:
+        return 0.0
+    value = m / s * _ANNUALIZATION
+    return max(-_METRIC_CAP, min(_METRIC_CAP, value))
 
 
 def _sortino(returns: List[float]) -> float:
@@ -210,6 +217,8 @@ class AggregatedResult:
     sortino_ratio: float = 0.0
     profit_factor: float = 0.0
     consistency_score: float = 0.0  # 폴드 간 Sharpe 일관성 (0~1, 높을수록 안정)
+    pooled_sharpe: float = 0.0      # 전 폴드 거래를 합쳐 계산한 Sharpe(표본이 적을 때 퇴화 방지)
+    pooled_trades: int = 0
 
     def compute(self) -> "AggregatedResult":
         if not self.fold_results:
@@ -229,6 +238,8 @@ class AggregatedResult:
         if all_returns:
             self.sortino_ratio = _sortino(all_returns)
             self.profit_factor = _profit_factor(all_returns)
+            self.pooled_sharpe = _sharpe(all_returns)
+            self.pooled_trades = len(all_returns)
             equity = _build_equity_curve(all_returns)
             max_dd = _max_drawdown(equity)
             total_ret = sum(all_returns)
@@ -255,6 +266,8 @@ class AggregatedResult:
             "sortino_ratio": round(self.sortino_ratio, 4),
             "profit_factor": round(self.profit_factor, 4),
             "consistency_score": round(self.consistency_score, 4),
+            "pooled_sharpe": round(self.pooled_sharpe, 4),
+            "pooled_trades": self.pooled_trades,
             "folds": [r.to_dict() for r in self.fold_results],
         }
 
@@ -263,7 +276,8 @@ class AggregatedResult:
         lines = [
             "📊 Walk-Forward 백테스트 요약",
             f"  폴드 수: {len(self.fold_results)}",
-            f"  평균 Sharpe: {self.mean_sharpe:.3f} (±{self.std_sharpe:.3f})",
+            f"  평균 Sharpe(폴드): {self.mean_sharpe:.3f} (±{self.std_sharpe:.3f})",
+            f"  Sharpe(pooled): {self.pooled_sharpe:.3f} ({self.pooled_trades}건 기준)",
             f"  평균 승률:   {self.mean_win_rate:.1%} (±{self.std_win_rate:.1%})",
             f"  Sortino:     {self.sortino_ratio:.3f}",
             f"  Profit Factor: {self.profit_factor:.2f}",

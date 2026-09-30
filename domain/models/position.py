@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 domain/models/position.py - V10 Pure Domain Models (Position, TrailingStopState)
 - Position and trailing stop state models

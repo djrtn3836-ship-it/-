@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Daily Monitor v5.2.0
 일일 모니터링 대시보드

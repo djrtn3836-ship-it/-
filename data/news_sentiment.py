@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 data/news_sentiment.py - 뉴스 감성 분석기 v1.0
 

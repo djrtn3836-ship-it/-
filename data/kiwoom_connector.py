@@ -80,8 +80,8 @@ class KiwoomConnectorV512:
 
     def __init__(self, rate_limit: float = 5.0) -> None:
         load_dotenv()
-        self.api_key: Optional[str] = os.getenv("KIWOOM_APP_KEY")
-        self.api_secret: Optional[str] = os.getenv("KIWOOM_APP_SECRET")
+        self.api_key: Optional[str] = os.getenv("KIWOOM_APP_KEY") or os.getenv("KIWOOM_API_KEY")
+        self.api_secret: Optional[str] = os.getenv("KIWOOM_APP_SECRET") or os.getenv("KIWOOM_SECRET_KEY")
         self.access_token: Optional[str] = None
         self.token_expires_at: float = 0.0
 

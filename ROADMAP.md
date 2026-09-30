@@ -1,189 +1,77 @@
-﻿# 프로젝트 진행 상황 (Session 48)
+# ROADMAP — stock_analyzer (V10)
 
-## 🎯 목표
-- ✅ 핵심 신호 처리 파이프라인 mypy --strict 준수
-- ⏳ 전체 프로젝트 타입 안정성 향상
+> 한국 주식(KOSPI/KOSDAQ) 실시간 감시 + Telegram 알림 보조 시스템. 자동매매 아님.
+> 최종 갱신: 2026-09-30 | 브랜치: `genspark_ai_developer` | 공식 진입점: `python app/main.py`
 
-## 📈 진행 상황
-
-### Phase 1: 기초 타입 힌트 (Session 40-47)
-- ✅ core 모듈 전체 (exception_handler, holiday_utils, font_utils)
-- ✅ data 모듈 (news_crawler, dart_connector, news_sentiment)
-- ✅ 총 변경: 6개 파일, ~200줄
-
-### Phase 2: 분석 파이프라인 강화 (Session 48)
-- ✅ analytics/alert_verifier.py - 함수 반환 타입, set→list 변환
-- ✅ analytics/calibration_executor.py - dict 제네릭 타입, 반환 타입
-- ✅ orchestrator/sentiment_pipeline.py - Task[Any], cast 추가
-- ✅ scheduler/daily_collector.py - 반환 타입 추가
-- ✅ infrastructure/news/crawler.py - ClientTimeout 타입 수정
-- ✅ 총 변경: 8개 파일, ~400줄
-
-## ✅ Mypy --Strict 완료 파일 체크리스트
-
-### Core Module (4/4)
-- ✅ core/exception_handler.py
-- ✅ core/font_utils.py
-- ✅ core/holiday_utils.py
-- ✅ core/regime_manager.py (indirect)
-
-### Data Module (3/3)
-- ✅ data/news_crawler.py
-- ✅ data/dart_connector.py
-- ✅ data/news_sentiment.py
-
-### Analytics Module (3/3)
-- ✅ analytics/alert_verifier.py
-- ✅ analytics/calibration_executor.py
-- ✅ analytics/calibration_tracker.py (준비 완료)
-
-### Orchestrator Module (2/2)
-- ✅ orchestrator/sentiment_pipeline.py
-- ✅ orchestrator/feature_store.py (준비 완료)
-
-### Application Module (2/2)
-- ✅ application/analysis/ab_framework.py
-- ✅ application/analysis/hyperparameter_tuner.py
-
-### Scheduler & Infrastructure (3/3)
-- ✅ scheduler/daily_collector.py
-- ✅ infrastructure/cache/redis_cache.py
-- ✅ infrastructure/news/crawler.py
-
-### Validation (1/1)
-- ✅ validation/execution_simulator.py
-
-## 📋 주요 변경 사항
-
-### Type Annotations Added
-- Generic types: Dict[str, Any], List[...], Optional[...]
-- Function return types: → None, → dict[str, float]
-- Parameter types: news_crawler: Optional[Any]
-- Cast operations: cast(Coroutine[...]), cast(dict[...])
-
-### Bug Fixes
-- set 타입 인덱싱 불가 → list로 변환
-- ClientTimeout(total=10) 명시적 타입 지정
-- best.value None 처리 → float() 래핑
-- holidays.KR 호환성 문제 처리
-
-### Import Improvements
-- rom typing import cast, Any, Dict, List, Optional, Tuple
-- rom typing import Coroutine, Any
-- Proper typing module organization
-
-## 🔍 Mypy Strict Results
-
-**완료된 파일들 (14개)**
-\\\
-✅ scheduler/daily_collector.py: 0 errors
-✅ core/exception_handler.py: 0 errors
-✅ data/dart_connector.py: 0 errors
-✅ data/news_sentiment.py: 0 errors
-✅ analytics/alert_verifier.py: 0 errors
-✅ analytics/calibration_executor.py: 0 errors
-✅ application/analysis/ab_framework.py: 0 errors
-✅ orchestrator/sentiment_pipeline.py: 0 errors
-✅ application/analysis/hyperparameter_tuner.py: 0 errors
-✅ core/font_utils.py: 0 errors
-✅ core/holiday_utils.py: 0 errors
-✅ infrastructure/cache/redis_cache.py: 0 errors
-✅ validation/execution_simulator.py: 0 errors
-✅ infrastructure/news/crawler.py: 0 errors
-\\\
-
-**프로젝트 전체 현황**
-- 완료: 14개 파일 (100% --strict)
-- 대기: 96개 에러 (다른 모듈)
-- 총 Git 커밋: 5개
-
-## 📝 Session 48 타임라인
-
-| 시간 | 작업 | 결과 |
-|------|------|------|
-| 1h | PHASE 1: 3개 파일 기본 수정 | 3/3 완료 |
-| 2h | PHASE 2: 6개 파일 정밀 수정 | 6/6 완료 |
-| 1h | Import 추가 및 최종 수정 | 모든 오류 해결 |
-| 30m | Git Commit 및 검증 | 커밋 f6e0be4 |
-
-## 🎓 기술 학습
-
-### Type Hints Best Practices
-1. **Generic Types** - Dict[str, Any], List[...] 필수
-2. **Function Annotations** - 모든 함수에 return type 추가
-3. **Optional Handling** - None 가능성 명시
-4. **Cast Usage** - Any 반환을 구체적 타입으로 안전하게 변환
-
-### Common Mypy Errors & Solutions
-- Name "Any" is not defined → from typing import Any
-- Missing type arguments for generic type "dict" → dict[str, Any]
-- Returning Any from function → cast() 또는 명시적 타입 지정
-- Value of type "set[...]" is not indexable → list로 변환
-
-## 🚀 다음 단계 (Future Sessions)
-
-### Priority 1: Remaining Core Modules
-- [ ] orchestrator/event_bus.py (Callable, Queue, Task 제네릭)
-- [ ] domain/models/*.py (dict, 반환 타입)
-- [ ] regime/regime_detector.py (dict 제네릭)
-
-### Priority 2: Infrastructure & Observability
-- [ ] observability/*.py (dict, deque 제네릭)
-- [ ] monitor/calibration_tracker.py (dict, 함수 타입)
-- [ ] infrastructure/market_data/*.py (함수 타입)
-
-### Priority 3: Utilities & Config
-- [ ] pack_project.py (함수 타입)
-- [ ] make_light_context.py (함수 타입)
-- [ ] config/secure_config.py (함수 타입)
-
-### Priority 4: Application Bootstrap
-- [ ] app/bootstrap.py (38개 오류 남음)
-- [ ] app/main.py (TextIO 타입, 파라미터 타입)
-
-## 📊 메트릭스
-
-**코드 품질 개선**
-- Type Safety: 40% → 85% (목표 파일)
-- Mypy Errors (대상): 0개 (100% 완료)
-- Type Annotation Coverage: ~600줄 추가
-- Runtime Errors 예방: 높음
-
-**프로젝트 상태**
-- 총 파일: ~300개
-- Mypy --strict 완료: 14개 (100%)
-- 대기 중: ~96개 에러
-- Pytest: 1104개 테스트 (모두 통과)
-
-## 💡 주요 성과
-
-1. **신호 처리 파이프라인 완전 타입 안전화**
-   - sentiment_pipeline, ab_framework, hyperparameter_tuner
-   - 모두 mypy --strict 준수
-
-2. **데이터 처리 계층 강화**
-   - news_sentiment, dart_connector 완전 타입 지정
-   - 외부 API 통신 안전성 향상
-
-3. **분석 엔진 개선**
-   - calibration_executor, alert_verifier 타입 검증
-   - 런타임 오류 가능성 최소화
-
-4. **인프라 계층 안정화**
-   - redis_cache, news_crawler, execution_simulator 타입 완료
-   - 외부 의존성 안전하게 래핑
-
-## 🎯 최종 목표
-
-✅ **Session 48 목표 달성: 100%**
-- 신호 처리 파이프라인 mypy --strict: 완료
-- 데이터 처리 계층 타입 안전화: 완료
-- 분석 엔진 완전 검증: 완료
-- Git 커밋 및 문서화: 완료
+## 운영 원칙
+- 승인 기반 개발: [분석·계획 보고 → 승인 → 수행]
+- 기존 기능 보존: 삭제가 필요하면 영향도를 명시하고 승인 후 `_archive/`로 이동
+- 모든 소스 파일은 **UTF-8 (BOM 없음)** 유지
+- 각 작업 완료 시 `DEVELOPMENT_LOG.md` 최신화
 
 ---
 
-**작성일**: 2026-09-15  
-**세션**: Session 48  
-**상태**: ✅ COMPLETE
-**다음 세션**: Session 49 (app/bootstrap.py, 전체 프로젝트 타입 안전화)
+## 단계 요약
+
+| 단계 | 목표 | 상태 |
+| :--- | :--- | :--- |
+| P0 | 현재 상태 고정 (문서/인코딩/파일 정리) | 🔄 진행 중 |
+| P1 | 핵심 경로 신뢰성 (알림 실제 도착 보장) | ⏳ 대기 |
+| P2 | 관측성/디버깅 통합 (나비효과 추적) | ⏳ 대기 |
+| P3 | 아키텍처 정리 (분해/정본화/계층 규칙) | ⏳ 대기 |
+| P4 | 검증 인프라 (통합 테스트 + CI) | ⏳ 대기 |
+| P5 | Paper Trading 안전 진입 | ⏳ 대기 |
+| P6 | 고도화 (유니버스/거시/DB/대시보드) | ⏳ 대기 |
+
+---
+
+## P0. 현재 상태 고정
+- [x] V10 기준 문서 재작성 (CONTEXT.md)
+- [x] ROADMAP.md / DEVELOPMENT_LOG.md 신설
+- [x] BOM(U+FEFF) 56개 파일 제거
+- [x] A등급 스테일 산출물 정리
+- [x] B등급 중복/고아 모듈 정본 확정 (의존성 0건 아카이브)
+- [x] `python app/main.py` 부팅 검증 (실 자격증명 + TEST_MODE 양쪽 성공)
+- 완료 기준: `git status` clean, 구문 오류 0, BOM 0, 문서-코드 일치
+- 잔여: 테스트 결합 고아 모듈(`event_bus`/`feature_store`/`pipeline_manager`/관측성 5종) 배선 여부 결정
+
+## P1. 핵심 경로 신뢰성
+- [x] 신호 → Telegram 알림 E2E 실측 (부팅 알림 수신 확인)
+- [x] `validation/backtester.py` 실구현 + Walk-Forward (배선: `backtest_runner` + `strategy_backtest`)
+- [x] `analytics/performance_tracker.py` 실측값 검증 (임시 DB 시딩 테스트)
+- [x] OHLCV 적재 경로 확보 (`scheduler/ohlcv_backfill.py`, 190종목 92,104행)
+- [ ] ML 피처 학습/예측 정합성 재검증 (`feedback/feedback_learner.py`)
+- [ ] 알림 누락 검증기(`analytics/alert_verifier.py`) 결과 신뢰성 확인
+- 완료 기준: 하루치 신호가 알림 건수와 일치, 백테스트가 실제 DB 데이터로 산출
+
+## P2. 관측성/디버깅 통합
+- [ ] `observability/tracer` + `scripts/trace_ctl.py` ON/OFF 완성
+- [ ] 파일별 독립 로그(콘솔 분리) 표준화
+- [ ] 신규 파일 자동 계측(`TracedService`/`auto_trace_module`) 표준 확립
+- [ ] 미배선 관측 모듈(explainer_v2/root_cause_analyzer/anomaly_detector/model_drift_detector) 배선 또는 보관 결정
+- 완료 기준: 특정 오류 발생 시 어느 파일·줄에서 시작됐는지 로그로 추적 가능
+
+## P3. 아키텍처 정리
+- [ ] `scanner/deep_analyzer.py` 책임 분해 (신호/ATR/트레일링/합의/스코어링)
+- [ ] 고아 모듈 정본화 및 계층 재배치
+- [ ] 설정 단일화 (`config/schema.py` 기준)
+- [ ] 계층 의존 규칙 자동 검증(import-linter) 도입
+- 완료 기준: 500줄 초과 God 파일 0, 순환 참조 0
+
+## P4. 검증 인프라
+- [ ] `tests/run_all.py` 단일 실행기 (unit/integration/e2e)
+- [ ] CI: mypy --strict + ruff + pytest
+- 완료 기준: `python tests/run_all.py` 단일 명령으로 전체 통과
+
+## P5. Paper Trading 안전 진입
+- [ ] `execution/order_executor.py` 3중 안전장치(포지션/일일손실/중복주문) 검증
+- [ ] Calibration(슬리피지 보정) 실측 연동
+- [ ] Phase 전환 자동 검증 조건 확정
+- ⛔ **게이트: OOS 검증 통과 필요** — 2026-09-30 검증 결과 현 파라미터/전략은 IS→OOS에서 성과 붕괴(과최적화)로 **보류**
+- 전제: P1~P4 완료, OOS 샤프/승률/MDD 기준 충족
+
+## P6. 고도화
+- [ ] 유니버스 파이프라인(`infrastructure/market_data/universe_provider.py`) 안정화
+- [ ] 거시 지표 확장 (해외지수/금리/원자재)
+- [ ] PostgreSQL 마이그레이션 검토
+- [ ] 대시보드/리포트 고도화

@@ -1,4 +1,4 @@
-﻿"""
+"""
 orchestrator/pipeline_manager.py - v2.0 (Session 12)
 
 Pipeline Manager: 단계별 지연 추적 + 실패 재시도 + HealthCheck 통합.

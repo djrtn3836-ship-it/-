@@ -1,4 +1,4 @@
-﻿# tests/unit/test_strategy_router.py
+# tests/unit/test_strategy_router.py
 """
 StrategyRouter 라우팅 테스트
 """

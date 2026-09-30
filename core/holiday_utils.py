@@ -79,9 +79,14 @@ def _get_holidays(year: int) -> set[date]:
 # ============================================================
 # 3. 거래일 판단
 # ============================================================
-def is_trading_day(dt: datetime | date | None = None) -> bool:
+def is_trading_day(dt: datetime | date | str | None = None) -> bool:
     if dt is None:
         dt = datetime.now()
+    if isinstance(dt, str):
+        try:
+            dt = date.fromisoformat(dt.strip())
+        except ValueError:
+            return False
     if isinstance(dt, datetime):
         target_date = dt.date()
     else:
