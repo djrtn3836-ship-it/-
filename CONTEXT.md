@@ -71,31 +71,30 @@ AB Framework → OrderExecutor(Paper) → Telegram 명령어 → Scheduler → W
 | 구문 오류 | ✅ 179개 파일 실제 SyntaxError 0건 |
 
 ### 미해결/확인 필요
-- ✅ UTF-8 **BOM 56개 파일 제거 완료** (2026-09-30, BOM 0)
-- ✅ env 변수명 불일치 완화 (별칭 정규화 + `.env.example` 표준화) — 실제 자격증명 입력/실부팅 성공
-- ✅ **실 부팅 성공 + Telegram 알림 수신 확인** (2026-09-30, Kiwoom 195종목 구독)
-- ✅ 유니버스 **단일 소스화**(V10 provider) + 폴백 CRITICAL 알림 배선
-- ⚠️ 중복 파일/고아 모듈 일부 정리, 테스트 결합분은 배선 필요
-- ✅ **동적 유니버스 소스 부재**: `data/krx_universe.csv` 없음 → 하드코딩 238종목 폴백. 단일 소스화 + 폴백 CRITICAL 알림은 완료, 실제 KRX API/pykrx 도입은 후속
-- ✅ **Kiwoom 무한 재시도 수정**: 최대 5회 + 지수 백오프 후 명확 종료 (`app/bootstrap.py:connect_kiwoom`)
-- ✅ aiohttp `Unclosed client session` 정리 (news_crawler/dart_connector를 shutdown에서 disconnect)
-- ✅ **단일 인스턴스 가드**: PID 실프로세스 검증 + 텔레그램 프리플라이트 Conflict 감지 (중복 실행 시 폴링 미시작)
-- ✅ **테스트 스위트 정상화**: `pytest tests/` → 1147 passed / 0 failed (pyproject 마커 손상·예외 import 오류 복구)
-- ✅ 백테스터/성과추적기 실측 검증 완료 (테스트 24개 신규)
-- ✅ **백테스터 배선 완료**: `validation/backtest_runner.py` (DB OHLCV → MA교차 시뮬레이션 → Walk-Forward, CLI 제공)
-- ✅ **OHLCV 적재 경로 확보**: `scheduler/ohlcv_backfill.py`(yfinance 백필) — **190/195종목 · 92,104행** 적재
-- ✅ **백테스트 프로덕션 앙상블 연결**: `validation/strategy_backtest.py` (Trend/Reversal/Breakout 투표 기반 결합)
-  - CLI: `python -m validation.backtest_runner <ticker> <start> <end> [--compare]`
-- ✅ **다종목 스윕 완료**: `validation/backtest_sweep.py` — 185종목·48조합 4초
-  - 지표 캡/중앙값 정렬/pooled Sharpe 로 통계 왜곡 교정 완료
-- 🔴 **OOS 검증 결과(중요)**: P2-8의 최적 파라미터는 **과최적화** — IS 중앙 Sharpe +2.158 → OOS **-0.192** (2개 분할 모두 붕괴)
-  - **프로덕션(`signal_pipeline`) 반영 보류** 결정. 향후 데이터 5년 확대 + 롤링 OOS 재검증 필요
+- 🔴 **OOS 검증 결과(중요)**: 기존 앙상블(Trend/Reversal/Breakout)은 견고한 엣지 없음
+  (IS 중앙 Sharpe +2.158 → OOS **-0.192**, 2개 분할 붕괴) → **프로덕션 파라미터 반영 보류**
   - `Profit Factor`는 손실 분모가 작을 때 폭주(IS 79~142) → **단독 순위 지표로 사용 금지**
-- ✅ **안전모드 구현**: `.env`의 `TEST_MODE`/`DRY_RUN`/`MOCK_DATA_ENABLED`/`TELEGRAM_ENABLED` 실동작화
-  (`core/runtime_mode.py` + `infrastructure/market_data/mock_kiwoom_connector.py`, 자격증명 없이 부팅 검증됨)
-- 🟠 `DB_TYPE`은 여전히 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
-- 🟠 중복 인스턴스 시 Telegram `getUpdates Conflict` — 단일 인스턴스 가드 필요
-- 🔎 `backtester` 실구현/Walk-Forward, `performance_tracker` 실측값 — 재검증 필요
+- 🎯 **횡단면 모멘텀은 유효**: 고정 파라미터(lb=120/k=20/hold=20)가 **4/4 연도구간 플러스**,
+  거래비용 0.3% 반영 후 5년 Sharpe +0.98 → **관찰 리포트로 배선**(`scheduler/momentum_report.py`, 평일 08:30)
+  - ⚠️ 유니버스가 현재 상장 종목 기준 → **생존편향** 존재 (실거래 신호로 쓰지 말 것)
+- 🟠 B등급 고아 모듈(테스트 보유, 미배선): `orchestrator/event_bus·feature_store·pipeline_manager`,
+  `observability/anomaly_detector·explainer_v2·model_drift_detector·root_cause_analyzer·trace_propagation`
+  → 배선(활성화) vs 보관 결정 필요
+- 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
+- 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
+
+### 신규 도구 (2026-09-30)
+| 도구 | 용도 |
+| :--- | :--- |
+| `core/runtime_mode.py` | 안전모드(TEST_MODE/DRY_RUN/MOCK_DATA_ENABLED/TELEGRAM_ENABLED) 실동작 |
+| `scheduler/ohlcv_backfill.py` | yfinance 일봉 백필 (5년 230,297행 적재) |
+| `scheduler/universe_fetcher.py` | 네이버 금융 API 동적 유니버스(515종목) |
+| `scheduler/momentum_report.py` | 모멘텀 관찰 리포트(매매 아님) |
+| `validation/backtest_runner.py` | DB OHLCV → Walk-Forward (ma_cross/ensemble) |
+| `validation/strategy_backtest.py` | 프로덕션 앙상블 재생 + 진입 필터 |
+| `validation/backtest_sweep.py` | 다종목 스윕 · OOS · 롤링 OOS |
+| `validation/momentum_backtest.py` | 횡단면 모멘텀 + 거래비용 + OOS |
+| `tests/run_all.py` + `.github/workflows/ci.yml` | 통합 테스트 실행기 + CI |
 
 ---
 
