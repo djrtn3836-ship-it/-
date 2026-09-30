@@ -223,6 +223,19 @@ class DatabaseManager:
                 state_json TEXT NOT NULL,
                 saved_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS momentum_paper (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pick_date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                momentum_ret REAL,
+                entry_price REAL,
+                exit_price REAL,
+                period_return REAL,
+                evaluated_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(pick_date, ticker)
+            );
         """)
 
         for col, dtype in [
@@ -243,6 +256,7 @@ class DatabaseManager:
             ("idx_decisions_action", "decisions", "action"),
             ("idx_ohlcv_ticker_date", "ohlcv", "ticker, date"),
             ("idx_positions_ticker", "portfolio_positions", "ticker"),
+            ("idx_momentum_paper_pending", "momentum_paper", "evaluated_at, pick_date"),
         ]
         for idx_name, table, columns in indexes:
             try:
@@ -308,6 +322,78 @@ class DatabaseManager:
                ORDER BY date ASC""",
             (ticker, start_date, end_date),
         )
+
+    # ── 모멘텀 모의(페이퍼) 추적 — P2-13 옵션 B ──────────────────
+    async def save_momentum_picks(self, picks: list[dict[str, Any]]) -> None:
+        """일자별 모멘텀 상위 종목을 모의 추적용으로 기록한다(중복 무시)."""
+        for p in picks:
+            await self._execute_batched(
+                """INSERT OR IGNORE INTO momentum_paper
+                       (pick_date, ticker, rank, momentum_ret, entry_price)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    p.get("pick_date"),
+                    p.get("ticker"),
+                    int(p.get("rank", 0)),
+                    p.get("momentum_ret"),
+                    p.get("entry_price"),
+                ),
+            )
+        await self._flush_pending()
+
+    async def get_momentum_paper_pending(self) -> list[dict[str, Any]]:
+        """아직 성과 미평가된 모의 픽 목록."""
+        return await self._execute_read(
+            """SELECT id, pick_date, ticker, entry_price
+               FROM momentum_paper
+               WHERE evaluated_at IS NULL AND entry_price IS NOT NULL
+               ORDER BY pick_date ASC""",
+        )
+
+    async def update_momentum_paper_result(
+        self, pick_id: int, exit_price: float, period_return: float
+    ) -> None:
+        """모의 픽의 청산가/기간수익률을 기록한다."""
+        await self._execute_batched(
+            """UPDATE momentum_paper
+                  SET exit_price = ?, period_return = ?, evaluated_at = CURRENT_TIMESTAMP
+                WHERE id = ?""",
+            (exit_price, period_return, pick_id),
+        )
+        await self._flush_pending()
+
+    async def get_momentum_paper_stats(self) -> dict[str, Any]:
+        """모의 추적 누적 성과(평가 완료분 기준)."""
+        rows = await self._execute_read(
+            """SELECT period_return FROM momentum_paper
+               WHERE evaluated_at IS NOT NULL AND period_return IS NOT NULL"""
+        )
+        rets = [float(r["period_return"]) for r in rows]
+        total_rows = await self._execute_read("SELECT COUNT(*) AS n FROM momentum_paper")
+        n_total = int(total_rows[0]["n"]) if total_rows else 0
+
+        if not rets:
+            return {
+                "evaluated": 0, "pending": n_total, "win_rate": 0.0,
+                "avg_return": 0.0, "median_return": 0.0, "best": 0.0, "worst": 0.0,
+            }
+
+        ordered = sorted(rets)
+        mid = len(ordered) // 2
+        median = (
+            ordered[mid]
+            if len(ordered) % 2
+            else (ordered[mid - 1] + ordered[mid]) / 2.0
+        )
+        return {
+            "evaluated": len(rets),
+            "pending": max(0, n_total - len(rets)),
+            "win_rate": sum(1 for r in rets if r > 0) / len(rets),
+            "avg_return": sum(rets) / len(rets),
+            "median_return": median,
+            "best": max(rets),
+            "worst": min(rets),
+        }
 
     async def save_decision(self, analysis: dict[str, Any]) -> None:
         inject_trace_id(analysis, key="trace_id")

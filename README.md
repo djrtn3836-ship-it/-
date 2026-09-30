@@ -72,8 +72,12 @@ python -m validation.backtest_sweep --limit 190 --start 2021-10-01 --end 2026-09
 python -m validation.momentum_backtest --limit 190 --start 2021-10-01 --end 2026-09-30 --sweep
 python -m validation.momentum_backtest --limit 190 --start 2021-10-01 --end 2026-09-30 --oos-split 2024-09-30
 
-# 모멘텀 관찰 리포트 (매매 아님) — 매 영업일 08:30 스케줄러 등록됨
+# 모멘텀 참고 신호 + 모의 추적 — 매 영업일 08:30 스케줄러 등록됨 (주문/포지션 없음)
 python -m scheduler.momentum_report
+
+# 생존편향 스트레스 (상폐율 0/2/5/10% × 상폐 시 -60% 가정)
+python -m validation.momentum_backtest --limit 190 --start 2021-10-01 --end 2026-09-30 \
+    --lookback 120 --top-k 20 --hold 20 --cost 0.003 --stress
 ```
 
 ### 검증
@@ -130,8 +134,9 @@ scanner/ analytics/ risk/ report/ core/ data/ (기존 공존 — Strangler Fig �
 
 - **백테스트 전략 앙상블(Trend/Reversal/Breakout)은 롤링 OOS에서 견고한 엣지가 없습니다.**
   (IS Sharpe +2.16 → OOS −0.19, 2개 분할 붕괴) → **프로덕션 파라미터 변경 보류**
-- **횡단면 모멘텀은 OOS·거래비용 반영 후에도 플러스**였으나,
-  유니버스가 현재 상장 종목 기준이라 **생존편향**이 있습니다 → 관찰용으로만 사용
+- **횡단면 모멘텀은 OOS·거래비용·생존편향 스트레스(상폐율 10%)에서도 플러스**였으나,
+  OOS 2년이 강세장이라 베타 기여분이 분리되지 않았습니다
+  → **참고 신호(모의)로만 운영**: 주문/포지션 없이 픽을 기록하고 20거래일 뒤 성과를 자동 확정
 - 해외거래소/옵션/선물 미지원, 실계좌 연동 없음(Paper Mode only)
 
 ---
