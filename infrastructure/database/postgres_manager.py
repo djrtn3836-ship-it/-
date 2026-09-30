@@ -463,7 +463,29 @@ postgres_manager = PostgresManager()
 
 
 def get_active_db_manager() -> Any:
+    """활성 DB 매니저를 반환한다.
+
+    DB_TYPE(선택, 과거 '죽은 플래그'였음)을 실제로 존중한다:
+        "sqlite"                → 강제 SQLite
+        "postgres"/"postgresql" → DATABASE_URL 필요, 없으면 SQLite 폴백(경고)
+        미설정/기타              → DATABASE_URL 있으면 PostgreSQL, 없으면 SQLite
+    """
+    db_type = (os.getenv("DB_TYPE", "") or "").strip().lower()
+
+    if db_type == "sqlite":
+        from data.db_manager import DatabaseManager
+
+        logger.info("DB_TYPE=sqlite → SQLite 사용(강제)")
+        return DatabaseManager()
+
+    if db_type in ("postgres", "postgresql"):
+        if POSTGRES_ENABLED:
+            return postgres_manager
+        logger.warning("DB_TYPE=postgres 이지만 DATABASE_URL 미설정/asyncpg 미설치 → SQLite 폴백")
+
     if POSTGRES_ENABLED:
         return postgres_manager
+
     from data.db_manager import DatabaseManager
+
     return DatabaseManager()

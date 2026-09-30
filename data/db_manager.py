@@ -17,6 +17,7 @@ v7.0.0 → v7.0.1 변경 사항:
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,9 @@ from core.logger import setup_logger
 from observability.trace_propagation import inject_trace_id
 
 logger = setup_logger("db_manager")
-DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
+_DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "decisions.db"
+# SQLITE_DB_PATH 환경변수를 실제로 존중한다(과거 '죽은 플래그'였음)
+DB_PATH = Path(os.getenv("SQLITE_DB_PATH")) if os.getenv("SQLITE_DB_PATH") else _DEFAULT_DB_PATH
 
 MAX_CONNECTIONS = 5
 CONNECTION_TIMEOUT = 10
