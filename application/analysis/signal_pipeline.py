@@ -164,6 +164,7 @@ class SignalPipeline(TracedService):
         atr_service: Optional[AtrService] = None,
         realtime_price_provider: Optional[Callable[[str], float]] = None,
         strategies: Optional[List[Strategy]] = None,
+        ops_monitor: Any = None,
     ) -> None:
         """SignalPipeline 초기화.
 
@@ -172,9 +173,11 @@ class SignalPipeline(TracedService):
             atr_service: ATR 서비스 (None이면 자동 생성)
             realtime_price_provider: 실시간 가격 콜백 (선택적)
             strategies: 사용자 정의 전략 목록 (None이면 기본값 사용)
+            ops_monitor: 관측 파사드(OpsMonitor). 주입 시 신호 이상탐지가 활성화된다.
         """
         self.db_manager = db_manager
         self._realtime_price_provider = realtime_price_provider
+        self._ops_monitor = ops_monitor
 
         # ─── 레거시 필터 (점진적 교체 예정) ──────────────────────
         self.macro_filter = MacroFilter()
@@ -408,6 +411,7 @@ class SignalPipeline(TracedService):
         price: float = float(data.get("price", 0))
         trace_id: str = data.get("trace_id", f"PIPE-{ticker}-{int(time.time()*1000)}")
         regime: str = data.get("regime", "Sideways")
+        _t0 = time.perf_counter()
 
         if price <= 0:
             return Signal.error(ticker, "Invalid price", trace_id)
@@ -460,7 +464,31 @@ class SignalPipeline(TracedService):
             f"score={final_score:.3f} sqi_v1={ensemble.sqi:.3f} "
             f"sqi_v2={ensemble.sqi_v2:.3f} consensus={ensemble.consensus:.2f}"
         )
+        self._observe_signal(ticker, final_score, confidence, effective_sqi, _t0)
         return signal
+
+    def _observe_signal(
+        self,
+        ticker: str,
+        score: float,
+        confidence: float,
+        sqi: float,
+        started_at: float,
+    ) -> None:
+        """관측 파사드로 신호 1건을 전달한다(미주입/실패 시 무시)."""
+        if self._ops_monitor is None:
+            return
+        try:
+            latency_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+            self._ops_monitor.record_signal(
+                score=float(score),
+                confidence=float(confidence),
+                latency_ms=float(latency_ms),
+                sqi=float(sqi),
+                ticker=ticker,
+            )
+        except Exception as e:
+            logger.debug(f"ops_monitor.record_signal 무시: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     #  Private: 레거시 필터 스코어

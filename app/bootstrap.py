@@ -95,6 +95,7 @@ from report.telegram_sender import TelegramSender
 from report.telegram_commands import TelegramCommandHandler
 from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
+from observability.ops_monitor import OpsMonitor
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -140,6 +141,7 @@ class Bootstrapper(TracedService):
         self.safety_guard: Optional[SafetyGuard] = None
         self.analyzer: Optional[DeepAnalyzer] = None
         self.signal_pipeline: Optional[SignalPipeline] = None
+        self.ops_monitor: Optional[OpsMonitor] = None
         self.bandit: Optional[StrategyBandit] = None
         self.bandit_bridge: Optional[BanditFeedbackBridge] = None
         self.ab_manager: Optional[ABTestManager] = None
@@ -325,6 +327,17 @@ class Bootstrapper(TracedService):
         logger.info("WebSocket ready")
         debug_tower.log("SYSTEM", "WS_READY_OK", {})
 
+    async def _send_ops_alert(self, message: str) -> None:
+        """OpsMonitor 이상 알림을 텔레그램으로 전송한다(안전모드는 sender가 차단)."""
+        try:
+            await TelegramSender().send_raw(message)
+        except Exception as e:
+            logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
+
+    def get_ops_snapshot(self) -> Optional[dict]:
+        """관측 상태 스냅샷(헬스/명령어 응답용)."""
+        return self.ops_monitor.snapshot() if self.ops_monitor else None
+
     def _get_realtime_price(self, ticker: str) -> float:
         if self.monitor is None:
             return 0.0
@@ -395,11 +408,17 @@ class Bootstrapper(TracedService):
         self.analyzer = DeepAnalyzer(db_manager=self.db, feedback_learner=learner)
         await self.analyzer.load_weights()
 
+        # ── P3-1: 관측성 체인 배선 (이상탐지 → 드리프트 → 근본원인 → 알림) ──
+        self.ops_monitor = OpsMonitor(on_alert=self._send_ops_alert)
+
         self.signal_pipeline = SignalPipeline(
             db_manager=self.db,
             realtime_price_provider=self._get_realtime_price,
+            ops_monitor=self.ops_monitor,
         )
         logger.info("DeepAnalyzer + SignalPipeline(V10) initialized")
+        if self.ops_monitor is not None:
+            logger.info("OpsMonitor 배선 완료 (이상탐지 → 근본원인 → 텔레그램)")
         logger.info(
             "PortfolioManager singleton confirmed — already started via container.initialize()"
         )

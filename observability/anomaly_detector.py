@@ -125,14 +125,24 @@ class _IsolationTree:
             self._is_leaf = True
             return
 
-        # 무작위 특징 선택
-        feat = self._rng.randint(0, n_features - 1)
-        vals = [row[feat] for row in data]
-        min_val, max_val = min(vals), max(vals)
+        # 무작위 특징 선택.
+        # 선택한 특징이 상수(min==max)면 다른 특징으로 폴백한다.
+        # (폴백 없이는 트리가 뿌리에서 리프가 되어 모든 점이 0.5로 판정 → 탐지 불가)
+        candidate_feats = list(range(n_features))
+        self._rng.shuffle(candidate_feats)
+        feat: Optional[int] = None
+        for cand in candidate_feats:
+            cand_vals = [row[cand] for row in data]
+            if min(cand_vals) != max(cand_vals):
+                feat = cand
+                break
 
-        if min_val == max_val:
+        if feat is None:
             self._is_leaf = True
             return
+
+        vals = [row[feat] for row in data]
+        min_val, max_val = min(vals), max(vals)
 
         split = self._rng.uniform(min_val, max_val)
         self._split_feature = feat

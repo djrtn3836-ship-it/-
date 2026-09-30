@@ -77,9 +77,21 @@ AB Framework → OrderExecutor(Paper) → Telegram 명령어 → Scheduler → W
 - 🎯 **횡단면 모멘텀은 유효**: 고정 파라미터(lb=120/k=20/hold=20)가 **4/4 연도구간 플러스**,
   거래비용 0.3% 반영 후 5년 Sharpe +0.98 → **관찰 리포트로 배선**(`scheduler/momentum_report.py`, 평일 08:30)
   - ⚠️ 유니버스가 현재 상장 종목 기준 → **생존편향** 존재 (실거래 신호로 쓰지 말 것)
-- 🟠 B등급 고아 모듈(테스트 보유, 미배선): `orchestrator/event_bus·feature_store·pipeline_manager`,
-  `observability/anomaly_detector·explainer_v2·model_drift_detector·root_cause_analyzer·trace_propagation`
-  → 배선(활성화) vs 보관 결정 필요
+### ✅ P3-1 고아 모듈 결정 (2026-10-01 완료)
+| 모듈 | 결정 | 근거 |
+| :--- | :--- | :--- |
+| `observability/anomaly_detector.py` | ✅ **배선** | `OpsMonitor` 통해 `SignalPipeline.process()` 실시간 관측 |
+| `observability/model_drift_detector.py` | ✅ **배선** | `OpsMonitor.record_outcome()` (결과 피드는 Phase 2) |
+| `observability/root_cause_analyzer.py` | ✅ **배선** | 이상/드리프트 → RCA → 텔레그램(30분 쿨다운) |
+| `observability/explainer_v2.py` | 🟡 보관(예약) | 모델+피처 계약 필요 → DeepAnalyzer ML 설명 계층에서 후속 |
+| `observability/trace_propagation.py` | ✅ 이미 배선 | `data/db_manager.py`, `report/telegram_sender.py` (문서 표기 오류 정정) |
+| `orchestrator/event_bus.py` | 🟡 보관 | `scripts/dev/simulate_flow.py` 개발도구 전용 |
+| `orchestrator/feature_store.py` | 🟡 보관(예약) | `DailyMonitor`(자체 미배선) 전용 → 리포트 계층 후속 |
+| `orchestrator/pipeline_manager.py` | 🟡 보관 | 레거시 진입점 `main.py`(롤백용) 전용 |
+| `risk/circuit_breaker.py` | 🔴 **미배선(신규 발견)** | `CircuitBreakerManager` 프로덕션 참조 0건. `OpsMonitor`에 `cb_provider` 훅 준비됨 → 주문 실행 계층 배선 필요 |
+
+**배선 신설**: `observability/ops_monitor.py` — 이상탐지 → 근본원인 → 스로틀 알림 파사드.
+부수 수정: `_IsolationTree.fit`이 상수 특징에서 뿌리 리프가 되어 **모든 점을 0.5로 판정하던 버그** 수정(특징 폴백).
 - 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
 - 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
 
