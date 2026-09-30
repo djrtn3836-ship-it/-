@@ -137,6 +137,68 @@ def rolling_low(values: Sequence[float], period: int) -> List[Optional[float]]:
     return out
 
 
+def atr(
+    highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int = 14
+) -> List[Optional[float]]:
+    """Wilder ATR (Average True Range). 워밍업 구간은 None."""
+    n = len(closes)
+    if n == 0 or period <= 0:
+        return [None] * n
+
+    trs: List[Optional[float]] = [None] * n
+    for i in range(n):
+        if i == 0:
+            trs[i] = highs[i] - lows[i]
+            continue
+        trs[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+
+    out: List[Optional[float]] = [None] * n
+    if n < period:
+        return out
+    prev = sum(float(trs[i] or 0.0) for i in range(period)) / period
+    out[period - 1] = prev
+    for i in range(period, n):
+        prev = (prev * (period - 1) + float(trs[i] or 0.0)) / period
+        out[i] = prev
+    return out
+
+
+def compute_filters(bars: Sequence[Dict[str, Any]]) -> Dict[str, List[bool]]:
+    """진입 필터 마스크들을 계산한다 (전부 후방 참조).
+
+    - "none"      : 필터 없음(전부 True)
+    - "ma200"     : 종가 > SMA200 (장기 상승 추세에서만 진입)
+    - "atr_calm"  : ATR% ≤ 6% (과변동 구간 회피)
+    - "ma200_atr" : 위 두 조건 동시
+    """
+    n = len(bars)
+    closes = [float(b.get("close", 0.0) or 0.0) for b in bars]
+    highs = [float(b.get("high", 0.0) or 0.0) for b in bars]
+    lows = [float(b.get("low", 0.0) or 0.0) for b in bars]
+
+    ma200 = sma(closes, 200)
+    atr14 = atr(highs, lows, closes, 14)
+
+    none_mask = [True] * n
+    ma_mask: List[bool] = []
+    calm_mask: List[bool] = []
+    for i in range(n):
+        ma = ma200[i]
+        ma_mask.append(bool(ma is not None and closes[i] > ma))
+        a = atr14[i]
+        calm_mask.append(bool(a is not None and closes[i] > 0 and (a / closes[i]) <= 0.06))
+
+    both = [m and c for m, c in zip(ma_mask, calm_mask)]
+    return {"none": none_mask, "ma200": ma_mask, "atr_calm": calm_mask, "ma200_atr": both}
+
+
+FILTER_NAMES: Sequence[str] = ("none", "ma200", "atr_calm", "ma200_atr")
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  지표 세트 생성
 # ═══════════════════════════════════════════════════════════════════

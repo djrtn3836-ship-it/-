@@ -39,12 +39,13 @@ logger = setup_logger("backtest_sweep")
 
 @dataclass
 class TickerSeries:
-    """종목 1개의 봉 + 캐시된 앙상블 net score."""
+    """종목 1개의 봉 + 캐시된 앙상블 net score + 진입 필터."""
 
     ticker: str
     bars: List[Dict[str, Any]]
     net_scores: List[Optional[float]]
     date_to_idx: Dict[str, int] = field(default_factory=dict)
+    filters: Dict[str, List[bool]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.date_to_idx:
@@ -53,6 +54,16 @@ class TickerSeries:
     @property
     def dates(self) -> List[str]:
         return [str(b.get("date", "")) for b in self.bars]
+
+    def get_filter(self, name: str) -> List[bool]:
+        """진입 필터 마스크(최초 1회 계산 후 캐시)."""
+        if name == "none":
+            return [True] * len(self.bars)
+        if not self.filters:
+            from validation.strategy_backtest import compute_filters
+
+            self.filters = compute_filters(self.bars)
+        return self.filters.get(name, [True] * len(self.bars))
 
 
 @dataclass
@@ -96,11 +107,13 @@ class SweepRow:
     threshold: float
     sim: SimConfig
     metrics: BatchMetrics
+    filter_name: str = "none"
 
     def label(self) -> str:
         return (
             f"thr={self.threshold:.2f} hold={self.sim.hold_days}d "
-            f"stop={self.sim.stop_loss_pct:.0%} tp={self.sim.take_profit_pct:.0%}"
+            f"stop={self.sim.stop_loss_pct:.0%} tp={self.sim.take_profit_pct:.0%} "
+            f"filter={self.filter_name}"
         )
 
 
@@ -159,9 +172,11 @@ def _evaluate_ticker(
     sim_config: SimConfig,
     train_ratio: float = 0.7,
     min_periods: int = 30,
+    filter_name: str = "none",
 ) -> Optional[AggregatedResult]:
-    """단일 종목을 주어진 파라미터로 Walk-Forward 평가한다."""
+    """단일 종목을 주어진 파라미터(+진입 필터)로 Walk-Forward 평가한다."""
     actions = scores_to_actions(ts.net_scores, threshold)
+    mask = ts.get_filter(filter_name)
     dates = ts.dates
     date_to_idx = ts.date_to_idx
 
@@ -173,7 +188,9 @@ def _evaluate_ticker(
         if first is None or last is None:
             return []
         window = ts.bars[first : last + 1]
-        local_entries = _edge_indices(actions[first : last + 1], offset=0)
+        local_entries = [
+            i for i in _edge_indices(actions[first : last + 1], offset=0) if mask[first + i]
+        ]
         return simulate_entries(window, local_entries, sim_config, ticker=ts.ticker)
 
     engine = WalkForwardEngine(train_ratio=train_ratio, min_periods=min_periods)
@@ -189,6 +206,7 @@ def evaluate_combo(
     sim_config: SimConfig,
     train_ratio: float = 0.7,
     min_periods: int = 30,
+    filter_name: str = "none",
 ) -> BatchMetrics:
     """파라미터 조합 1개를 전체 종목에 적용해 집계 지표를 산출한다."""
     sharpes: List[float] = []
@@ -198,7 +216,7 @@ def evaluate_combo(
     evaluated = 0
 
     for ts in series_list:
-        agg = _evaluate_ticker(ts, threshold, sim_config, train_ratio, min_periods)
+        agg = _evaluate_ticker(ts, threshold, sim_config, train_ratio, min_periods, filter_name)
         if agg is None or not agg.fold_results:
             continue
         evaluated += 1
@@ -227,6 +245,7 @@ def run_sweep(
     sim_configs: Sequence[SimConfig],
     train_ratio: float = 0.7,
     min_periods: int = 30,
+    filter_names: Sequence[str] = ("none",),
 ) -> List[SweepRow]:
     """격자 탐색 후 **중앙 Sharpe** 내림차순(외란에 강건)으로 정렬된 결과를 반환.
 
@@ -234,10 +253,15 @@ def run_sweep(
     크게 흔들리므로, 순위는 중앙값을 1순위로 삼고 평균·거래 수를 보조로 쓴다.
     """
     rows: List[SweepRow] = []
-    for threshold in thresholds:
-        for sim in sim_configs:
-            metrics = evaluate_combo(series_list, threshold, sim, train_ratio, min_periods)
-            rows.append(SweepRow(threshold=threshold, sim=sim, metrics=metrics))
+    for filter_name in filter_names:
+        for threshold in thresholds:
+            for sim in sim_configs:
+                metrics = evaluate_combo(
+                    series_list, threshold, sim, train_ratio, min_periods, filter_name
+                )
+                rows.append(
+                    SweepRow(threshold=threshold, sim=sim, metrics=metrics, filter_name=filter_name)
+                )
     rows.sort(
         key=lambda r: (r.metrics.median_sharpe, r.metrics.mean_sharpe, r.metrics.total_trades),
         reverse=True,
@@ -271,7 +295,13 @@ def slice_series(
             scores.append(score)
     if len(bars) < min_bars:
         return None
-    return TickerSeries(ticker=ts.ticker, bars=bars, net_scores=scores)
+    sliced = TickerSeries(ticker=ts.ticker, bars=bars, net_scores=scores)
+    if ts.filters:
+        sliced.filters = {
+            name: [m for m, keep in zip(mask, (start_date <= str(b.get("date", "")) <= end_date for b in ts.bars)) if keep]
+            for name, mask in ts.filters.items()
+        }
+    return sliced
 
 
 def run_oos_check(
@@ -303,6 +333,94 @@ def run_oos_check(
             OOSRow(threshold=row.threshold, sim=row.sim, is_metrics=row.metrics, oos_metrics=oos_metrics)
         )
     return oos_rows
+
+
+@dataclass
+class RollingOOSResult:
+    """롤링 OOS 한 구간의 결과(IS 튜닝 → OOS 검증 + 기준선 비교)."""
+
+    split_index: int
+    is_start: str
+    is_end: str
+    oos_start: str
+    oos_end: str
+    tuned_oos: BatchMetrics          # IS 1위 파라미터의 OOS 성과
+    baseline_oos: BatchMetrics       # 기본 파라미터의 OOS 성과
+    tuned_is: BatchMetrics
+    baseline_is: BatchMetrics
+    best_label: str
+
+    def degraded(self) -> bool:
+        """튜닝이 OOS에서 기준선보다 나쁜가(= 과최적화 신호)."""
+        return self.tuned_oos.median_sharpe < self.baseline_oos.median_sharpe
+
+
+def run_rolling_oos(
+    all_series: Sequence[TickerSeries],
+    n_splits: int = 3,
+    thresholds: Sequence[float] = DEFAULT_THRESHOLDS,
+    sim_configs: Sequence[SimConfig] = DEFAULT_SIM_CONFIGS,
+    baseline_threshold: float = 0.25,
+    baseline_sim: Optional[SimConfig] = None,
+    train_ratio: float = 0.7,
+    min_periods: int = 30,
+    min_bars: int = 90,
+    filter_names: Sequence[str] = ("none",),
+) -> List[RollingOOSResult]:
+    """확장(anchored) IS → 다음 구간 OOS 를 여러 번 반복 검증한다.
+
+    OOS를 한 번만 보면 그 구간의 우연에 좌우되므로, 전체 기간을 n_splits+1로
+    나눠 각 구간을 OOS로 쓰는 롤링 검증을 수행한다.
+    """
+    baseline_sim = baseline_sim or SimConfig()
+    all_dates = sorted({str(b.get("date", "")) for ts in all_series for b in ts.bars})
+    total = len(all_dates)
+    if total < (n_splits + 1) * 40:
+        logger.warning(f"롤링 OOS 불가: 날짜 {total}개 (n_splits={n_splits})")
+        return []
+
+    seg = total // (n_splits + 1)
+    results: List[RollingOOSResult] = []
+
+    for k in range(1, n_splits + 1):
+        is_end = all_dates[seg * k - 1]
+        oos_start = all_dates[seg * k]
+        oos_end = all_dates[min(seg * (k + 1) - 1, total - 1)]
+        if oos_end <= oos_start:
+            continue
+
+        is_series = [s for s in (slice_series(ts, all_dates[0], is_end, min_bars) for ts in all_series) if s]
+        oos_series = [s for s in (slice_series(ts, oos_start, oos_end, min_bars) for ts in all_series) if s]
+        if not is_series or not oos_series:
+            logger.warning(f"split {k}: 시리즈 부족 (IS {len(is_series)} / OOS {len(oos_series)}) — 건너뜀")
+            continue
+
+        is_rows = run_sweep(is_series, thresholds, sim_configs, train_ratio, min_periods, filter_names)
+        best = is_rows[0]
+
+        tuned_oos = evaluate_combo(
+            oos_series, best.threshold, best.sim, train_ratio, min_periods, best.filter_name
+        )
+        baseline_oos = evaluate_combo(oos_series, baseline_threshold, baseline_sim, train_ratio, min_periods)
+        results.append(
+            RollingOOSResult(
+                split_index=k,
+                is_start=all_dates[0],
+                is_end=is_end,
+                oos_start=oos_start,
+                oos_end=oos_end,
+                tuned_is=best.metrics,
+                tuned_oos=tuned_oos,
+                baseline_is=evaluate_combo(is_series, baseline_threshold, baseline_sim, train_ratio, min_periods),
+                baseline_oos=baseline_oos,
+                best_label=best.label(),
+            )
+        )
+        logger.info(
+            f"rolling OOS split {k}: IS[{all_dates[0]}~{is_end}] → OOS[{oos_start}~{oos_end}] "
+            f"튜닝 중앙 {tuned_oos.median_sharpe:+.3f} vs 기준선 {baseline_oos.median_sharpe:+.3f}"
+        )
+    return results
 
 
 def _resolve_tickers(limit: int) -> List[str]:
@@ -344,6 +462,18 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
         default="",
         help="OOS 분리 기준일 YYYY-MM-DD (지정 시 IS에서 튜닝 → OOS에서 재검증)",
     )
+    parser.add_argument(
+        "--filters",
+        type=str,
+        default="",
+        help="쉼표 구분 진입 필터 (none,ma200,atr_calm,ma200_atr)",
+    )
+    parser.add_argument(
+        "--rolling-oos",
+        type=int,
+        default=0,
+        help="롤링 OOS 분할 수 (예: 3 — 확장 IS → 다음 구간 OOS 반복 검증)",
+    )
     args = parser.parse_args(list(argv[1:]) if argv else None)
 
     tickers = (
@@ -379,7 +509,39 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             sim_configs = DEFAULT_SIM_CONFIGS
 
-        if args.oos_split:
+        filter_names = (
+            tuple(x.strip() for x in args.filters.split(",") if x.strip())
+            if args.filters
+            else ("none",)
+        )
+
+        if args.rolling_oos > 0:
+            print(f"롤링 OOS: {args.rolling_oos}개 분할 (확장 IS → 다음 구간 OOS)")
+            print(f"  필터 {len(filter_names)} × 임계값 {len(thresholds)} × 청산규칙 {len(sim_configs)} = "
+                  f"{len(filter_names) * len(thresholds) * len(sim_configs)}조합\n")
+            rolling = run_rolling_oos(
+                series_list,
+                n_splits=args.rolling_oos,
+                thresholds=thresholds,
+                sim_configs=sim_configs,
+                filter_names=filter_names,
+            )
+            if not rolling:
+                print("롤링 OOS를 수행할 데이터가 부족합니다.")
+            else:
+                print(f"{'#':<3} {'IS 기간':<26} {'OOS 기간':<26} {'튜닝 OOS':>10} {'기준선 OOS':>11} {'과최적화':>9}")
+                for r in rolling:
+                    print(
+                        f"{r.split_index:<3} {r.is_end:<26} {r.oos_end:<26} "
+                        f"{r.tuned_oos.median_sharpe:>+10.3f} {r.baseline_oos.median_sharpe:>+11.3f} "
+                        f"{'⚠️ 예' if r.degraded() else '아니오':>9}"
+                    )
+                deg = sum(1 for r in rolling if r.degraded())
+                print(f"\n과최적화 판정: {deg}/{len(rolling)} 구간에서 튜닝이 기준선보다 나쁨")
+                if rolling:
+                    print(f"  튜닝 OOS 중앙 Sharpe 평균: {statistics.fmean(r.tuned_oos.median_sharpe for r in rolling):+.3f}")
+                    print(f"  기준선 OOS 중앙 Sharpe 평균: {statistics.fmean(r.baseline_oos.median_sharpe for r in rolling):+.3f}")
+        elif args.oos_split:
             from datetime import date as _date, timedelta as _timedelta
 
             split = args.oos_split
@@ -414,9 +576,9 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"기준 파라미터(thr=0.25, hold=5d, stop=5%, tp=10%)")
             print(f"  {metrics.summary()}")
         else:
-            print(f"스윕 조합: 임계값 {len(thresholds)} × 청산규칙 {len(sim_configs)} "
-                  f"= {len(thresholds) * len(sim_configs)}개")
-            rows = run_sweep(series_list, thresholds, sim_configs)
+            print(f"스윕 조합: 필터 {len(filter_names)} × 임계값 {len(thresholds)} × "
+                  f"청산규칙 {len(sim_configs)} = {len(filter_names)*len(thresholds)*len(sim_configs)}개")
+            rows = run_sweep(series_list, thresholds, sim_configs, filter_names=filter_names)
             print(f"\n{'순위':<4} {'파라미터':<34} 지표")
             for rank, row in enumerate(rows[: args.top], 1):
                 print(f"{rank:<4} {row.label():<34} {row.metrics.summary()}")

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [genspark_ai_developer, main]
+  pull_request:
+    branches: [genspark_ai_developer, main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-asyncio
+
+      - name: Verify encoding (UTF-8, no BOM) and syntax
+        run: |
+          python - <<'PY'
+          import ast, os, sys
+          bad, bom, n = [], 0, 0
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("venv", "__pycache__", ".git", "fonts", "_archive", "logs", "reports")]
+              for fn in files:
+                  if not fn.endswith(".py"):
+                      continue
+                  p = os.path.join(root, fn)
+                  n += 1
+                  raw = open(p, "rb").read()
+                  if raw.startswith(b"\xef\xbb\xbf"):
+                      bom += 1
+                  try:
+                      ast.parse(raw.decode("utf-8"))
+                  except SyntaxError as e:
+                      bad.append((p, e.lineno, e.msg))
+          print(f"py={n} BOM={bom} syntax_errors={len(bad)}")
+          for b in bad:
+              print(" ", b)
+          sys.exit(1 if bad or bom else 0)
+          PY
+
+      - name: Run tests
+        run: python tests/run_all.py

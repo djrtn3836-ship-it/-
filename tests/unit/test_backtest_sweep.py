@@ -24,6 +24,7 @@ from validation.backtest_sweep import (
     evaluate_combo,
     prepare_series,
     run_oos_check,
+    run_rolling_oos,
     run_sweep,
     slice_series,
 )
@@ -165,6 +166,28 @@ class TestRunOOSCheck:
         assert rows[0].median_drop() == pytest.approx(
             rows[0].oos_metrics.median_sharpe - rows[0].is_metrics.median_sharpe
         )
+
+
+class TestRunRollingOOS:
+    def test_multiple_splits(self) -> None:
+        series = [_series("005930", n=600), _series("000660", n=600)]
+        results = run_rolling_oos(
+            series,
+            n_splits=2,
+            thresholds=(0.20, 0.35),
+            sim_configs=(SimConfig(hold_days=5),),
+        )
+        assert len(results) == 2
+        for r in results:
+            assert r.tuned_oos.evaluated >= 1
+            assert r.baseline_oos.evaluated >= 1
+            assert isinstance(r.degraded(), bool)
+            assert r.is_start < r.is_end < r.oos_start < r.oos_end
+        assert results[0].split_index == 1
+
+    def test_insufficient_data_returns_empty(self) -> None:
+        series = [_series("005930", n=100)]
+        assert run_rolling_oos(series, n_splits=3) == []
 
 
 class TestPrepareSeries:

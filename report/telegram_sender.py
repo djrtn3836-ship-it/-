@@ -23,9 +23,11 @@ v7.4.0 (기존 유지):
 
 import asyncio
 import html
+import json
 import unicodedata
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -38,6 +40,9 @@ from core.runtime_mode import get_runtime_mode
 from observability.trace_propagation import format_trace_footer
 
 logger = setup_logger("telegram")
+
+# 발송 감사 로그(JSONL) — alert_verifier가 DB 결정과 대조하는 근거
+AUDIT_PATH = Path(__file__).parent.parent / "logs" / "alerts_audit.jsonl"
 
 
 class TelegramSender:
@@ -84,6 +89,7 @@ class TelegramSender:
 
             result = await self.send_raw(message + format_trace_footer(report.get("trace_id")))
             if result:
+                self._write_audit(report)
                 debug_tower.log(ticker, "TELEGRAM_SEND_SUCCESS", {"action": action})
             else:
                 debug_tower.log(ticker, "TELEGRAM_SEND_FAIL", {"action": action})
@@ -92,6 +98,27 @@ class TelegramSender:
             logger.error(f"❌ Telegram 전송 오류: {e}")
             debug_tower.capture_snapshot(ticker, e, f"TELEGRAM_{action}")
             return False
+
+    def _write_audit(self, report: Dict[str, Any]) -> None:
+        """전송 성공한 알림을 감사 로그(JSONL)에 1줄 기록한다.
+
+        `analytics/alert_verifier`가 DB 결정과 실제 발송을 대조할 수 있게 하는
+        유일한 신뢰 가능한 근거다(`logs/alerts_audit.jsonl`).
+        """
+        try:
+            now = datetime.now()
+            record = {
+                "ts": now.isoformat(timespec="seconds"),
+                "date": now.strftime("%Y-%m-%d"),
+                "kind": str(report.get("action", "")),
+                "ticker": str(report.get("ticker", "")),
+                "trace_id": report.get("trace_id"),
+            }
+            AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(AUDIT_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug(f"감사 로그 기록 실패(무시): {e}")
 
     # ============================================================
     # 🔥 P1-5: 청크 간 sleep 추가

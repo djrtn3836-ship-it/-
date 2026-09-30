@@ -271,6 +271,84 @@
   2. 신호 규칙 자체(앙상블 임계값/청산) 튜닝보다 **전략 로직 개선**이 우선일 수 있음
   3. 반영하더라도 **관찰 모드(알림 전용)** 로 제한하고 실거래 파라미터로 쓰지 않기
 
+### 🔬 P2-10 전략 고도화 조사 — 5년 데이터 · 롤링 OOS · 진입 필터 (2026-09-30)
+- **데이터 확대**: 5년 OHLCV 백필 **230,297행**(190종목, 2021-09-30~2026-09-30)
+- **도구 추가**:
+  - `run_rolling_oos()` — 확장(anchored) IS → 다음 구간 OOS를 3회 반복 검증(단일 분할의 우연 제거)
+  - 진입 필터 4종 (`compute_filters`): `none` / `ma200`(종가>SMA200) / `atr_calm`(ATR%≤6%) / `ma200_atr`
+  - `SweepRow`·`evaluate_combo`·`run_sweep`에 `filter_name` 반영, TickerSeries에 필터 캐시
+  - CLI: `--rolling-oos N`, `--filters`
+- **실험 1** (필터 3 × 임계값 3 × 청산 12 = 108조합, 3분할, 20.4초)
+  | # | IS 끝 | OOS 끝 | 튜닝 OOS 중앙 | 기준선 OOS 중앙 | 과최적화 |
+  |---|---|---|---|---|---|
+  | 1 | 2022-12-27 | 2024-03-26 | +0.000 | **+0.915** | ⚠️ 예 |
+  | 2 | 2024-03-26 | 2025-07-01 | +2.996 | +2.314 | 아니오 |
+  | 3 | 2025-07-01 | 2026-09-30 | -1.895 | -1.323 | ⚠️ 예 |
+  - 튜닝 OOS 평균 **+0.367** < 기준선 OOS 평균 **+0.636** → **튜닝이 오히려 해로움(2/3 구간 과최적화)**
+- **실험 2** (장기 보유 20/40/60일 가설, 3분할, 11.6초)
+  - 튜닝 OOS 평균 **+0.861** > 기준선 +0.636 → **개선은 있음**
+  - 그러나 **분할별 중앙값은 여전히 2/3에서 기준선 열위**, split2(강세장) +4.235에 편중 → 표본 편향
+- 🔴 **결론: 현 신호 앙상블에는 견고한 OOS 엣지가 없다.** 임계값·필터·보유기간 튜닝으로 해결되지 않으므로 **프로덕션 파라미터를 변경하지 않는다.**
+- 다음 방향(미착수): ① 횡단면 모멘텀(유니버스 상대강도 랭킹) ② 시장지수(KOSPI) 레짐 필터 ③ 팩터 기반 전략 재설계
+
+### ✅ P2-1 알림 누락 검증기 실측 — 결함 수정 (2026-09-30)
+- 🔴 **발견**: `analytics/alert_verifier.py` v1.0은 `logs/telegram.log`에서 문자열 `"SIGNAL_ENTRY"`를 세는 방식이었는데,
+  **코드/로그 어디에도 그 문자열이 기록되지 않아(전 로그 0건)** 항상 `0 vs 0` → **"✅ 모든 신호 전송됨"이라는 거짓 보고**를 생성
+  (누락 종목 목록도 전체 신호를 나열하는 버그)
+- ✅ **수정 v2.0**:
+  1. `TelegramSender.send()` 성공 시 `logs/alerts_audit.jsonl`에 감사 레코드(kind/ticker/trace_id/date) **1줄 기록**
+  2. 검증기는 DB 당일 결정과 **감사 로그를 실제 대조**(`compare_decisions_and_alerts`)
+  3. **감사 로그가 없으면 "검증 불가"를 정직하게 보고**(거짓 OK 금지), 누락 종목/일치율 산출
+  4. 모듈 임포트 시 싱글턴 생성 제거(부작용 제거)
+- 검증: 신규 테스트 `tests/unit/test_alert_verifier.py` **7개** + 감사 기록 실동작 확인(`_write_audit` JSONL) → 전체 **1228 passed**
+
+### ✅ P4-1 통합 테스트 실행기 + CI (2026-09-30)
+- 신규 `tests/run_all.py` — 단일 명령 실행기(`--unit`/`--all`/`--quick`), 수집 오류 시 원인 노출, 종료코드 규약
+- 신규 `.github/workflows/ci.yml` — push/PR 시 (1) BOM·구문 검사, (2) `python tests/run_all.py`
+- 검증: `python tests/run_all.py` → 1235 passed, `--unit` → 1231 passed
+
+### ✅ P1-4 동적 유니버스 파이프라인 도입 (2026-09-30)
+- 문제: `data/krx_universe.csv`가 없어 매 부팅 하드코딩 238종목으로 폴백(+CRITICAL 경고), 신규상장/시총변동 미반영
+- 신규 `scheduler/universe_fetcher.py` — 네이버 금융 **모바일 JSON API** 수집기
+  - `finance.naver.com`은 SPA 전환으로 HTML 파싱 불가(실측 확인) → `m.stock.naver.com/api/stocks/marketValue/{KOSPI|KOSDAQ}` 사용
+  - ETF/ETN 제외(`stockEndType=='stock'`), 6자리 코드 검증, 페이지 종료는 **필터 전 원시 개수** 기준
+  - CLI: `python -m scheduler.universe_fetcher --pages 3 --out data/krx_universe.csv`
+- 🔴 **함께 발견·수정한 버그 2건**
+  1. **provider가 CSV의 종목코드를 int로 추론해 선행 0 소실**(005930→5930) → 유효 종목이 515→226으로 축소 → `pd.read_csv(..., dtype=str)` 로 수정
+  2. CSV가 시장별 정렬이라 구독 한도(195)에서 KOSPI 편중 → `_interleave_markets()` 라운드로빈 교차 정렬 추가
+- **결과**: 실데이터 **515종목**(KOSPI 217/KOSDAQ 298) 수집, provider `source=csv`(폴백 경고 해소)
+  - 상위 195종목 시장 구성: **KOSPI 98 / KOSDAQ 97** (기존엔 KOSPI 편중)
+- 검증: 신규 테스트 `tests/unit/test_universe_fetcher.py` **7개** → 전체 **1235 passed**
+
+### 🎯 P2-11 횡단면 모멘텀(상대강도) 전략 신설 — 유의미한 OOS 엣지 발견 (2026-09-30)
+- 배경: 기존 앙상블은 OOS 엣지 없음(P2-10) → **수익 원천이 다른 횡단면 전략**을 신설
+- 신규 `validation/momentum_backtest.py`
+  - 매 리밸런싱: trailing `lookback`일 수익률로 전 종목 랭킹 → 상위 `top_k` 동일가중 매수 → `hold_days` 보유
+  - 지표: 연환산 Sharpe / CAGR / MDD / 승률(기간 기준), `sweep_momentum`, OOS 분리(`--oos-split`)
+  - CLI: `python -m validation.momentum_backtest --limit 190 --start ... --end ... [--sweep|--oos-split]`
+- **IS(2021-10~2024-09) → OOS(2024-10~2026-09) 결과**
+  | 파라미터 | IS Sharpe | **OOS Sharpe** | OOS CAGR | OOS MDD |
+  |---|---|---|---|---|
+  | lb=60 k=20 hold=40 (IS 1위) | +0.90 | **+1.91** | +86.4% | 7.4% |
+  | lb=120 k=20 hold=10 | +0.79 | **+1.78** | +77.4% | 33.7% |
+  | lb=120 k=20 hold=20 | +0.77 | **+1.50** | +85.0% | 35.2% |
+  | lb=120 k=5 hold=40 | +0.87 | +1.12 | +123.5% | 48.5% |
+  - 상위 5개 **모두 OOS Sharpe 양수**(+1.12~+1.91) — 기존 앙상블(OOS -0.19)과 대조적
+- **고정 파라미터(lb=120/k=20/hold=20) 연도별 강건성** (튜닝 없이 4개 구간 개별 적용)
+  | 구간 | 총수익 | CAGR | Sharpe | MDD | 승률 |
+  |---|---|---|---|---|---|
+  | 2022-10~2023-09 | +34.6% | +86.7% | +2.86 | 0.0% | 100% |
+  | 2023-10~2024-09 | +10.7% | +23.8% | +1.31 | 2.1% | 50% |
+  | 2024-10~2025-09 | +38.8% | +99.1% | +4.57 | 0.5% | 83% |
+  | 2025-10~2026-09 | +18.6% | +43.0% | +0.88 | 29.6% | 50% |
+  - **4/4 구간 플러스** → 단일 기간 우연이 아닐 가능성
+- ⚠️ **주의(반드시 함께 볼 것)**
+  1. **생존편향**: 유니버스가 "현재" 상위 515종목 → 상장폐지/하락 종목이 제외되어 **수익률이 과대평가**될 수 있음(가장 큰 한계)
+  2. 구간당 리밸런싱이 6회로 적어 Sharpe 신뢰구간이 넓음(연환산 값 과대)
+  3. 거래비용·슬리피지·세금 미반영
+- 조치: **수치만으로 프로덕션 신호를 바꾸지 않는다.** 관찰 모드 확장 여부는 별도 판단 필요
+- 검증: 신규 테스트 `tests/unit/test_momentum_backtest.py` **12개**
+
 ### B등급 정리 결과 (이번 세션)
 - `_archive/orphans/` 이동(의존성 0건): `monitor/calibration_tracker.py`, `analytics/shadow_logger.py`, `analytics/calibration_analyzer.py`
 - 유지 결정(사유 명시):

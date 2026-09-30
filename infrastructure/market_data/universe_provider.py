@@ -286,6 +286,25 @@ FALLBACK_500 = {
 }
 
 
+def _interleave_markets(universe: dict[str, str], by_market: dict[str, list[str]]) -> dict[str, str]:
+    """시장별 순서를 유지하며 라운드로빈으로 교차 정렬한다.
+
+    구독 한도(195)가 전체 종목 수보다 작을 때 한 시장에 편중되는 것을 막는다.
+    """
+    ordered: dict[str, str] = {}
+    queues = [list(codes) for codes in by_market.values()]
+    while any(queues):
+        for q in queues:
+            if q:
+                code = q.pop(0)
+                if code in universe and code not in ordered:
+                    ordered[code] = universe[code]
+    for code, name in universe.items():
+        if code not in ordered:
+            ordered[code] = name
+    return ordered
+
+
 def validate_universe(stock_dict: dict[str, str]) -> dict[str, str]:
     if not stock_dict:
         raise ValueError("❌ 데이터가 비어있습니다.")
@@ -316,7 +335,10 @@ def get_universe() -> dict[str, str]:
             # 여러 인코딩 시도
             for enc in ["utf-8-sig", "cp949", "utf-8"]:
                 try:
-                    df = pd.read_csv(CSV_PATH, encoding=enc, engine="python", on_bad_lines="skip")
+                    # dtype=str: 종목코드의 선행 0 보존 (예: 005930 → int 추론 시 5930으로 손실)
+                    df = pd.read_csv(
+                        CSV_PATH, encoding=enc, engine="python", on_bad_lines="skip", dtype=str
+                    )
                     if len(df.columns) >= 2:
                         # 첫 두 열 사용
                         code_col = df.columns[0]
@@ -329,16 +351,28 @@ def get_universe() -> dict[str, str]:
                                 name_col = col
                         df["code"] = df[code_col].astype(str).str.strip()
                         df["name"] = df[name_col].astype(str).str.strip()
+                        market_col = next(
+                            (c for c in df.columns if "market" in c.lower() or "시장" in c), None
+                        )
                         universe = {}
+                        by_market: dict[str, list[str]] = {}
                         for _, row in df.iterrows():
                             code = row["code"]
                             name = row["name"]
                             if code and name and code.isdigit() and len(code) == 6:
                                 universe[code] = name
+                                if market_col is not None:
+                                    by_market.setdefault(str(row[market_col]).strip(), []).append(code)
                         if universe:
+                            if market_col is not None and len(by_market) > 1:
+                                # 시장 교차 정렬: 구독 한도(195)에서 특정 시장 편중 방지
+                                universe = _interleave_markets(universe, by_market)
                             result = validate_universe(universe)
                             _LAST_SOURCE = "csv"
-                            logger.info(f"✅ CSV에서 {len(result)}개 종목 로드 완료")
+                            logger.info(
+                                f"✅ CSV에서 {len(result)}개 종목 로드 완료"
+                                + (f" (시장 교차 정렬: {', '.join(f'{k} {len(v)}' for k, v in by_market.items())})" if by_market else "")
+                            )
                             return result
                 except Exception:
                     continue
