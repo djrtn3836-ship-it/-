@@ -46,6 +46,12 @@ class MomentumConfig:
     hold_days: int = 20
     # 리밸런싱 1회당 왕복 거래비용(수수료+세금+슬리피지 근사). 0.0=비용 무시(순수 로직)
     cost_pct: float = 0.0
+    # ── 생존편향 스트레스 (P2-13) ───────────────────────────────
+    # 유니버스가 '현재 상장 종목' 기준이라 상장폐지 종목이 빠져 수익률이 과대평가된다.
+    # delist_rate_annual: 연간 상장폐지율 가정 (0.0=스트레스 미적용)
+    # delist_loss: 상폐 시 손실률 (0.6=원금 60% 손실)
+    delist_rate_annual: float = 0.0
+    delist_loss: float = 0.6
 
 
 @dataclass
@@ -126,12 +132,25 @@ def momentum_returns(
         period_rets: List[float] = []
         for t in picks:
             p0 = cur_row.get(t)
+            if not p0 or p0 <= 0:
+                continue
             p1 = future_row.get(t)
-            if p0 and p1 and p0 > 0:
+            if p1 and p1 > 0:
                 period_rets.append(p1 / p0 - 1.0)
+            else:
+                # 보유 기간 중 가격 데이터 소멸 = 상장폐지/거래정지로 간주.
+                # (과거에는 이 종목을 조용히 제외해 생존편향을 만들었다)
+                period_rets.append(-abs(config.delist_loss))
+                logger.debug(f"[생존편향] {t} 가격 소멸 → {config.delist_loss:.0%} 손실 반영")
         if period_rets:
             gross = sum(period_rets) / len(period_rets)  # 동일가중
-            returns.append(gross - config.cost_pct)      # 거래비용 차감
+            # 연간 상폐율을 보유기간으로 환산한 기대 손실(스트레스)
+            delist_drag = (
+                config.delist_rate_annual
+                * (config.hold_days / TRADING_DAYS_PER_YEAR)
+                * abs(config.delist_loss)
+            )
+            returns.append(gross - config.cost_pct - delist_drag)  # 거래비용·상폐 스트레스 차감
         i += config.hold_days
     return returns
 
@@ -263,6 +282,10 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--oos-split", type=str, default="", help="OOS 분리 기준일")
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--stress", action="store_true",
+                        help="생존편향 스트레스 표 (상폐율 0/2/5/10%% × 상폐손실) 출력")
+    parser.add_argument("--delist-loss", type=float, default=0.6,
+                        help="상장폐지 시 손실률 가정 (기본 0.6 = -60%%)")
     args = parser.parse_args(list(argv[1:]) if argv else None)
 
     tickers = (
@@ -283,7 +306,7 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
         panel = build_price_panel(series, dates)
 
-        if args.oos_split:
+        if args.oos_split and not args.stress:
             split = args.oos_split
             is_dates = [d for d in dates if d <= split]
             oos_dates = [d for d in dates if d > split]
@@ -313,6 +336,35 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             for i, r in enumerate(rows[: args.top], 1):
                 print(f"{i:<3} {r.label():<26} {r.is_metrics.summary()}")
             print(f"\n🏆 최적: {rows[0].label()} → {rows[0].is_metrics.summary()}")
+        elif args.stress:
+            print(f"생존편향 스트레스 — 상폐 손실률 {args.delist_loss:.0%}, "
+                  f"거래비용 {args.cost:.2%}, 전 구간 [{args.start}~{args.end}]")
+            print(f"{'연간 상폐율':<12} {'총수익':>10} {'CAGR':>9} {'Sharpe':>9} {'MDD':>8} {'승률':>7}")
+            for rate in (0.0, 0.02, 0.05, 0.10):
+                cfg = MomentumConfig(
+                    lookback=args.lookback, top_k=args.top_k, hold_days=args.hold,
+                    cost_pct=args.cost, delist_rate_annual=rate,
+                    delist_loss=args.delist_loss,
+                )
+                m = evaluate_config(dates, panel, cfg)
+                print(
+                    f"{rate:>10.0%}  {m.total_return:>+10.1%} {m.cagr:>+9.1%} "
+                    f"{m.sharpe:>+9.2f} {m.max_drawdown:>8.1%} {m.win_rate:>7.1%}"
+                )
+            if args.oos_split:
+                split = args.oos_split
+                oos_dates = [d for d in dates if d > split]
+                oos_panel = build_price_panel(series, oos_dates)
+                print(f"\n[OOS {split}~{args.end}] 상폐율별")
+                for rate in (0.0, 0.05, 0.10):
+                    cfg = MomentumConfig(
+                        lookback=args.lookback, top_k=args.top_k, hold_days=args.hold,
+                        cost_pct=args.cost, delist_rate_annual=rate,
+                        delist_loss=args.delist_loss,
+                    )
+                    m = evaluate_config(oos_dates, oos_panel, cfg)
+                    print(f"{rate:>10.0%}  {m.total_return:>+10.1%} {m.cagr:>+9.1%} "
+                          f"{m.sharpe:>+9.2f} {m.max_drawdown:>8.1%} {m.win_rate:>7.1%}")
         else:
             cfg = MomentumConfig(
                 lookback=args.lookback, top_k=args.top_k, hold_days=args.hold, cost_pct=args.cost

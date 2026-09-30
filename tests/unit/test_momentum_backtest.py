@@ -131,3 +131,50 @@ class TestSweep:
         sharpes = [r.is_metrics.sharpe for r in rows]
         assert sharpes == sorted(sharpes, reverse=True)
         assert "lb=" in rows[0].label()
+
+
+class TestSurvivorshipStress:
+    """P2-13: 생존편향(상장폐지 누락) 스트레스 검증."""
+
+    @staticmethod
+    def _flat_panel(n: int = 30) -> tuple:
+        dates = [f"2025-01-{i:02d}" for i in range(1, n + 1)]
+        panel = [{"A": 100.0, "B": 100.0} for _ in dates]
+        return dates, panel
+
+    def test_delist_drag_lowers_returns_by_expected_amount(self) -> None:
+        dates, panel = self._flat_panel()
+        base = MomentumConfig(lookback=5, top_k=1, hold_days=5, cost_pct=0.0)
+        stressed = MomentumConfig(
+            lookback=5, top_k=1, hold_days=5, cost_pct=0.0,
+            delist_rate_annual=0.05, delist_loss=0.6,
+        )
+        r_base = momentum_returns(dates, panel, base)
+        r_stress = momentum_returns(dates, panel, stressed)
+
+        assert r_base and len(r_base) == len(r_stress)
+        expected_drag = 0.05 * (5 / 252) * 0.6
+        for a, b in zip(r_base, r_stress):
+            assert abs((a - b) - expected_drag) < 1e-12
+
+    def test_zero_rate_keeps_returns_unchanged(self) -> None:
+        dates, panel = self._flat_panel()
+        cfg = MomentumConfig(lookback=5, top_k=1, hold_days=5, cost_pct=0.0,
+                             delist_rate_annual=0.0)
+        assert all(abs(r) < 1e-12 for r in momentum_returns(dates, panel, cfg))
+
+    def test_missing_future_price_is_counted_as_delist_loss(self) -> None:
+        dates, panel = self._flat_panel()
+        panel[10] = {}  # 보유기간 중 A 가격 소멸(상장폐지)
+        cfg = MomentumConfig(lookback=5, top_k=1, hold_days=5, cost_pct=0.0,
+                             delist_loss=0.6)
+        returns = momentum_returns(dates, panel, cfg)
+
+        assert returns[0] == pytest.approx(-0.6)
+
+    def test_missing_price_uses_configured_loss(self) -> None:
+        dates, panel = self._flat_panel()
+        panel[10] = {}
+        cfg = MomentumConfig(lookback=5, top_k=1, hold_days=5, cost_pct=0.0,
+                             delist_loss=0.9)
+        assert momentum_returns(dates, panel, cfg)[0] == pytest.approx(-0.9)
