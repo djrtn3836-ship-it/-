@@ -90,6 +90,7 @@ from orchestrator.portfolio_manager import PortfolioManager
 from analytics.performance_tracker import performance_tracker
 from analytics.calibration_executor import ExecutionCalibrator
 from analytics.alert_verifier import scheduled_verify
+from scheduler.momentum_report import send_momentum_report
 from report.telegram_sender import TelegramSender
 from report.telegram_commands import TelegramCommandHandler
 from report.daily_report import DailyReportGenerator
@@ -660,14 +661,19 @@ class Bootstrapper(TracedService):
             "alert_verifier", max_retries=2, retry_delay=5,
         )
         self.scheduler.add_job_with_retry(
+            send_momentum_report,
+            CronTrigger(day_of_week="mon-fri", hour=8, minute=30, timezone="Asia/Seoul"),
+            "momentum_report", max_retries=2, retry_delay=5,
+        )
+        self.scheduler.add_job_with_retry(
             self._run_hyperparameter_tuning,
             CronTrigger(day_of_week="sun", hour=3, minute=0, timezone="Asia/Seoul"),
             "hyperparameter_tuning", max_retries=1, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 9
-        log_event("SCHEDULER_STARTED", {"jobs": 9})
-        logger.info("Scheduler started (9 jobs registered, incl. hyperparameter_tuning)")
+        self.startup_details["job_count"] = 10
+        log_event("SCHEDULER_STARTED", {"jobs": 10})
+        logger.info("Scheduler started (10 jobs registered, incl. momentum_report)")
 
     async def start_workers(self) -> None:
         if not self.analyzer or not self.db:

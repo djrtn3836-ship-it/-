@@ -44,6 +44,8 @@ class MomentumConfig:
     lookback: int = 60
     top_k: int = 10
     hold_days: int = 20
+    # 리밸런싱 1회당 왕복 거래비용(수수료+세금+슬리피지 근사). 0.0=비용 무시(순수 로직)
+    cost_pct: float = 0.0
 
 
 @dataclass
@@ -128,7 +130,8 @@ def momentum_returns(
             if p0 and p1 and p0 > 0:
                 period_rets.append(p1 / p0 - 1.0)
         if period_rets:
-            returns.append(sum(period_rets) / len(period_rets))  # 동일가중
+            gross = sum(period_rets) / len(period_rets)  # 동일가중
+            returns.append(gross - config.cost_pct)      # 거래비용 차감
         i += config.hold_days
     return returns
 
@@ -219,13 +222,14 @@ def sweep_momentum(
     lookbacks: Sequence[int] = (20, 60, 120),
     top_ks: Sequence[int] = (5, 10, 20),
     holds: Sequence[int] = (10, 20, 40),
+    cost_pct: float = 0.0,
 ) -> List[MomentumResult]:
     """IS 구간 격자 탐색(Sharpe 내림차순)."""
     results: List[MomentumResult] = []
     for lb in lookbacks:
         for k in top_ks:
             for h in holds:
-                cfg = MomentumConfig(lookback=lb, top_k=k, hold_days=h)
+                cfg = MomentumConfig(lookback=lb, top_k=k, hold_days=h, cost_pct=cost_pct)
                 metrics = evaluate_config(dates, panel, cfg)
                 results.append(MomentumResult(config=cfg, is_metrics=metrics))
     results.sort(key=lambda r: r.is_metrics.sharpe, reverse=True)
@@ -254,6 +258,8 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--lookback", type=int, default=60)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--hold", type=int, default=20)
+    parser.add_argument("--cost", type=float, default=0.003,
+                        help="리밸런싱당 왕복 거래비용(기본 0.3%%)")
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--oos-split", type=str, default="", help="OOS 분리 기준일")
     parser.add_argument("--top", type=int, default=10)
@@ -285,7 +291,7 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             oos_panel = build_price_panel(series, oos_dates)
 
             print(f"OOS: IS [{args.start}~{split}] {len(is_dates)}일 → OOS [{split}~{args.end}] {len(oos_dates)}일")
-            is_rows = sweep_momentum(is_dates, is_panel)
+            is_rows = sweep_momentum(is_dates, is_panel, cost_pct=args.cost)
             print(f"\nIS 상위 {args.top}개:")
             for i, r in enumerate(is_rows[: args.top], 1):
                 print(f"  {i:>2}. {r.label():<26} {r.is_metrics.summary()}")
@@ -302,13 +308,15 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             if is_rows:
                 print(f"\nIS 1위 OOS: {is_rows[0].oos_metrics.summary() if is_rows[0].oos_metrics else 'N/A'}")
         elif args.sweep:
-            rows = sweep_momentum(dates, panel)
+            rows = sweep_momentum(dates, panel, cost_pct=args.cost)
             print(f"{'#':<3} {'파라미터':<26} 지표")
             for i, r in enumerate(rows[: args.top], 1):
                 print(f"{i:<3} {r.label():<26} {r.is_metrics.summary()}")
             print(f"\n🏆 최적: {rows[0].label()} → {rows[0].is_metrics.summary()}")
         else:
-            cfg = MomentumConfig(lookback=args.lookback, top_k=args.top_k, hold_days=args.hold)
+            cfg = MomentumConfig(
+                lookback=args.lookback, top_k=args.top_k, hold_days=args.hold, cost_pct=args.cost
+            )
             metrics = evaluate_config(dates, panel, cfg)
             print(f"모멘텀 {cfg.lookback}일 / 상위 {cfg.top_k}종목 / {cfg.hold_days}일 보유")
             print(f"  {metrics.summary()}")
