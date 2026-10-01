@@ -13,6 +13,7 @@ from validation.momentum_backtest import (
     build_price_panel,
     compute_metrics,
     momentum_returns,
+    long_short_returns,
     rank_scores,
     select_top_k,
     sweep_momentum,
@@ -263,3 +264,58 @@ class TestBenchmarkAndRankModes:
         for mode in ("momentum", "reversal", "low_vol", "high_52w"):
             cfg = MomentumConfig(lookback=20, top_k=2, hold_days=10, rank_mode=mode)
             assert momentum_returns(dates, panel, cfg), mode
+
+
+class TestLongShort:
+    """P6: 베타 제거 후 순수 알파 진단."""
+
+    def test_flat_market_yields_zero_spread(self) -> None:
+        dates = [f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(120)]
+        panel = [{"A": 100.0, "B": 100.0, "C": 100.0, "D": 100.0} for _ in dates]
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10, cost_pct=0.0,
+                             rank_mode="momentum")
+        rets = long_short_returns(dates, panel, cfg)
+
+        assert rets
+        assert all(abs(r) < 1e-12 for r in rets)
+
+    def test_spread_captures_relative_strength(self) -> None:
+        # A: 강한 상승, D: 강한 하락 → 롱숏 스프레드는 양수
+        dates = [f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(120)]
+        panel = [
+            {
+                "A": 100.0 * (1.01 ** i),
+                "B": 100.0 * (1.004 ** i),
+                "C": 100.0 * (0.996 ** i),
+                "D": 100.0 * (0.99 ** i),
+            }
+            for i in range(len(dates))
+        ]
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10, cost_pct=0.0,
+                             rank_mode="momentum")
+        rets = long_short_returns(dates, panel, cfg)
+
+        assert rets and all(r > 0 for r in rets)
+
+    def test_applies_both_side_costs(self) -> None:
+        dates = [f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(120)]
+        panel = [
+            {"A": 100.0 * (1.01 ** i), "B": 100.0, "C": 100.0, "D": 100.0 * (0.99 ** i)}
+            for i in range(len(dates))
+        ]
+        free = MomentumConfig(lookback=20, top_k=1, hold_days=10, cost_pct=0.0)
+        costed = MomentumConfig(lookback=20, top_k=1, hold_days=10, cost_pct=0.003)
+
+        r0 = long_short_returns(dates, panel, free)
+        r1 = long_short_returns(dates, panel, costed)
+
+        assert r0 and len(r0) == len(r1)
+        for a, b in zip(r0, r1):
+            assert a - b == pytest.approx(0.006)  # 롱+숏 2배 비용
+
+    def test_insufficient_breadth_skips(self) -> None:
+        dates = [f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(60)]
+        panel = [{"A": 100.0, "B": 100.0} for _ in dates]
+        cfg = MomentumConfig(lookback=20, top_k=5, hold_days=10)  # 2*k=10 > 2종목
+
+        assert long_short_returns(dates, panel, cfg) == []

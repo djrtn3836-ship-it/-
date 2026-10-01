@@ -365,6 +365,46 @@ def alpha_beta(
     )
 
 
+def long_short_returns(
+    dates: Sequence[str],
+    panel: Sequence[Dict[str, float]],
+    config: MomentumConfig,
+) -> List[float]:
+    """롱숏(시장중립) 포트폴리오 수익률 = 상위 k 매수 − 하위 k 매도.
+
+    롱온리 전략은 β≈1이라 시장 베타가 수익을 지배해 알파가 보이지 않는다.
+    롱숏은 베타를 상쇄해 **순수 초과수익(알파)을 드러내는 진단 도구**다.
+
+    ⚠️ 진단용: 한국 개인투자자는 공매도 제약이 있어 그대로 거래할 수 없다.
+    """
+    n = len(dates)
+    returns: List[float] = []
+    i = config.lookback
+    while i + config.hold_days < n:
+        cur_row, future_row = panel[i], panel[i + config.hold_days]
+        scores = rank_scores(panel, i, config)
+        if len(scores) < config.top_k * 2:
+            i += config.hold_days
+            continue
+
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        longs = [t for t, _ in ranked[: config.top_k]]
+        shorts = [t for t, _ in ranked[-config.top_k :]]
+
+        def _avg(picks: Sequence[str]) -> float:
+            rets = [
+                future_row[t] / cur_row[t] - 1.0
+                for t in picks
+                if t in future_row and cur_row.get(t, 0) > 0 and future_row[t] > 0
+            ]
+            return sum(rets) / len(rets) if rets else 0.0
+
+        spread = _avg(longs) - _avg(shorts)
+        returns.append(spread - 2.0 * config.cost_pct)  # 롱·숏 양쪽 비용
+        i += config.hold_days
+    return returns
+
+
 @dataclass
 class MomentumResult:
     config: MomentumConfig
@@ -522,6 +562,26 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
                         f"{label[mode]:<18}{m.sharpe:>+8.2f}{m.cagr:>+9.1%}"
                         f"{ab.alpha_annual:>+9.1%}{ab.beta:>7.2f}{ab.r_squared:>7.2f}"
                         f"{ab.t_stat:>+7.2f}{m.max_drawdown:>8.1%}{star}"
+                    )
+
+                # ── 롱숏(시장중립) = 베타 제거 후 순수 알파 진단 ──
+                print(f"\n  [롱숏/시장중립 — 순수 알파 진단]")
+                print(f"  {'전략':<18}{'Sharpe':>8}{'CAGR':>9}{'α(연)':>9}{'β':>7}{'t':>7}")
+                for mode in modes:
+                    c = MomentumConfig(
+                        lookback=args.lookback, top_k=args.top_k, hold_days=args.hold,
+                        cost_pct=args.cost, delist_rate_annual=0.02,
+                        delist_loss=args.delist_loss, rank_mode=mode,
+                    )
+                    ls = long_short_returns(scope_dates, scope_panel, c)
+                    if len(ls) < 5:
+                        continue
+                    lm = compute_metrics(ls, args.hold)
+                    lab = alpha_beta(ls, bench, ppy)
+                    lstar = " ⭐" if (lab.t_stat > 2.0 and lab.alpha_annual > 0) else ""
+                    print(
+                        f"  {label[mode]:<18}{lm.sharpe:>+8.2f}{lm.cagr:>+9.1%}"
+                        f"{lab.alpha_annual:>+9.1%}{lab.beta:>7.2f}{lab.t_stat:>+7.2f}{lstar}"
                     )
 
             cfg_base = MomentumConfig(
