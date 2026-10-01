@@ -53,7 +53,7 @@ def set_alert_callback(func: Callable[[str, str], Awaitable[None]]) -> None:
 class MacroData:
     kospi_trend: float = 0.0
     usdkrw: float = 1300.0
-    bond_3y: float = 3.5
+    bond_3y: float = 3.5          # ⚠️ 이름은 3y지만 실제로는 US 10Y 금리(원본 호환 유지)
     vix: float = 20.0
     vkospi: float = 20.0
     foreigner_futures: float = 0.0
@@ -62,6 +62,13 @@ class MacroData:
     sox_trend: float = 0.0
     oil_price: float = 75.0
     ktb_3y: float = 3.0
+    # 🔥 P6-2 거시 지표 확장 (해외지수/금리/원자재)
+    n225_trend: float = 0.0       # 니케이225 5일 수익률(%) — 아시아 동조
+    dxy: float = 103.0            # 달러인덱스 — 강세면 신흥국 자금 유출
+    us_2y: float = 4.0            # 미국 2년물 금리(%)
+    yield_spread: float = 0.0     # 10Y − 2Y (음수 = 장단기 역전, 침체 선행)
+    copper_price: float = 4.2     # 구리(경기 선행 지표, Dr. Copper)
+    gold_price: float = 2400.0    # 금(위험회피 수요)
     last_update: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,6 +84,12 @@ class MacroData:
             "sox_trend": self.sox_trend,
             "oil_price": self.oil_price,
             "ktb_3y": self.ktb_3y,
+            "n225_trend": self.n225_trend,
+            "dxy": self.dxy,
+            "us_2y": self.us_2y,
+            "yield_spread": self.yield_spread,
+            "copper_price": self.copper_price,
+            "gold_price": self.gold_price,
             "last_update": self.last_update,
         }
 
@@ -134,6 +147,7 @@ def _fetch_fred(series_id: str) -> float | None:
 
 
 def _fetch_ktb_yield() -> float | None:
+    """한국 국고채 3년 금리. 네이버(1순위) → FRED(2순위, 월간·지연)."""
     try:
         url = "https://finance.naver.com/marketindex/interestDailyQuote.nhn?marketindexCd=IRR_KTB3Y"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -143,8 +157,13 @@ def _fetch_ktb_yield() -> float | None:
         if match:
             return float(match.group(1))
     except Exception as e:
-        logger.debug(f"KTB 수집 실패: {e}")
-    return None
+        # 2026-10-01 확인: 네이버 엔드포인트가 HTTP 410(영구 종료) → FRED 폴백 사용
+        logger.debug(f"KTB 수집 실패(네이버): {e}")
+
+    value = _fetch_fred("IRLTLT01KRM156N")
+    if value and value > 0:
+        logger.debug(f"KTB 대체값 사용(FRED 월간 장기금리): {value}")
+    return value
 
 
 async def _send_alert(error_msg: str) -> None:
@@ -181,7 +200,11 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
     loop = asyncio.get_running_loop()
 
     try:
-        kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "5d", True)
+        # 🔧 P6-2: ^KS200은 데이터 1행만 반환되어 추세 계산 불가(최고 가중치 지표 무음 사망)
+        #    → ^KS11(코스피 종합) 1순위, ^KS200 폴백
+        kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS11", "5d", True)
+        if kospi is None:
+            kospi = await loop.run_in_executor(None, _fetch_yahoo, "^KS200", "10d", True)
         if kospi is not None:
             data.kospi_trend = kospi
             logger.info(f"   ✅ KOSPI: {kospi:.2f}%")
@@ -239,6 +262,41 @@ async def fetch_macro_data(force: bool = False) -> MacroData:
         if ktb and ktb > 0:
             data.ktb_3y = ktb
             logger.info(f"   ✅ KTB 3Y: {ktb:.2f}%")
+
+        # 🔥 P6-2 확장: 해외지수/금리/원자재
+        n225 = await loop.run_in_executor(None, _fetch_yahoo, "^N225", "5d", True)
+        if n225 is not None:
+            data.n225_trend = n225
+            logger.info(f"   ✅ 니케이225: {n225:.2f}%")
+
+        dxy = await loop.run_in_executor(None, _fetch_yahoo, "DX-Y.NYB", "1d", False)
+        if dxy and dxy > 0:
+            data.dxy = dxy
+            logger.info(f"   ✅ 달러인덱스: {dxy:.2f}")
+
+        # 🔧 P6-2: DGS2(정확한 2년물) 1순위, ^IRX(13주물, 근사) 폴백
+        us2y_fallback = await loop.run_in_executor(None, _fetch_fred, "DGS2")
+        if us2y_fallback and us2y_fallback > 0:
+            data.us_2y = us2y_fallback
+        else:
+            us2y = await loop.run_in_executor(None, _fetch_yahoo, "^IRX", "1d", False)
+            if us2y and us2y > 0:
+                data.us_2y = us2y
+                logger.info(f"   ✅ US 2Y (^IRX 13주물 근사): {us2y:.2f}%")
+        # 10Y − 2Y 스프레드(파생): 음수면 장단기 역전 = 침체 선행 신호
+        spread = round(float(data.bond_3y) - float(data.us_2y), 3)
+        data.yield_spread = spread if -3.0 <= spread <= 4.0 else 0.0
+        logger.info(f"   ✅ US 2Y: {data.us_2y:.2f}% / 10Y-2Y: {data.yield_spread:+.2f}%p")
+
+        copper = await loop.run_in_executor(None, _fetch_yahoo, "HG=F", "1d", False)
+        if copper and copper > 0:
+            data.copper_price = copper
+            logger.info(f"   ✅ 구리: ${copper:.3f}/lb")
+
+        gold = await loop.run_in_executor(None, _fetch_yahoo, "GC=F", "1d", False)
+        if gold and gold > 0:
+            data.gold_price = gold
+            logger.info(f"   ✅ 금: ${gold:.0f}/oz")
 
         if data.vix < 0 or data.vix > 100:
             logger.warning(f"⚠️ VIX 이상치 감지: {data.vix:.2f} → 20.0으로 대체")
