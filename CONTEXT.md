@@ -175,6 +175,20 @@ OOS에서는 **저변동성이 유일하게 양의 알파**(α +10.4%/년, β 0.
 - 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
 - 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
 
+### 🏗️ P6 고도화 4건 완료 (2026-10-01)
+| 항목 | 결과 | 핵심 |
+| :--- | :--- | :--- |
+| P6-1 유니버스 안정화 | ✅ | **`await` 누락 버그**(폴백 CRITICAL 알림 무음 사망) 수정 · CSV 자동 갱신(토 09:00)+축소 방지 가드 · 신선도 검사(`csv_stale`) · KOSDAQ이 전부 KOSPI로 표기되던 문제 수정 |
+| P6-2 거시 지표 확장 | ✅ | 니케이·DXY·US2Y·**10Y−2Y 스프레드**·구리·금 추가(지표 8→13). **실데이터 버그 3건**: `^KS200` 1행(최고 가중치 무음 사망), KTB 3Y HTTP 410(3.0 고정), US 2Y에 13주물 사용 |
+| P6-3 PostgreSQL 검토 | ⏸ **전환 보류** | SQLite 공개 메서드 28개 중 **8개 PG 미구현**(서킷브레이커·모멘텀 리포트가 런타임 AttributeError). 현 규모(29MB/23만행/단일 프로세스)는 SQLite로 충분 → `docs/postgres_migration_assessment.md` |
+| P6-4 대시보드 고도화 | ✅ | `report/html_dashboard.py` — 서버 없는 단일 HTML(6섹션), 평일 17:30 자동 생성 |
+
+**부트스트랩 스케줄러: 11 → 14잡** (`data_readiness` 일 09:00 · `universe_refresh` 토 09:00 · `dashboard` 평일 17:30)
+
+**신규 안전장치**
+- CI: `await` 누락 탐지 스텝 + `test_db_interface_parity.py`(PG 격차 변동 시 실패) + `test_bootstrap_has_no_unawaited_coroutines`(회귀)
+- `core/container.py`: PG 모드 활성화 시 미구현 메서드를 ERROR로 출력(무음 실패 차단)
+
 ### 신규 도구 (2026-09-30)
 | 도구 | 용도 |
 | :--- | :--- |
