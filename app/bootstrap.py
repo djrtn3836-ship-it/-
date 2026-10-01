@@ -97,6 +97,7 @@ from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
 from observability.ops_monitor import OpsMonitor
 from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_check
+from scheduler.data_readiness_monitor import scheduled_data_readiness_check
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -699,10 +700,18 @@ class Bootstrapper(TracedService):
             CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
             "market_risk_check", max_retries=2, retry_delay=5,
         )
+        self.scheduler.add_job_with_retry(
+            scheduled_data_readiness_check,
+            CronTrigger(day_of_week="sun", hour=9, minute=0, timezone="Asia/Seoul"),
+            "data_readiness", max_retries=1, retry_delay=30,
+        )
         self.scheduler.start()
-        self.startup_details["job_count"] = 11
-        log_event("SCHEDULER_STARTED", {"jobs": 11})
-        logger.info("Scheduler started (11 jobs registered, incl. momentum_report, market_risk_check)")
+        self.startup_details["job_count"] = 12
+        log_event("SCHEDULER_STARTED", {"jobs": 12})
+        logger.info(
+            "Scheduler started (12 jobs registered, incl. momentum_report, "
+            "market_risk_check, data_readiness)"
+        )
 
     async def start_workers(self) -> None:
         if not self.analyzer or not self.db:

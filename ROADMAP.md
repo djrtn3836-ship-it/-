@@ -101,9 +101,11 @@
   | `ohlcv` | 230,441행 ✅ | – |
 
 ### P7 작업 항목
-- [ ] **데이터 축적 게이트**: `decisions`/`decision_outcomes` 누적량을 주기 점검하고,
-      임계(예: 500건) 도달 시 ML/감성 팩터 검증을 자동 트리거
-- [ ] **감시·알림 가치 강화** (P6 결론: 시스템 가치는 알파가 아니라 감시·리스크 알림)
-      - `OpsMonitor` 이상탐지 임계/윈도우 튜닝
-      - 알림 품질 지표(오탐/누락) 추적
+- [x] **데이터 축적 게이트** (`scheduler/data_readiness_monitor.py`)
+      - decisions 500 / outcomes 300 기준 준비도 판정, 주 1회(일 09:00) 점검
+      - 임계 **최초 도달 시 1회만** 텔레그램 알림(상태 파일로 중복 방지)
+- [x] **감시·알림 가치 강화** (P6 결론: 시스템 가치는 알파가 아니라 감시·리스크 알림)
+      - `OpsMonitor` 임계/윈도우 **환경변수로 튜닝**
+        (`OPS_ANOMALY_THRESHOLD/WINDOW`, `OPS_DRIFT_WINDOW`, `OPS_ALERT_COOLDOWN_SEC`)
+      - `quality_snapshot()`: 이상감지율·알림률·억제율·오류율 + 개선 힌트
 - [ ] (보류) 롱숏 전략: 한국 개인 공매도 제약 → 진단 도구로만 사용

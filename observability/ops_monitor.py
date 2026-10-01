@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional
@@ -45,6 +46,24 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ALERT_COOLDOWN_SEC = 1800.0     # 30분
 _MAX_RECENT_REPORTS = 100
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        raw = os.getenv(name)
+        return float(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        logger.warning(f"{name} 값이 숫자가 아님 → 기본값 {default} 사용")
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name)
+        return int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        logger.warning(f"{name} 값이 정수가 아님 → 기본값 {default} 사용")
+        return default
 
 
 class OpsMonitor:
@@ -76,11 +95,24 @@ class OpsMonitor:
         self._cb_provider = cb_provider
         self._last_alert_at: float = 0.0
 
+        # 임계/윈도우는 환경변수로 조정 가능(알림 품질 튜닝용, P7)
+        self._anomaly_window = _env_int("OPS_ANOMALY_WINDOW", anomaly_window)
+        self._anomaly_threshold = _env_float("OPS_ANOMALY_THRESHOLD", anomaly_threshold)
+        self._drift_window = _env_int("OPS_DRIFT_WINDOW", drift_window)
+        if alert_cooldown_sec == DEFAULT_ALERT_COOLDOWN_SEC:
+            self._alert_cooldown = _env_float(
+                "OPS_ALERT_COOLDOWN_SEC", DEFAULT_ALERT_COOLDOWN_SEC
+            )
+
         self._anomaly = (
-            AnomalyDetector(window_size=anomaly_window, threshold=anomaly_threshold)
+            AnomalyDetector(
+                window_size=self._anomaly_window, threshold=self._anomaly_threshold
+            )
             if self._enabled else None
         )
-        self._drift = ModelDriftDetector(window_size=drift_window) if self._enabled else None
+        self._drift = (
+            ModelDriftDetector(window_size=self._drift_window) if self._enabled else None
+        )
         self._rca = RootCauseAnalyzer() if self._enabled else None
 
         self._recent: Deque[RootCauseReport] = deque(maxlen=_MAX_RECENT_REPORTS)
@@ -190,6 +222,53 @@ class OpsMonitor:
 
     def recent_reports(self, limit: int = 10) -> list:
         return [r.to_dict() for r in list(self._recent)[-limit:]]
+
+    def quality_snapshot(self) -> Dict[str, Any]:
+        """알림 품질 지표 (P7: 과다알림/오탐 추세 파악용).
+
+        Returns:
+            관측수·이상감지율·알림률·억제율·오류율과 해석 힌트.
+        """
+        s = self._stats
+        observed = max(1, int(s["signals_observed"]))
+        reports = int(s["reports"])
+        alerts = int(s["alerts_sent"])
+        suppressed = int(s["alerts_suppressed"])
+        decided = alerts + suppressed
+
+        anomaly_rate = int(s["anomalies"]) / observed
+        alert_rate = (alerts / reports) if reports else 0.0
+        suppression_ratio = (suppressed / decided) if decided else 0.0
+        error_rate = int(s["errors"]) / observed
+
+        hints: list = []
+        if suppression_ratio > 0.5:
+            hints.append("알림 억제 비율 높음 → 쿨다운 단축 또는 임계 상향 검토")
+        if anomaly_rate > 0.10:
+            hints.append("이상 감지율 높음 → 임계(threshold) 상향 검토")
+        if anomaly_rate == 0.0 and int(s["signals_observed"]) > 500:
+            hints.append("이상 감지 0건 → 임계 하향 검토")
+        if error_rate > 0.01:
+            hints.append("관측 오류율 높음 → 입력 데이터 확인")
+
+        return {
+            "signals_observed": s["signals_observed"],
+            "anomalies": s["anomalies"],
+            "anomaly_rate": round(anomaly_rate, 4),
+            "reports": reports,
+            "alerts_sent": alerts,
+            "alert_rate": round(alert_rate, 4),
+            "alerts_suppressed": suppressed,
+            "suppression_ratio": round(suppression_ratio, 4),
+            "errors": s["errors"],
+            "thresholds": {
+                "anomaly_window": self._anomaly_window,
+                "anomaly_threshold": self._anomaly_threshold,
+                "drift_window": self._drift_window,
+                "alert_cooldown_sec": self._alert_cooldown,
+            },
+            "hints": hints,
+        }
 
     # ── 내부 ────────────────────────────────────────────────────
 

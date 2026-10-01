@@ -13,6 +13,8 @@
 
 import random
 
+import pytest
+
 from observability.ops_monitor import OpsMonitor
 from observability.root_cause_analyzer import (
     CauseCategory,
@@ -139,3 +141,41 @@ class TestSnapshot:
         assert set(snap) == {"enabled", "stats", "last_report", "recent_count"}
         assert snap["enabled"] is True
         assert snap["recent_count"] == 0
+
+
+class TestQualitySnapshot:
+    """P7: 알림 품질 지표 및 임계 튜닝."""
+
+    def test_initial_shape(self) -> None:
+        q = OpsMonitor().quality_snapshot()
+
+        assert set(q) >= {
+            "signals_observed", "anomalies", "anomaly_rate", "reports",
+            "alerts_sent", "alert_rate", "suppression_ratio", "thresholds", "hints",
+        }
+        assert q["thresholds"]["anomaly_threshold"] == 0.65
+        assert q["hints"] == []
+
+    def test_hint_when_suppression_high(self) -> None:
+        m = OpsMonitor(on_alert=lambda msg: None, alert_cooldown_sec=1800.0)
+        m._handle_report(_make_report())
+        m._handle_report(_make_report())  # 쿨다운 억제
+        m._handle_report(_make_report())
+
+        q = m.quality_snapshot()
+        assert q["suppression_ratio"] > 0.5
+        assert any("억제" in h for h in q["hints"])
+
+    def test_env_override_thresholds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPS_ANOMALY_THRESHOLD", "0.8")
+        monkeypatch.setenv("OPS_ANOMALY_WINDOW", "50")
+        monkeypatch.setenv("OPS_DRIFT_WINDOW", "80")
+
+        t = OpsMonitor().quality_snapshot()["thresholds"]
+        assert t["anomaly_threshold"] == 0.8
+        assert t["anomaly_window"] == 50
+        assert t["drift_window"] == 80
+
+    def test_invalid_env_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPS_ANOMALY_THRESHOLD", "abc")
+        assert OpsMonitor().quality_snapshot()["thresholds"]["anomaly_threshold"] == 0.65
