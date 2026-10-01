@@ -610,3 +610,44 @@ class DatabaseManager:
             await self._read_conn.close()
             self._read_conn = None
         logger.info("DB 연결 종료 완료")
+
+    # ============================================================
+    # P6-3: PostgreSQL 인터페이스 정합성 검사
+    # ============================================================
+    # PostgresManager는 이 클래스의 공개 메서드를 전부 구현하지 않았다.
+    # DATABASE_URL을 설정하면 미구현 메서드 호출 시 AttributeError로
+    # 프로덕션 경로(서킷브레이커/모멘텀 리포트 등)가 런타임에 깨진다.
+    # 여기서 계약(SQLite의 공개 메서드 집합)을 단일 소스로 노출해
+    # 컨테이너 경고 + CI 파리티 테스트가 같은 기준을 쓰도록 한다.
+    NON_PUBLIC_PREFIX = "_"
+    # 계약(DB 연산)이 아닌 메타 메서드 — 파리티 검사 대상에서 제외
+    _META_METHODS = frozenset({"public_method_names", "missing_in_postgres"})
+
+    @classmethod
+    def public_method_names(cls) -> set[str]:
+        """이 클래스가 외부에 제공하는 DB 연산 메서드 이름 집합(계약)."""
+        return {
+            name
+            for name in dir(cls)
+            if not name.startswith(cls.NON_PUBLIC_PREFIX)
+            and name not in cls._META_METHODS
+            and callable(getattr(cls, name, None))
+        }
+
+    @classmethod
+    def missing_in_postgres(cls, pg_manager: Any | None = None) -> list[str]:
+        """PostgresManager에 없는 메서드 목록(있으면 DB 전환 시 기능이 깨진다)."""
+        if pg_manager is None:
+            try:
+                from infrastructure.database.postgres_manager import PostgresManager
+
+                pg_manager = PostgresManager
+            except ImportError:
+                return sorted(cls.public_method_names())
+
+        provided = {
+            name
+            for name in dir(pg_manager)
+            if not name.startswith("_") and callable(getattr(pg_manager, name, None))
+        }
+        return sorted(cls.public_method_names() - provided)

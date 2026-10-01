@@ -81,6 +81,27 @@ class AppContainer:
                 raw_db = DatabaseManager()
                 logger.warning(f"postgres_manager 모듈 임포트 실패({e}) → SQLite 강제 사용")
 
+            # 🔴 P6-3: PostgreSQL은 SQLite 대비 미구현 메서드가 있어 프로덕션 경로가 깨진다.
+            #    (예: get_daily_total_volume → 서킷브레이커, momentum_paper 4종 → 모멘텀 리포트)
+            #    조용한 런타임 AttributeError를 막기 위해 기동 시 명시적으로 경고한다.
+            if type(raw_db).__name__ == "PostgresManager":
+                try:
+                    from data.db_manager import DatabaseManager as _SqliteDM
+
+                    if hasattr(_SqliteDM, "missing_in_postgres"):
+                        gaps = _SqliteDM.missing_in_postgres(raw_db)
+                    else:
+                        gaps = []
+                    if gaps:
+                        logger.error(
+                            "🔴 PostgreSQL 모드인데 SQLite에만 있는 메서드 "
+                            f"{len(gaps)}개가 미구현입니다: {', '.join(gaps)} — "
+                            "해당 기능 호출 시 AttributeError 발생. "
+                            "docs/postgres_migration_assessment.md 참고"
+                        )
+                except Exception as e:
+                    logger.debug(f"PG 인터페이스 대조 실패(무시): {e}")
+
             cache = self._redis_cache or get_redis_cache()
             if cache.is_active:
                 self._db_manager = CachedDbManager(raw_db, cache)

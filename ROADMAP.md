@@ -85,7 +85,13 @@
         `^KS200`이 1행만 반환 → **최고 가중치 KOSPI 지표가 무음 사망**(→ `^KS11` 1순위)
         KTB 3Y 네이버 엔드포인트 HTTP 410 → 값이 3.0에 **고정**(→ FRED 폴백, 실측 4.286)
         US 2Y로 13주물(`^IRX`)을 쓰던 오류(→ FRED `DGS2` 1순위)
-- [ ] PostgreSQL 마이그레이션 검토
+- [x] PostgreSQL 마이그레이션 **검토 완료 → 전환 보류** (2026-10-01)
+      - 근거 문서: `docs/postgres_migration_assessment.md`
+      - 실측: SQLite 공개 메서드 28개 중 **8개가 PG 미구현**(서킷브레이커 거래량·모멘텀 리포트 등
+        프로덕션 경로가 런타임 AttributeError) + `momentum_paper` 테이블 스키마 부재
+      - 현 규모(DB 29MB·최대 23만행·단일 프로세스)는 SQLite로 충분 → 이득 없음
+      - 재검토 트리거: decisions 100만행 / DB 5GB / 다중 writer / 외부 동시질의
+      - 재발 방지: `test_db_interface_parity.py`(격차 변동 시 CI 실패) + 기동 시 ERROR 경고
 - [ ] 대시보드/리포트 고도화
 
 ---
