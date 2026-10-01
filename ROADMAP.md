@@ -71,7 +71,13 @@
 - 전제: P1~P4 완료, OOS 샤프/승률/MDD 기준 충족
 
 ## P6. 고도화
-- [ ] 유니버스 파이프라인(`infrastructure/market_data/universe_provider.py`) 안정화
+- [x] 유니버스 파이프라인(`infrastructure/market_data/universe_provider.py`) 안정화 (2026-10-01)
+      - 🔴 **`await` 누락 버그 수정**: `_check_universe_source()`가 무음 미실행 → 폴백 CRITICAL 알림이 죽어 있었음
+        (CI에 'await 누락 탐지' + 회귀 테스트 추가)
+      - **CSV 자동 갱신 스케줄**(토 09:00, `universe_refresh`, 잡 13개) — 그동안 수동 실행만 가능했음
+        + 축소 방지 가드(신규 < 기존 90%면 덮어쓰지 않음)
+      - **신선도 검사**: `UNIVERSE_MAX_AGE_DAYS`(기본 14일) 초과 시 `csv_stale` 판정 → 부팅 시 경고 알림
+      - **시장 정보 보존**: KOSDAQ 종목이 전부 KOSPI로 표기되던 문제 수정 → KOSPI 217 / KOSDAQ 298
 - [ ] 거시 지표 확장 (해외지수/금리/원자재)
 - [ ] PostgreSQL 마이그레이션 검토
 - [ ] 대시보드/리포트 고도화

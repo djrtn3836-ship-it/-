@@ -139,6 +139,68 @@ def save_universe_csv(entries: Sequence[UniverseEntry], out_path: Path = DEFAULT
     return len(entries)
 
 
+async def scheduled_universe_refresh() -> Dict[str, Any]:
+    """스케줄러 진입점: 유니버스 CSV를 주기적으로 갱신한다 (P6 고도화).
+
+    안전장치:
+    - 안전모드(TEST_MODE/MOCK_DATA_ENABLED)에서는 네트워크 호출을 건너뛴다.
+    - 신규 수집분이 기존 파일보다 크게 적으면(90% 미만) 덮어쓰지 않는다
+      (API 일시 오류로 유니버스가 축소되는 사고 방지).
+    """
+    import sys
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+    from core.runtime_mode import RuntimeMode
+
+    if RuntimeMode.is_safe() or RuntimeMode.mock_data:
+        logger.info("[universe] 안전모드 → 자동 갱신 건너뜀")
+        return {"status": "skipped", "reason": "safe_mode"}
+
+    try:
+        result = UniverseFetcher().fetch(pages=4)
+    except Exception as e:
+        logger.error(f"[universe] 자동 갱신 실패(기존 CSV 유지): {e}")
+        return {"status": "error", "error": str(e)}
+
+    if not result.entries:
+        logger.error("[universe] 수집 결과 0종목 → 기존 CSV 유지")
+        return {"status": "empty"}
+
+    old_count = _count_existing(DEFAULT_OUT)
+    new_count = len(result.entries)
+    if old_count and new_count < old_count * 0.9:
+        logger.error(
+            f"[universe] 신규 {new_count}종목 < 기존 {old_count}종목의 90% → "
+            f"축소 방지로 덮어쓰지 않음(기존 CSV 유지)"
+        )
+        return {"status": "rejected", "old": old_count, "new": new_count}
+
+    try:
+        saved = save_universe_csv(result.entries, DEFAULT_OUT)
+    except Exception as e:
+        logger.error(f"[universe] CSV 저장 실패: {e}")
+        return {"status": "error", "error": str(e)}
+
+    logger.info(f"[universe] 자동 갱신 완료: {old_count} → {saved}종목")
+    return {"status": "ok", "old": old_count, "new": saved}
+
+
+def _count_existing(path: Path) -> int:
+    """기존 CSV의 데이터 행 수(헤더 제외). 없으면 0."""
+    try:
+        if not path.exists():
+            return 0
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            return max(0, sum(1 for line in f if line.strip()) - 1)
+    except OSError as e:
+        logger.debug(f"기존 CSV 행수 계산 실패(무시): {e}")
+        return 0
+
+
 def _main(argv: Sequence[str] | None = None) -> int:
     import sys
 

@@ -65,5 +65,34 @@ jobs:
           sys.exit(1 if bad or bom or flat else 0)
           PY
 
+      - name: Detect unawaited coroutines (silent no-op)
+        run: |
+          python - <<'PY'
+          import ast, os, sys
+          hits = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ("venv", "__pycache__", ".git", "fonts", "_archive", "logs", "reports", "tests")]
+              for fn in files:
+                  if not fn.endswith(".py"):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      tree = ast.parse(open(p, encoding="utf-8").read())
+                  except SyntaxError:
+                      continue
+                  for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                      am = {m.name for m in cls.body if isinstance(m, ast.AsyncFunctionDef)}
+                      for node in ast.walk(cls):
+                          if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                              f = node.value.func
+                              if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                                 and f.value.id == "self" and f.attr in am:
+                                  hits.append(f"{p}:{node.lineno} self.{f.attr}()")
+          print(f"unawaited_coroutines={len(hits)}")
+          for h in hits:
+              print("  unawaited:", h)
+          sys.exit(1 if hits else 0)
+          PY
+
       - name: Run tests
         run: python tests/run_all.py

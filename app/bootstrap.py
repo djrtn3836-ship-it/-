@@ -98,6 +98,7 @@ from report.weekly_pdf import WeeklyPDFGenerator
 from observability.ops_monitor import OpsMonitor
 from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_check
 from scheduler.data_readiness_monitor import scheduled_data_readiness_check
+from scheduler.universe_fetcher import scheduled_universe_refresh
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -375,15 +376,22 @@ class Bootstrapper(TracedService):
         logger.info(f"RealtimeMonitor started (tickers={self.startup_details['ticker_count']})")
 
     async def _check_universe_source(self) -> None:
-        """유니버스가 하드코딩 폴백으로 로드되면 CRITICAL 알림을 보낸다(조용한 폴백 금지)."""
+        """유니버스 폴백/스테일 여부를 점검하고 알림을 보낸다(조용한 폴백 금지)."""
         try:
-            from infrastructure.market_data.universe_provider import get_last_source
+            from infrastructure.market_data.universe_provider import (
+                get_csv_age_days,
+                get_last_source,
+            )
             source = get_last_source()
+            age = get_csv_age_days()
         except Exception as e:
             logger.warning(f"유니버스 소스 확인 실패: {e}")
             return
 
         self.startup_details["universe_source"] = source
+        self.startup_details["universe_csv_age_days"] = (
+            round(age, 2) if age is not None else None
+        )
         if source == "fallback":
             logger.critical(
                 "🚨 유니버스가 하드코딩 폴백으로 로드됨 — data/krx_universe.csv 확인 필요"
@@ -392,8 +400,19 @@ class Bootstrapper(TracedService):
                 "유니버스 폴백 사용: data/krx_universe.csv 없음/읽기 실패 → "
                 "하드코딩 종목으로 동작 중 (신규상장/시총변동 미반영)"
             )
+        elif source == "csv_stale":
+            logger.warning(
+                f"⚠️ 유니버스 CSV가 스테일({age:.1f}일 경과) — 자동 갱신(토 09:00) 대기"
+            )
+            await self._send_error_alert(
+                f"유니버스 CSV 스테일: {age:.1f}일 경과 → 신규상장/시총변동 반영 지연. "
+                f"`python -m scheduler.universe_fetcher` 즉시 실행 권장"
+            )
         elif source == "csv":
-            logger.info("✅ 유니버스 소스: CSV (data/krx_universe.csv)")
+            logger.info(
+                "✅ 유니버스 소스: CSV (data/krx_universe.csv"
+                + (f", 나이 {age:.1f}일)" if age is not None else ")")
+            )
         else:
             logger.warning(f"유니버스 소스 미확인: {source}")
 
@@ -705,12 +724,17 @@ class Bootstrapper(TracedService):
             CronTrigger(day_of_week="sun", hour=9, minute=0, timezone="Asia/Seoul"),
             "data_readiness", max_retries=1, retry_delay=30,
         )
+        self.scheduler.add_job_with_retry(
+            scheduled_universe_refresh,
+            CronTrigger(day_of_week="sat", hour=9, minute=0, timezone="Asia/Seoul"),
+            "universe_refresh", max_retries=2, retry_delay=60,
+        )
         self.scheduler.start()
-        self.startup_details["job_count"] = 12
-        log_event("SCHEDULER_STARTED", {"jobs": 12})
+        self.startup_details["job_count"] = 13
+        log_event("SCHEDULER_STARTED", {"jobs": 13})
         logger.info(
-            "Scheduler started (12 jobs registered, incl. momentum_report, "
-            "market_risk_check, data_readiness)"
+            "Scheduler started (13 jobs registered, incl. momentum_report, "
+            "market_risk_check, data_readiness, universe_refresh)"
         )
 
     async def start_workers(self) -> None:
@@ -1246,7 +1270,7 @@ class Bootstrapper(TracedService):
             await self.init_container()
             await self.connect_kiwoom()
             await self.start_monitor()
-            self._check_universe_source()
+            await self._check_universe_source()
             await self.start_regime_manager()
             await self.init_analyzer()
             await self.init_hyperparameter_tuner()

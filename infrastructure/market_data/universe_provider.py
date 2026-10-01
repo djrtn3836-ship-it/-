@@ -1,14 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-infrastructure/market_data/universe_provider.py - v5.8.0 FINAL (하드코딩 500종목 + CSV 우선)
+infrastructure/market_data/universe_provider.py - v5.8.0 FINAL (하드코딩 폴백 + CSV 우선)
 - CSV 파일이 있으면 CSV를 읽음
-- CSV가 없거나 오류가 나면 하드코딩된 500개 종목 사용
+- CSV가 없거나 오류가 나면 하드코딩 종목(FALLBACK_500, 실제 238종목) 사용
 - 더 이상 CSV 파싱으로 시간 낭비하지 않음
 - 🔥 V10: data/stock_universe.py에서 이동
+- 🔥 P6(고도화): CSV 신선도(staleness) 검사 + 시장(market) 정보 보존
+
+소스 판정(`get_last_source()`):
+    "csv"       : CSV 정상 로드 (신선)
+    "csv_stale" : CSV 로드했으나 오래됨(UNIVERSE_MAX_AGE_DAYS 초과) → 갱신 필요
+    "fallback"  : CSV 없음/읽기 실패 → 하드코딩 폴백 (구독 대상 축소·KOSDAQ 편중 위험)
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -18,9 +26,19 @@ logger = setup_logger("universe")
 
 CSV_PATH = Path(__file__).parent.parent.parent / "data" / "krx_universe.csv"
 
-# 마지막 get_universe() 호출이 어떤 소스를 사용했는지 기록 ("csv" | "fallback" | "unknown")
-# 폴백(하드코딩) 사용 여부를 상위 계층(부트스트랩)이 감지해 CRITICAL 알림을 보낼 수 있도록 노출한다.
+# CSV가 이 일수보다 오래되면 stale로 판정(경고 대상). 0 이하면 검사 비활성.
+DEFAULT_MAX_AGE_DAYS = 14
+
+# 마지막 get_universe() 호출이 어떤 소스를 사용했는지 기록
+# ("csv" | "csv_stale" | "fallback" | "unknown")
+# 상위 계층(부트스트랩)이 감지해 CRITICAL/WARNING 알림을 보낼 수 있도록 노출한다.
 _LAST_SOURCE: str = "unknown"
+
+# 마지막 CSV 로드 시 종목코드 → 시장("KOSPI" | "KOSDAQ") 매핑
+_LAST_MARKET_MAP: Dict[str, str] = {}
+
+# 마지막 CSV 파일 나이(일). CSV를 실제 읽은 경우에만 갱신.
+_LAST_CSV_AGE_DAYS: Optional[float] = None
 
 
 def get_last_source() -> str:
@@ -33,6 +51,42 @@ def is_fallback() -> bool:
     return _LAST_SOURCE == "fallback"
 
 
+def get_last_market_map() -> Dict[str, str]:
+    """마지막 CSV 로드의 종목코드 → 시장 매핑(폴백/실패 시 빈 dict)."""
+    return dict(_LAST_MARKET_MAP)
+
+
+def get_csv_age_days() -> Optional[float]:
+    """마지막으로 읽은 CSV의 나이(일). 읽지 않았으면 None."""
+    return _LAST_CSV_AGE_DAYS
+
+
+def max_age_days() -> float:
+    """허용 최대 CSV 나이(일). 환경변수 UNIVERSE_MAX_AGE_DAYS로 조정."""
+    try:
+        raw = os.getenv("UNIVERSE_MAX_AGE_DAYS")
+        return float(raw) if raw not in (None, "") else float(DEFAULT_MAX_AGE_DAYS)
+    except (TypeError, ValueError):
+        logger.warning("UNIVERSE_MAX_AGE_DAYS 값이 숫자가 아님 → 기본값 사용")
+        return float(DEFAULT_MAX_AGE_DAYS)
+
+
+def is_stale() -> bool:
+    """마지막 로드가 스테일 CSV였는지 여부."""
+    return _LAST_SOURCE == "csv_stale"
+
+
+def _csv_age_days(path: Path) -> Optional[float]:
+    try:
+        import time
+
+        age_sec = time.time() - path.stat().st_mtime
+        return age_sec / 86400.0
+    except OSError as e:
+        logger.debug(f"CSV mtime 조회 실패(무시): {e}")
+        return None
+
+
 @dataclass
 class StockInfo:
     code: str
@@ -43,8 +97,10 @@ class StockInfo:
     is_active: bool = True
 
 
-# 🔥 하드코딩 500종목 (2026-08-12 기준 KRX 상장 종목, 검증 완료)
-FALLBACK_500 = {
+# 🔥 하드코딩 폴백 종목 (2026-08-12 기준 KRX 상장 종목, 검증 완료)
+# ⚠️ 이름과 달리 실제 238종목 — 대형주 위주라 KOSDAQ 커버리지가 부족하다.
+#    (구독 한도 195 기준으로는 충분하나, 동적 CSV 대비 신규상장/시총변동 미반영)
+FALLBACK_500: dict[str, str] = {
     "005930": "삼성전자",
     "000660": "SK하이닉스",
     "035420": "NAVER",
@@ -368,10 +424,34 @@ def get_universe() -> dict[str, str]:
                                 # 시장 교차 정렬: 구독 한도(195)에서 특정 시장 편중 방지
                                 universe = _interleave_markets(universe, by_market)
                             result = validate_universe(universe)
-                            _LAST_SOURCE = "csv"
+
+                            # 시장 정보 보존(StockUniverse가 KOSPI로 뭉뚱그리지 않도록)
+                            _LAST_MARKET_MAP.clear()
+                            if market_col is not None:
+                                for code in result:
+                                    for mk, codes in by_market.items():
+                                        if code in codes:
+                                            _LAST_MARKET_MAP[code] = mk
+                                            break
+
+                            # 신선도 검사: 오래된 CSV는 갱신 필요(WARNING) — 폴백보다는 나음
+                            global _LAST_CSV_AGE_DAYS
+                            age = _csv_age_days(CSV_PATH)
+                            _LAST_CSV_AGE_DAYS = age
+                            limit = max_age_days()
+                            if age is not None and limit > 0 and age > limit:
+                                _LAST_SOURCE = "csv_stale"
+                                logger.warning(
+                                    f"⚠️ 유니버스 CSV가 {age:.1f}일 경과(허용 {limit:.0f}일) — "
+                                    f"`python -m scheduler.universe_fetcher` 갱신 필요"
+                                )
+                            else:
+                                _LAST_SOURCE = "csv"
+
                             logger.info(
                                 f"✅ CSV에서 {len(result)}개 종목 로드 완료"
                                 + (f" (시장 교차 정렬: {', '.join(f'{k} {len(v)}' for k, v in by_market.items())})" if by_market else "")
+                                + (f" [나이 {age:.1f}일]" if age is not None else "")
                             )
                             return result
                 except Exception:
@@ -400,9 +480,17 @@ class StockUniverse:
     def _init(self) -> None:
         self._stocks: dict[str, StockInfo] = {}
         universe = get_universe()
+        market_map = get_last_market_map()
         for code, name in universe.items():
-            self._stocks[code] = StockInfo(code, name, "KOSPI", "2000-01-01")
-        logger.info(f"StockUniverse 로드 완료: {len(self._stocks)}개 종목")
+            market = market_map.get(code, "UNKNOWN")
+            self._stocks[code] = StockInfo(code, name, market, "2000-01-01")
+        markets = {}
+        for s in self._stocks.values():
+            markets[s.market] = markets.get(s.market, 0) + 1
+        logger.info(
+            f"StockUniverse 로드 완료: {len(self._stocks)}개 종목 "
+            f"({', '.join(f'{k} {v}' for k, v in sorted(markets.items()))})"
+        )
 
     def get_all(self) -> list[StockInfo]:
         return list(self._stocks.values())
