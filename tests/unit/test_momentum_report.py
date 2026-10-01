@@ -61,7 +61,8 @@ class TestFormatReport:
         assert "+25.0%" in text
         assert "참고 신호" in text            # 참고 신호(모의)임을 명시
         assert "주문/포지션 아님" in text      # 실거래 아님
-        assert "생존편향" in text
+        assert "알파 없음" in text             # P5: 베타 분해 결과 명시
+        assert "승격 보류" in text
 
     def test_empty_picks(self) -> None:
         assert "산출 불가" in format_report([])

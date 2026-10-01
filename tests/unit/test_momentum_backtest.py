@@ -8,9 +8,12 @@ import pytest
 
 from validation.momentum_backtest import (
     MomentumConfig,
+    alpha_beta,
+    benchmark_returns,
     build_price_panel,
     compute_metrics,
     momentum_returns,
+    rank_scores,
     select_top_k,
     sweep_momentum,
 )
@@ -178,3 +181,85 @@ class TestSurvivorshipStress:
         cfg = MomentumConfig(lookback=5, top_k=1, hold_days=5, cost_pct=0.0,
                              delist_loss=0.9)
         assert momentum_returns(dates, panel, cfg)[0] == pytest.approx(-0.9)
+
+
+class TestAlphaBeta:
+    """P5: 시장 베타 분리 검증."""
+
+    def test_pure_beta_has_no_alpha(self) -> None:
+        bench = [0.01, -0.02, 0.03, -0.01, 0.02, 0.015, -0.005]
+        strat = [2.0 * b for b in bench]  # β=2, α=0, R²=1
+        ab = alpha_beta(strat, bench, 12.0)
+
+        assert ab.beta == pytest.approx(2.0)
+        assert ab.alpha_period == pytest.approx(0.0, abs=1e-9)
+        assert ab.r_squared == pytest.approx(1.0)
+
+    def test_pure_alpha_has_zero_beta(self) -> None:
+        bench = [0.01, -0.02, 0.03, -0.01, 0.02, 0.015, -0.005]
+        strat = [0.01] * len(bench)  # 시장과 무관한 고정 초과수익
+        ab = alpha_beta(strat, bench, 12.0)
+
+        assert ab.beta == pytest.approx(0.0, abs=1e-9)
+        assert ab.alpha_period == pytest.approx(0.01)
+        assert ab.t_stat > 2.0          # 일정한 초과수익 → 유의
+        assert ab.alpha_annual > 0.10
+
+    def test_insufficient_samples(self) -> None:
+        ab = alpha_beta([0.01, 0.02], [0.01, 0.02], 12.0)
+        assert ab.n == 2 and ab.beta == 0.0
+
+    def test_constant_benchmark_is_safe(self) -> None:
+        ab = alpha_beta([0.01, 0.02, 0.03], [0.005, 0.005, 0.005], 12.0)
+        assert ab.beta == 0.0  # 분산 0 → 크래시 없이 기본값
+
+    def test_summary_marks_significance(self) -> None:
+        bench = [0.01, -0.02, 0.03, -0.01, 0.02, 0.015, -0.005]
+        assert "비유의" in alpha_beta([2.0 * b for b in bench], bench, 12.0).summary()
+        assert "유의" in alpha_beta([0.01] * len(bench), bench, 12.0).summary()
+
+
+class TestBenchmarkAndRankModes:
+    def _panel(self) -> tuple:
+        dates = [f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(120)]
+        panel = [
+            {"A": 100.0 * (1.01 ** i), "B": 100.0 * (1.002 ** i), "C": 100.0}
+            for i in range(len(dates))
+        ]
+        return dates, panel
+
+    def test_benchmark_is_equal_weighted_everything(self) -> None:
+        dates, panel = self._panel()
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10)
+        bench = benchmark_returns(dates, panel, cfg)
+
+        assert bench
+        # A(강세) + B(약세) + C(횡보) 평균 → 양수
+        assert all(r > 0 for r in bench)
+
+    def test_reversal_mode_prefers_losers(self) -> None:
+        dates, panel = self._panel()
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10, rank_mode="reversal")
+        scores = rank_scores(panel, 30, cfg)
+
+        assert max(scores, key=scores.get) == "C"  # 횡보가 최근 하락폭이 가장 작음
+
+    def test_low_vol_mode_prefers_stable(self) -> None:
+        dates, panel = self._panel()
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10, rank_mode="low_vol")
+        scores = rank_scores(panel, 30, cfg)
+
+        assert scores["C"] > scores["A"]  # C(무변동)가 A(급등)보다 저변동
+
+    def test_high_52w_mode_ranks_by_peak_proximity(self) -> None:
+        dates, panel = self._panel()
+        cfg = MomentumConfig(lookback=20, top_k=1, hold_days=10, rank_mode="high_52w")
+        scores = rank_scores(panel, 100, cfg)
+
+        assert max(scores, key=scores.get) == "A"  # 신고가 근접
+
+    def test_all_modes_produce_returns(self) -> None:
+        dates, panel = self._panel()
+        for mode in ("momentum", "reversal", "low_vol", "high_52w"):
+            cfg = MomentumConfig(lookback=20, top_k=2, hold_days=10, rank_mode=mode)
+            assert momentum_returns(dates, panel, cfg), mode

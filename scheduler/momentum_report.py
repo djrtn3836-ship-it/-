@@ -191,7 +191,11 @@ def format_report(
         lines.append("<i>모의 추적: 아직 평가 완료된 픽이 없습니다(축적 중)</i>")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>⚠️ 참고용 모의 신호 — 주문/포지션 아님 · 생존편향 스트레스 검증됨</i>")
+    lines.append("<i>⚠️ 참고용 모의 신호 — 주문/포지션 아님</i>")
+    lines.append(
+        "<i>시장 베타 분해: 알파 없음(α −4.8%/년, β 1.22, R² 0.81) · "
+        "단순 보유 대비 열위 → 실거래 승격 보류</i>"
+    )
     return "\n".join(lines)
 
 
