@@ -69,6 +69,12 @@ class DeepAnalyzer:
         self._last_atr_alert: Dict[str, float] = {}
         self._atr_cooldown_seconds: int = 600
 
+        # ── P3-1: ML 설명 계층 (ExplainerV2, 지연 생성 + 스로틀) ──
+        self._explainer: Optional[Any] = None
+        self._last_explain_at: float = 0.0
+        self._explain_cooldown_seconds: float = 30.0
+        self._explain_min_deviation: float = 0.1
+
         self._ohlcv_cache: Dict[str, Dict[str, Any]] = {}
         self._cache_time: Dict[str, float] = {}
 
@@ -643,6 +649,50 @@ class DeepAnalyzer:
         except (ValueError, TypeError):
             return default
 
+    def _explain_ml(
+        self,
+        ticker: str,
+        features: Dict[str, Any],
+        ml_score: float,
+    ) -> Optional[Dict[str, Any]]:
+        """ML 예측의 피처 기여도를 설명한다(ExplainerV2, 스로틀 적용).
+
+        메인 워커 루프에서 매 이벤트마다 호출되므로,
+        (1) 모델이 의미 있는 예측을 냈고 (2) 쿨다운이 지났을 때만 계산한다.
+        """
+        import time as _time
+
+        if abs(ml_score - 0.5) < self._explain_min_deviation:
+            return None  # 모델이 사실상 중립 → 설명 가치 없음
+
+        now = _time.time()
+        if now - self._last_explain_at < self._explain_cooldown_seconds:
+            return None
+        self._last_explain_at = now
+
+        try:
+            if self._explainer is None:
+                from observability.explainer_v2 import ExplainerV2
+
+                self._explainer = ExplainerV2()
+            numeric = {k: float(v) for k, v in features.items() if isinstance(v, (int, float))}
+            if not numeric or self.feedback_learner is None:
+                return None
+
+            explanation = self._explainer.explain_local(
+                features=numeric,
+                score_fn=lambda f: float(self.feedback_learner.predict_prob(f)),
+                decision_id=ticker,
+                action="ML",
+                final_score=float(ml_score),
+            )
+            payload = explanation.to_dict()
+            payload["narrative"] = self._explainer.generate_narrative(explanation)
+            return payload
+        except Exception as e:
+            logger.debug(f"ML 설명 생성 실패 ({ticker}): {e}")
+            return None
+
     async def analyze(self, stock: Dict[str, Any]) -> Dict[str, Any]:
         try:
             ticker: str = str(stock.get("ticker", ""))
@@ -680,6 +730,7 @@ class DeepAnalyzer:
             momentum_score: float = max(0.0, min(1.0, 0.5 + abs(momentum) * 10))
 
             ml_score: float = 0.5
+            ml_explanation: Optional[Dict[str, Any]] = None
             if self.feedback_learner and self.feedback_learner._model_ready:
                 try:
                     features_for_ml: Dict[str, Any] = {
@@ -692,6 +743,7 @@ class DeepAnalyzer:
                     }
                     ml_score = float(self.feedback_learner.predict_prob(features_for_ml))
                     ml_score = max(0.1, min(0.9, ml_score))
+                    ml_explanation = self._explain_ml(ticker, features_for_ml, ml_score)
                 except Exception as e:
                     logger.debug(f"⚠️ ML 예측 실패 ({ticker}): {e}")
                     ml_score = 0.5
@@ -792,6 +844,7 @@ class DeepAnalyzer:
                 "momentum": momentum,
                 "momentum_score": momentum_score,
                 "ml_score": ml_score,
+                "ml_explanation": ml_explanation,
                 "risk_adjustment_factor": risk_adj,
                 "strategy_result": {
                     "final_score": strategy_score, "final_action": strategy_action,

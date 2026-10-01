@@ -4,8 +4,6 @@ E2E Bootstrap 통합 테스트
 """
 
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio

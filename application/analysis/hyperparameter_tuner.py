@@ -36,12 +36,12 @@ v1.1 변경 (Session 15):
     tuner.apply_to_pipeline(signal_pipeline)   # ← 즉시 반영
 """
 
-from typing import cast, Any, Dict, List, Optional, Tuple
+from typing import cast, Any, Dict, List, Optional
 
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable
 
 import optuna
 

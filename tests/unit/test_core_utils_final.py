@@ -1,5 +1,4 @@
 """core 유틸리티 기본 커버리지 테스트"""
-import pytest
 from core.exceptions import ConfigError, ValidationError, DataError, ExecutionError
 from core.font_utils import register_korean_fonts, FONT_NAME
 from core.holiday_utils import is_trading_day, get_next_trading_day, is_market_open

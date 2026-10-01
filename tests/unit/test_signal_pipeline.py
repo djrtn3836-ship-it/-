@@ -12,11 +12,9 @@ tests/unit/test_signal_pipeline.py - SignalPipeline V10 앙상블 단위 테스�
     - SignalPipeline.process() - 통합 플로우 (mock DB)
 """
 
-import asyncio
 import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from typing import List
+from unittest.mock import AsyncMock, MagicMock
 
 from application.analysis.signal_pipeline import (
     SignalPipeline,
@@ -27,9 +25,8 @@ from application.analysis.signal_pipeline import (
     _macd,
     _BUY_THRESHOLD,
     _SELL_THRESHOLD,
-    _MIN_CONFIDENCE,
 )
-from domain.models.signal import Action, Signal
+from domain.models.signal import Action
 from domain.strategies.base import StrategyResult
 
 

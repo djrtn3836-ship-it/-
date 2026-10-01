@@ -9,7 +9,6 @@
     TestPrepareSeries : 유효 종목 필터링(min_bars), FakeDB 연동
 """
 
-import math
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 

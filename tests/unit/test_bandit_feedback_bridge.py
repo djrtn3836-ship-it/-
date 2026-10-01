@@ -14,10 +14,9 @@ BanditFeedbackBridge + PerformanceTracker v3.0 통합 단위 테스트 (25개)
   - PerformanceTracker.get_status(): bandit_weights 포함 확인
 """
 
-import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,7 +28,6 @@ from application.analysis.bandit_feedback_bridge import (
     _clip_reward,
     _REWARD_CLIP_MIN,
     _REWARD_CLIP_MAX,
-    _MIN_FEEDBACK_INTERVAL_SEC,
 )
 from application.analysis.strategy_bandit import StrategyBandit
 

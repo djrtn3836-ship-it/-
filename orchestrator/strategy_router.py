@@ -123,8 +123,11 @@ class StrategyRouter:
         if cache_key in self._cache:
             timestamp, cached_result = self._cache[cache_key]
             if time.time() - timestamp < self._cache_ttl:
-                cached_result["cached"] = True
-                return cached_result
+                # 캐시 항목을 그대로 반환/변형하면 이전 호출자가 받은 결과 객체가
+                # 나중에 바뀌므로(별칭 공유) 얕은 복사본을 반환한다.
+                result = dict(cached_result)
+                result["cached"] = True
+                return result
 
         tasks = [self._run_strategy_safe(s, data) for s in self._strategies]
         results = await asyncio.gather(*tasks, return_exceptions=True)

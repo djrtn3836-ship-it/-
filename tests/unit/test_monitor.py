@@ -3,7 +3,6 @@
 RealtimeMonitor 단위 테스트
 """
 
-import pytest
 from scanner.realtime_monitor import RealtimeMonitor
 
 

@@ -3,7 +3,6 @@
 config 모듈 단위 테스트
 """
 
-import pytest
 from core.config import get_config
 
 

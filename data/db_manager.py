@@ -395,6 +395,30 @@ class DatabaseManager:
             "worst": min(rets),
         }
 
+    async def get_daily_total_volume(self, days: int = 21) -> list[dict[str, Any]]:
+        """일자별 전체 거래량 합계(최신순). 시장 유동성 비율 산정용."""
+        return await self._execute_read(
+            """SELECT date, SUM(volume) AS total_volume
+               FROM ohlcv
+               WHERE volume IS NOT NULL
+               GROUP BY date
+               ORDER BY date DESC
+               LIMIT ?""",
+            (int(days),),
+        )
+
+    async def get_latest_momentum_paper_return(self) -> float | None:
+        """가장 최근에 평가 완료된 모의 픽의 실현 수익률(없으면 None)."""
+        rows = await self._execute_read(
+            """SELECT period_return FROM momentum_paper
+               WHERE evaluated_at IS NOT NULL AND period_return IS NOT NULL
+               ORDER BY evaluated_at DESC, id DESC
+               LIMIT 1"""
+        )
+        if not rows or rows[0].get("period_return") is None:
+            return None
+        return float(rows[0]["period_return"])
+
     async def save_decision(self, analysis: dict[str, Any]) -> None:
         inject_trace_id(analysis, key="trace_id")
         features = analysis.pop("features", {})

@@ -29,7 +29,7 @@ import asyncio
 import math
 import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.logger import setup_logger
@@ -319,7 +319,7 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
             for i, r in enumerate(is_rows[: args.top], 1):
                 print(f"  {i:>2}. {r.label():<26} {r.is_metrics.summary()}")
 
-            print(f"\n상위 5개 OOS 재평가:")
+            print("\n상위 5개 OOS 재평가:")
             print(f"{'#':<3} {'파라미터':<26} {'IS Sharpe':>10} {'OOS Sharpe':>11} {'OOS CAGR':>10} {'OOS MDD':>9}")
             for i, r in enumerate(is_rows[:5], 1):
                 oos = evaluate_config(oos_dates, oos_panel, r.config)

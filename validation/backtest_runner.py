@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from core.logger import setup_logger
 from validation.backtester import AggregatedResult, Backtester, Trade

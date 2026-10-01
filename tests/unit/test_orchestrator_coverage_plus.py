@@ -1,6 +1,5 @@
 """orchestrator 모듈 커버리지 개선 테스트"""
 import pytest
-from unittest.mock import MagicMock, patch
 from orchestrator.portfolio_manager import PortfolioManager
 from orchestrator.strategy_router import StrategyRouter
 

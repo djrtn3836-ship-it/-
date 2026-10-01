@@ -33,7 +33,7 @@ if sys.platform == "win32":
     os.environ.setdefault("PYTHONUTF8", "1")
 
 import asyncio
-from typing import Any, cast
+from typing import Any
 import signal
 from pathlib import Path
 

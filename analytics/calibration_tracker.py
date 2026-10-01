@@ -12,7 +12,7 @@ Confidence Calibration Drift 감지 (Regime별 분리) + ABTest 연동
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 from core.logger import setup_logger
 from observability.tracer import get_tracer

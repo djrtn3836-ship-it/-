@@ -1,6 +1,5 @@
 # analyze_project.py
 import ast
-import os
 from pathlib import Path
 from collections import defaultdict
 

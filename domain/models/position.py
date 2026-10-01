@@ -7,7 +7,7 @@ domain/models/position.py - V10 Pure Domain Models (Position, TrailingStopState)
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 from datetime import datetime
 from enum import Enum
 

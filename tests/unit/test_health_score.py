@@ -22,11 +22,7 @@ import time
 import pytest
 
 from observability.health_score import (
-    ComponentScore,
-    SystemHealthScore,
     _COMPONENT_WEIGHTS,
-    _SCORE_CRITICAL,
-    _SCORE_WARNING,
     _status_from_score,
     calculate_health_score,
     score_database,

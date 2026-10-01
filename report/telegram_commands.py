@@ -4,7 +4,7 @@ report/telegram_commands.py - v7.3.1 (mypy strict 완전 적용)
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Tuple, Callable
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters

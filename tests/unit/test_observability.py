@@ -6,7 +6,6 @@ tests/unit/test_observability.py - V10 Observability 단위 테스트
 - PerformanceTracker v2.0 지표 계산 검증
 """
 import sys
-import asyncio
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -15,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pytest
 from observability.trace_id import new_trace_id, bind_trace_id, current_trace_id, reset_trace_id, trace_context
-from observability.tracer import get_tracer, ModuleTracer
+from observability.tracer import get_tracer
 from analytics.performance_tracker import PerformanceTracker
 
 

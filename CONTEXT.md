@@ -103,6 +103,22 @@ AB Framework → OrderExecutor(Paper) → Telegram 명령어 → Scheduler → W
 
 **배선 신설**: `observability/ops_monitor.py` — 이상탐지 → 근본원인 → 스로틀 알림 파사드.
 부수 수정: `_IsolationTree.fit`이 상수 특징에서 뿌리 리프가 되어 **모든 점을 0.5로 판정하던 버그** 수정(특징 폴백).
+
+### ✅ P4-2 정적 검사 도입 + 🔴 뭉개진 파일 3개 복원 (2026-10-01)
+- **ruff F 게이트**: CI에 `ruff check . --select F` 추가. F 규칙 82건 → **0건**
+  (미사용 import 63, f-string 8, 미사용 변수 6, 재정의 5)
+- 🔴 **`ast.parse` 거짓 통과 사고**: 파일이 **한 줄로 뭉개지면** 첫 `#` 주석이 전체를
+  삼켜 '빈 모듈'로 파싱 성공 → 검사기(BOM/Syntax)가 **무음 통과**시키고 있었다.
+  | 파일 | 상태 | 영향 |
+  | :--- | :--- | :--- |
+  | `data/dart_connector.py` | 539줄(04964c0) 복원 | 레거시 `scanner_main.py` import 실패 |
+  | `tests/test_chaos_injection.py` | 281줄(97c90ba) 복원 | **테스트 3건 무음 미수집** |
+  | `tests/test_telegram_events.py` | 194줄(97c90ba) 복원 | **테스트 1건 무음 미수집** |
+  → 검사기에 **뭉개짐 탐지**(줄바꿈 0 + 200자 초과, 파싱 결과 빈 모듈) 추가해 재발 차단.
+- **부수 버그 수정**: `StrategyRouter.route()`가 캐시 객체를 그대로 반환·변형해
+  **이전 호출자의 결과가 나중에 바뀌던 별칭(alias) 버그** → 얕은 복사 반환으로 수정.
+- **공허한 테스트 2종 재작성**: `test_stock_filter.py`·`test_strategy_router.py`가
+  대상 코드를 호출조차 하지 않고 지역 변수만 검사하고 있었다(ruff F841이 적발) → 실제 API 검증으로 교체.
 - 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
 - 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
 

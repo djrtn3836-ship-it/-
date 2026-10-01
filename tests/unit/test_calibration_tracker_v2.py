@@ -9,7 +9,6 @@ CalibrationTracker v5.2.0 테스트
 """
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from analytics.calibration_tracker import CalibrationTracker, _AB_CALIBRATION_TEST

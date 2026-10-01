@@ -24,13 +24,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio ruff
+
+      - name: Static analysis (ruff F — 실버그 규칙)
+        run: ruff check . --select F
 
       - name: Verify encoding (UTF-8, no BOM) and syntax
         run: |
           python - <<'PY'
           import ast, os, sys
-          bad, bom, n = [], 0, 0
+          bad, bom, n, flat = [], 0, 0, []
           for root, dirs, files in os.walk("."):
               dirs[:] = [d for d in dirs if d not in ("venv", "__pycache__", ".git", "fonts", "_archive", "logs", "reports")]
               for fn in files:
@@ -41,14 +44,25 @@ jobs:
                   raw = open(p, "rb").read()
                   if raw.startswith(b"\xef\xbb\xbf"):
                       bom += 1
+                  # 줄바꿈이 사라진(뭉개진) 파일 탐지 — 첫 '#' 주석이 파일 전체를
+                  # 삼키면 ast.parse가 '빈 모듈'로 통과하는 거짓 통과가 발생한다.
+                  if len(raw) > 200 and raw.count(b"\n") == 0:
+                      flat.append(p)
+                      continue
                   try:
-                      ast.parse(raw.decode("utf-8"))
+                      tree = ast.parse(raw.decode("utf-8"))
                   except SyntaxError as e:
                       bad.append((p, e.lineno, e.msg))
-          print(f"py={n} BOM={bom} syntax_errors={len(bad)}")
+                      continue
+                  # 코드가 있는데 파싱 결과가 비어 있으면(주석에 삼켜짐) 실패로 간주
+                  if len(raw) > 200 and not tree.body:
+                      flat.append(p)
+          print(f"py={n} BOM={bom} syntax_errors={len(bad)} flattened={len(flat)}")
           for b in bad:
-              print(" ", b)
-          sys.exit(1 if bad or bom else 0)
+              print("  syntax:", b)
+          for f in flat:
+              print("  flattened:", f)
+          sys.exit(1 if bad or bom or flat else 0)
           PY
 
       - name: Run tests

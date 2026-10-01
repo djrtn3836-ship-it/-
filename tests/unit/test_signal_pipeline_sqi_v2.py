@@ -18,7 +18,6 @@ tests/unit/test_signal_pipeline_sqi_v2.py - SQI v2 단위 테스트
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from typing import List
 
 from application.analysis.signal_pipeline import (
     SignalPipeline,
@@ -29,7 +28,6 @@ from application.analysis.signal_pipeline import (
     _SQI_V2_MOMENTUM_W,
     _SQI_V2_CONFIDENCE_W,
     _SQI_V2_CONSENSUS_W,
-    _MIN_CONFIDENCE,
 )
 from domain.models.signal import Action
 from domain.strategies.base import StrategyResult
@@ -574,7 +572,6 @@ class TestProcessSqiV2Integration:
         """SQI v2가 _MIN_CONFIDENCE 미만 → HOLD 강제 (tech_data 있을 때)"""
         pipeline = _make_pipeline()
         # 모든 전략을 mock으로 매우 낮은 신뢰도로 설정
-        from unittest.mock import patch, AsyncMock as AM
         from domain.strategies.base import StrategyResult
 
         async def mock_analyze(data):

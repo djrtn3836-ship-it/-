@@ -96,6 +96,7 @@ from report.telegram_commands import TelegramCommandHandler
 from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
 from observability.ops_monitor import OpsMonitor
+from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_check
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -409,7 +410,11 @@ class Bootstrapper(TracedService):
         await self.analyzer.load_weights()
 
         # ── P3-1: 관측성 체인 배선 (이상탐지 → 드리프트 → 근본원인 → 알림) ──
-        self.ops_monitor = OpsMonitor(on_alert=self._send_ops_alert)
+        # cb_provider: 서킷브레이커 상태를 RCA에 공급 (risk/market_risk_monitor)
+        self.ops_monitor = OpsMonitor(
+            on_alert=self._send_ops_alert,
+            cb_provider=cb_input_provider,
+        )
 
         self.signal_pipeline = SignalPipeline(
             db_manager=self.db,
@@ -689,10 +694,15 @@ class Bootstrapper(TracedService):
             CronTrigger(day_of_week="sun", hour=3, minute=0, timezone="Asia/Seoul"),
             "hyperparameter_tuning", max_retries=1, retry_delay=60,
         )
+        self.scheduler.add_job_with_retry(
+            scheduled_market_risk_check,
+            CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
+            "market_risk_check", max_retries=2, retry_delay=5,
+        )
         self.scheduler.start()
-        self.startup_details["job_count"] = 10
-        log_event("SCHEDULER_STARTED", {"jobs": 10})
-        logger.info("Scheduler started (10 jobs registered, incl. momentum_report)")
+        self.startup_details["job_count"] = 11
+        log_event("SCHEDULER_STARTED", {"jobs": 11})
+        logger.info("Scheduler started (11 jobs registered, incl. momentum_report, market_risk_check)")
 
     async def start_workers(self) -> None:
         if not self.analyzer or not self.db:

@@ -10,7 +10,6 @@ telegram mock은 tests/conftest.py에서 전역 설치됨.
 """
 
 import asyncio
-import pytest
 from unittest.mock import MagicMock
 
 from execution.order_executor import OrderExecutor, OrderMode, OrderRequest

@@ -20,9 +20,7 @@ import pytest
 
 from risk.correlation_matrix import (
     CorrelationPair,
-    DiversificationReport,
     RollingCorrelation,
-    _align_returns,
     _pearson_correlation,
 )
 

@@ -15,8 +15,7 @@ tests/unit/test_trace_propagation.py - Trace ID 전파 단위 테스트
 """
 
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from observability.trace_propagation import (
     TraceIdMiddleware,
@@ -226,6 +225,7 @@ class TestPropagateTrace:
         """중첩 propagate_trace → 내부 값 우선"""
         async def _test():
             async with propagate_trace("OUTER") as outer_tid:
+                assert outer_tid == "OUTER"
                 async with propagate_trace("INNER") as inner_tid:
                     assert current_trace_id() == "INNER"
                     assert inner_tid == "INNER"

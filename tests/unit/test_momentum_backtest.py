@@ -2,7 +2,7 @@
 """tests/unit/test_momentum_backtest.py - 횡단면 모멘텀 백테스터 검증 (오프라인)."""
 
 import math
-from typing import Dict, List, Sequence
+from typing import List
 
 import pytest
 

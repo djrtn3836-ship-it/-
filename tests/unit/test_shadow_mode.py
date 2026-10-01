@@ -20,7 +20,6 @@ tests/unit/test_shadow_mode.py - Shadow Mode 테스트 (v1.0)
 import asyncio
 import dataclasses
 import pytest
-import time
 
 from domain.models.signal import Action, Signal
 from application.analysis.shadow_mode import (
@@ -28,7 +27,6 @@ from application.analysis.shadow_mode import (
     ShadowRecord,
     ShadowRegistry,
     ShadowRunner,
-    ShadowSummary,
 )
 
 # frozen dataclass FrozenInstanceError (Python 3.10 미만에서는 dataclasses.FrozenInstanceError 없음)

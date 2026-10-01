@@ -573,7 +573,7 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  OOS: {best.oos_metrics.summary()}")
         elif not args.sweep:
             metrics = evaluate_combo(series_list, 0.25, SimConfig())
-            print(f"기준 파라미터(thr=0.25, hold=5d, stop=5%, tp=10%)")
+            print("기준 파라미터(thr=0.25, hold=5d, stop=5%, tp=10%)")
             print(f"  {metrics.summary()}")
         else:
             print(f"스윕 조합: 필터 {len(filter_names)} × 임계값 {len(thresholds)} × "

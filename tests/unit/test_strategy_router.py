@@ -1,44 +1,61 @@
-# tests/unit/test_strategy_router.py
-"""
-StrategyRouter 라우팅 테스트
+# -*- coding: utf-8 -*-
+"""tests/unit/test_strategy_router.py - 전략 라우터 실질 검증.
+
+P4-2 정적 검사(ruff F841)에서 기존 테스트가 라우터를 **호출조차 하지 않고**
+지역 변수만 검사하는 공허한 테스트임이 드러나,
+실제 `StrategyRouter.route()` 계약과 캐싱 동작을 검증하도록 재작성했다.
 """
 
+from typing import Any, Dict
+
 import pytest
+
 from orchestrator.strategy_router import StrategyRouter
+
+TECH: Dict[str, Any] = {"rsi": 45.0, "ema5": 71000.0, "ema20": 69000.0, "volume_ratio": 1.2}
+
+
+def _data(ticker: str = "005930", price: float = 70000.0, rsi: float = 45.0) -> Dict[str, Any]:
+    return {
+        "ticker": ticker,
+        "price": price,
+        "volume": 1000,
+        "tech_data": {**TECH, "rsi": rsi},
+    }
 
 
 class TestStrategyRouter:
-    """전략 라우터 테스트"""
+    def test_is_singleton(self) -> None:
+        assert StrategyRouter() is StrategyRouter()
 
-    def test_init(self):
-        """라우터 초기화 테스트"""
-        router = StrategyRouter()
-        assert router is not None
+    async def test_route_returns_expected_contract(self) -> None:
+        result = await StrategyRouter().route(_data(ticker="000660"))
 
-    def test_route_normal(self):
-        """정상 시장 라우팅 테스트"""
-        router = StrategyRouter()
-        market_condition = "normal"
-        # 라우팅 로직 테스트
-        assert market_condition in ["normal", "bull", "bear"]
+        assert set(result) >= {
+            "final_action", "final_score", "final_confidence",
+            "consensus", "action_votes", "strategy_results", "cached",
+        }
+        assert result["final_action"] in {"BUY", "SELL", "HOLD"}
+        assert 0.0 <= float(result["final_confidence"]) <= 1.0
 
-    def test_route_caching(self):
-        """라우팅 캐싱 테스트"""
-        router = StrategyRouter()
-        # 캐싱 동작 검증
-        assert router is not None
+    async def test_route_executes_all_registered_strategies(self) -> None:
+        result = await StrategyRouter().route(_data(ticker="035420"))
 
-    def test_weight_normalization(self):
-        """가중치 정규화 테스트"""
-        router = StrategyRouter()
-        weights = [0.3, 0.5, 0.2]
-        total = sum(weights)
-        assert abs(total - 1.0) < 0.01
+        assert len(result["strategy_results"]) >= 3
+        assert isinstance(result["action_votes"], (dict, list))
 
-    def test_action_vote_consensus(self):
-        """액션 투표 합의 테스트"""
+    async def test_identical_request_is_cached(self) -> None:
         router = StrategyRouter()
-        votes = ["BUY", "BUY", "SELL"]
-        # 투표 로직: 다수결
-        buy_count = votes.count("BUY")
-        assert buy_count >= 2
+        payload = _data(ticker="051910", price=12345.0)
+
+        first = await router.route(payload)
+        second = await router.route(dict(payload))
+
+        assert first["cached"] is False
+        assert second["cached"] is True
+
+    async def test_weights_are_normalized(self) -> None:
+        router = StrategyRouter()
+        total = sum(float(w) for w in router._weights.values())
+
+        assert total == pytest.approx(1.0, abs=0.01)

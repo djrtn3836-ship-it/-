@@ -15,7 +15,7 @@ import sys
 import traceback
 import types
 from collections.abc import Awaitable, Callable
-from typing import cast, Coroutine, Any, Any, Dict, Optional
+from typing import cast, Coroutine, Any, Dict, Optional
 
 from core.logger import setup_logger
 

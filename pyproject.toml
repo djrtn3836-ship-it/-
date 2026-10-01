@@ -85,6 +85,8 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
+# CI 게이트는 실버그 규칙만 통과시킨다: `ruff check . --select F`
+# (E/W/I/C/UP 전체는 아직 미준수 — 점진 정리 대상)
 select = [
     "E", "W", "F", "I", "C", "UP",
 ]
