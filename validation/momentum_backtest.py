@@ -565,7 +565,7 @@ async def _main(argv: Optional[Sequence[str]] = None) -> int:
                     )
 
                 # ── 롱숏(시장중립) = 베타 제거 후 순수 알파 진단 ──
-                print(f"\n  [롱숏/시장중립 — 순수 알파 진단]")
+                print("\n  [롱숏/시장중립 — 순수 알파 진단]")
                 print(f"  {'전략':<18}{'Sharpe':>8}{'CAGR':>9}{'α(연)':>9}{'β':>7}{'t':>7}")
                 for mode in modes:
                     c = MomentumConfig(
