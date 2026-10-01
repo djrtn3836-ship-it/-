@@ -91,6 +91,7 @@ from analytics.performance_tracker import performance_tracker
 from analytics.calibration_executor import ExecutionCalibrator
 from analytics.alert_verifier import scheduled_verify
 from scheduler.momentum_report import send_momentum_report
+from report.html_dashboard import scheduled_dashboard
 from report.telegram_sender import TelegramSender
 from report.telegram_commands import TelegramCommandHandler
 from report.daily_report import DailyReportGenerator
@@ -715,6 +716,11 @@ class Bootstrapper(TracedService):
             "hyperparameter_tuning", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            scheduled_dashboard,
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
+            "dashboard", max_retries=1, retry_delay=30,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_market_risk_check,
             CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
             "market_risk_check", max_retries=2, retry_delay=5,
@@ -730,11 +736,11 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 13
-        log_event("SCHEDULER_STARTED", {"jobs": 13})
+        self.startup_details["job_count"] = 14
+        log_event("SCHEDULER_STARTED", {"jobs": 14})
         logger.info(
-            "Scheduler started (13 jobs registered, incl. momentum_report, "
-            "market_risk_check, data_readiness, universe_refresh)"
+            "Scheduler started (14 jobs registered, incl. momentum_report, "
+            "market_risk_check, data_readiness, universe_refresh, dashboard)"
         )
 
     async def start_workers(self) -> None:

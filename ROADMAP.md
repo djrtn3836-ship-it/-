@@ -92,7 +92,12 @@
       - 현 규모(DB 29MB·최대 23만행·단일 프로세스)는 SQLite로 충분 → 이득 없음
       - 재검토 트리거: decisions 100만행 / DB 5GB / 다중 writer / 외부 동시질의
       - 재발 방지: `test_db_interface_parity.py`(격차 변동 시 CI 실패) + 기동 시 ERROR 경고
-- [ ] 대시보드/리포트 고도화
+- [x] 대시보드/리포트 고도화 (2026-10-01)
+      - 신규: `report/html_dashboard.py` — 서버 없이 열리는 **단일 HTML 파일** 대시보드
+      - 6개 섹션: 시스템 상태 · 데이터 축적(P7 게이트) · 감시·알림 품질 · 모멘텀 모의 ·
+        매크로 13지표 · 전략 검증 결론(알파 부재 명시)
+      - 매일 평일 17:30 자동 생성(`dashboard` 잡) → `reports/dashboard.html` (gitignore)
+      - 외부 문자열 escape 검증 포함(주입 방지)
 
 ---
 
