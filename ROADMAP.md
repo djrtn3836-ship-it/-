@@ -103,8 +103,11 @@
       - `telegram_commands`: **import 검증(P8-4 SyntaxError 사고 재발 방지)**, `/trace` 경로,
         권한 가드, 미인식 문장 안내
       - `daily_report`: 빈 입력 진단, 리스크/액션 목록, 산출 경로
-- [ ] **P9-4** 수집 계층: `collector/collector_status.py`, `infrastructure/dart/client.py`
-- [ ] **P9-5** 관측 계층: `observability/auto_trace.py`, `core/exception_handler.py`
+- [x] **P9-4** 수집 계층 테스트 (2026-10-01) — `test_infra_layer.py`(수집 파트 9개)
+      - `collector_status`: 싱글턴, **3회 연속 실패 시 비정상**(단발 오탐 방지), 성공 시 회복
+- [x] **P9-5** 관측 계층 테스트 (2026-10-01) — `test_infra_layer.py`(관측 파트 11개)
+      - `exception_handler`: 핸들러 설치/복원, **이벤트 루프 없는 동기 컨텍스트 안전성**
+      - `auto_trace` / `trace_config`: 상속 자동 추적, 데코레이터 동작 보존, 전역 토글
 
 ### P10. 운영·관측 고도화
 - [ ] **P10-1** 대시보드 확장(상관행렬·트레이스·캘리브레이션 섹션)
