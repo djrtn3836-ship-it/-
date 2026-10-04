@@ -136,6 +136,17 @@ def collect_shadow_section() -> Dict[str, Any]:
         return {}
 
 
+def collect_calibration_section() -> Dict[str, Any]:
+    """신뢰도 캘리브레이션(ECE) 요약(P8-3)."""
+    try:
+        from analytics.calibration_bridge import get_calibration_summary
+
+        return get_calibration_summary()
+    except Exception as e:
+        logger.debug(f"캘리브레이션 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_macro_section() -> Dict[str, Any]:
     try:
         from filters.macro_filter import MacroFilter
@@ -184,6 +195,7 @@ def render_html(data: Dict[str, Any]) -> str:
     macro = data.get("macro", {})
     risk = data.get("risk", {}) or {}
     shadow = data.get("shadow", {}) or {}
+    calib = data.get("calibration", {}) or {}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 시스템 상태
@@ -326,6 +338,27 @@ def render_html(data: Dict[str, Any]) -> str:
       <h2>8. 섀도우 전략 평가</h2>{shadow_body}
     </div>"""
 
+    # --- 캘리브레이션 (P8-3)
+    regimes = calib.get("regimes") or {}
+    if not regimes:
+        calib_body = '<div class="note">채점된 예측 없음 — 시그널 발생 후 5거래일 뒤 자동 채점</div>'
+    else:
+        grows = ""
+        for name, cal in regimes.items():
+            if cal.get("status") == "insufficient_data":
+                grows += f"<tr><th>{_esc(name)}</th><td>표본 부족({_fmt(cal.get('sample'))})</td></tr>"
+            else:
+                ece = float(cal.get("ece", 0.0))
+                lvl = "ok" if ece <= 0.05 else ("warn" if ece <= 0.12 else "bad")
+                grows += (f"<tr><th>{_esc(name)}</th><td>{_badge(f'ECE {ece:.3f}', lvl)} "
+                          f"<small>n={_fmt(cal.get('total_samples'))}</small></td></tr>")
+        calib_body = f"<table>{grows}</table><div class='note'>ECE 낮을수록 신뢰도가 실제 적중률과 일치(≤0.05 양호).</div>"
+
+    calib_html = f"""
+    <div class="card">
+      <h2>9. 신뢰도 캘리브레이션 (ECE)</h2>{calib_body}
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -347,7 +380,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}</div>
 </body></html>"""
 
 
@@ -376,6 +409,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
     data["macro"] = collect_macro_section()
     data["risk"] = collect_risk_section()
     data["shadow"] = collect_shadow_section()
+    data["calibration"] = collect_calibration_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

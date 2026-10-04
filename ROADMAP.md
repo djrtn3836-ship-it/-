@@ -74,7 +74,11 @@
       - 기본 실험 전략 `low_vol_120d`(P5에서 유일한 양의 OOS 알파 후보) 자동 등록
       - 기록은 JSONL(`logs/shadow_records.jsonl`) — DB/PG 계약 불변 유지
       - 안전: 실패/타임아웃은 `ShadowRecord.error`로 흡수, **주문 없음**, 대시보드 8번 섹션
-- [ ] **P8-3** `analytics/calibration_tracker.py` 배선 — ML 신뢰도 ECE 드리프트
+- [x] **P8-3** `analytics/calibration_tracker.py` 배선 — `analytics/calibration_bridge.py` 신설 (2026-10-01)
+      - **결과 라벨 부재 문제 해결**: 매매 대신 N거래일(5일) 후 실현가로 승/패 채점
+        (BUY=상승, SELL=하락, HOLD=보합 — 임계 ±0.5%)
+      - `SignalPipeline` 예측 기록 훅 → 평일 16:00 `calibration_settle` 잡(16잡) → ECE 산출 + AB 피드백
+      - 트래커가 메모리 기반이라 `settled.jsonl`에서 매번 재구성(멱등) / 대시보드 9번 섹션
 - [ ] **P8-4** `observability/trace_tree.py` 노출 — 텔레그램 `/trace` + 대시보드
 - [ ] **P8-5** `domain/models/market_tick.py`·`position.py` — 배선 또는 `_archive/` 보관
 - [ ] **P8-6** `config/secure_config.py` — 보관/제거 결정 및 문서화

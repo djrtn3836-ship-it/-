@@ -183,3 +183,74 @@ class TestPipelineHook:
         assert hasattr(sp.SignalPipeline, "_run_shadow")
         src = (Path(sp.__file__)).read_text(encoding="utf-8")
         assert "await self._run_shadow(data, signal)" in src
+
+
+class TestCalibrationBridge:
+    """P8-3: 가격 기반 채점으로 결과 라벨을 만들어 캘리브레이션 폐루프를 닫는다."""
+
+    async def test_judge_rules(self) -> None:
+        from analytics.calibration_bridge import judge
+
+        assert judge("BUY", 100.0, 101.0) is True
+        assert judge("BUY", 100.0, 99.0) is False
+        assert judge("SELL", 100.0, 99.0) is True
+        assert judge("SELL", 100.0, 101.0) is False
+        assert judge("HOLD", 100.0, 100.2) is True
+        assert judge("HOLD", 100.0, 110.0) is False
+        assert judge("HOLD", 0.0, 100.0) is None
+
+    async def test_settle_writes_and_is_idempotent(self, tmp_path: Path) -> None:
+        from analytics import calibration_bridge as cb
+        from datetime import datetime, timedelta
+
+        past = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        pred_path = tmp_path / "p.jsonl"
+        settled_path = tmp_path / "s.jsonl"
+        pred_path.write_text(
+            json.dumps({"date": past, "regime": "trend", "confidence": 0.8,
+                        "ticker": "005930", "action": "BUY", "price": 100.0}) + "\n",
+            encoding="utf-8",
+        )
+
+        class _DB:
+            async def get_ohlcv_range(self, ticker: str, start: str, end: str):
+                return [{"date": past, "close": 100.0}, {"date": end, "close": 105.0}]
+
+        r1 = await cb.settle_predictions(_DB(), pred_path=pred_path, settled_path=settled_path)
+        r2 = await cb.settle_predictions(_DB(), pred_path=pred_path, settled_path=settled_path)
+
+        assert r1["new"] == 1 and r1["status"] == "ok"
+        assert r2["already"] == 1 and (r2["new"] == 0)
+        rows = [json.loads(l) for l in settled_path.read_text(encoding="utf-8").splitlines()]
+        assert rows[0]["actual_win"] is True and rows[0]["return"] > 0
+
+    async def test_tracker_rebuilt_from_settled(self, tmp_path: Path) -> None:
+        from analytics import calibration_bridge as cb
+
+        settled_path = tmp_path / "s.jsonl"
+        with open(settled_path, "w", encoding="utf-8") as f:
+            for i in range(15):
+                f.write(json.dumps({"regime": "trend", "confidence": 0.85,
+                                    "actual_win": bool(i % 5)}) + "\n")
+
+        tracker = cb.build_tracker(settled_path)
+        cal = tracker.get_calibration("trend")
+
+        assert cal["status"] != "insufficient_data"
+        assert cal["total_samples"] == 15
+        assert "ece" in cal
+
+    def test_record_prediction_skips_invalid(self, tmp_path: Path) -> None:
+        from analytics import calibration_bridge as cb
+
+        path = tmp_path / "p.jsonl"
+        assert cb.record_prediction("trend", 0.8, "", "BUY", 100.0, path) is False
+        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 0.0, path) is False
+        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 100.0, path) is True
+        assert len(path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+    def test_summary_handles_empty(self, tmp_path: Path) -> None:
+        from analytics import calibration_bridge as cb
+
+        s = cb.get_calibration_summary(tmp_path / "none.jsonl")
+        assert s["regimes"] == {}

@@ -465,8 +465,24 @@ class SignalPipeline(TracedService):
             f"sqi_v2={ensemble.sqi_v2:.3f} consensus={ensemble.consensus:.2f}"
         )
         self._observe_signal(ticker, final_score, confidence, effective_sqi, _t0)
+        self._record_calibration(data, signal)
         await self._run_shadow(data, signal)
         return signal
+
+    def _record_calibration(self, data: Dict[str, Any], signal: Signal) -> None:
+        """신뢰도 캘리브레이션용 예측 기록 (P8-3) — 실패해도 무영향."""
+        try:
+            from analytics.calibration_bridge import record_prediction
+
+            record_prediction(
+                regime=str(data.get("regime", "unknown")),
+                confidence=float(signal.confidence),
+                ticker=signal.ticker,
+                action=signal.action.value,
+                price=float(signal.price),
+            )
+        except Exception as e:
+            trace.debug(f"캘리브레이션 기록 건너뜀: {e}")
 
     async def _run_shadow(self, data: Dict[str, Any], signal: Signal) -> None:
         """섀도우 전략 평가 훅 (P8-2) — 실패해도 프로덕션 흐름에 영향 없음."""
