@@ -465,9 +465,27 @@ class SignalPipeline(TracedService):
             f"sqi_v2={ensemble.sqi_v2:.3f} consensus={ensemble.consensus:.2f}"
         )
         self._observe_signal(ticker, final_score, confidence, effective_sqi, _t0)
+        self._record_trace(data, signal, _t0)
         self._record_calibration(data, signal)
         await self._run_shadow(data, signal)
         return signal
+
+    def _record_trace(self, data: Dict[str, Any], signal: Signal, t0: float) -> None:
+        """의사결정 경로 1단계 기록 (P8-4) — 실패해도 무영향."""
+        try:
+            from observability.trace_bridge import elapsed_ms, record_stage
+
+            record_stage(
+                trace_id=signal.trace_id or "",
+                module_name="SignalPipeline",
+                operation="process",
+                input_summary=f"ticker={signal.ticker} price={signal.price:.0f} regime={data.get('regime')}",
+                output_summary=f"{signal.action.value} score={signal.score:.3f} conf={signal.confidence:.3f}",
+                duration_ms=elapsed_ms(t0),
+                success=signal.action is not None,
+            )
+        except Exception as e:
+            trace.debug(f"trace 기록 건너뜀: {e}")
 
     def _record_calibration(self, data: Dict[str, Any], signal: Signal) -> None:
         """신뢰도 캘리브레이션용 예측 기록 (P8-3) — 실패해도 무영향."""

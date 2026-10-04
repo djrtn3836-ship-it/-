@@ -147,6 +147,17 @@ def collect_calibration_section() -> Dict[str, Any]:
         return {}
 
 
+def collect_trace_section() -> Dict[str, Any]:
+    """최근 의사결정 경로 요약(P8-4)."""
+    try:
+        from observability.trace_bridge import recent_summaries
+
+        return {"recent": recent_summaries(5)}
+    except Exception as e:
+        logger.debug(f"trace 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_macro_section() -> Dict[str, Any]:
     try:
         from filters.macro_filter import MacroFilter
@@ -196,6 +207,7 @@ def render_html(data: Dict[str, Any]) -> str:
     risk = data.get("risk", {}) or {}
     shadow = data.get("shadow", {}) or {}
     calib = data.get("calibration", {}) or {}
+    trace = data.get("trace", {}) or {}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 시스템 상태
@@ -359,6 +371,26 @@ def render_html(data: Dict[str, Any]) -> str:
       <h2>9. 신뢰도 캘리브레이션 (ECE)</h2>{calib_body}
     </div>"""
 
+    # --- 의사결정 경로 (P8-4)
+    traces = trace.get("recent") or []
+    if not traces:
+        trace_body = '<div class="note">기록된 trace 없음 — 시그널 발생 후 표시(텔레그램 <code>/trace</code>)</div>'
+    else:
+        trows = ""
+        for t in traces:
+            nodes = t.get("node_count", t.get("nodes", "—"))
+            dur = t.get("total_duration_ms", t.get("duration_ms"))
+            ok = t.get("failed_nodes", 0)
+            trows += (f"<tr><th>{_esc(str(t.get('trace_id', '?')))[:28]}</th>"
+                      f"<td>{_fmt(nodes)}단계 {_fmt(dur, 1, 'ms')} "
+                      f"{_badge('실패 ' + str(ok), 'bad') if ok else _badge('정상', 'ok')}</td></tr>")
+        trace_body = f"<table>{trows}</table>"
+
+    trace_html = f"""
+    <div class="card">
+      <h2>10. 의사결정 경로 (Trace)</h2>{trace_body}
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -380,7 +412,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}</div>
 </body></html>"""
 
 
@@ -410,6 +442,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
     data["risk"] = collect_risk_section()
     data["shadow"] = collect_shadow_section()
     data["calibration"] = collect_calibration_section()
+    data["trace"] = collect_trace_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

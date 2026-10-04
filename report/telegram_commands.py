@@ -106,6 +106,9 @@ class TelegramCommandHandler:
                 if text == "/신호" or text == "/signal":
                     await self._signal_command(update, context)
                     return
+                if text.startswith("/trace"):
+                    await self._trace_command(update, text)
+                    return
                 if text.startswith("/분석") or text.startswith("/analyze"):
                     args = text.split()
                     if len(args) >= 2:
@@ -140,6 +143,26 @@ class TelegramCommandHandler:
             logger.error(f"❌ 자연어 처리 오류: {e}")
             if update.message:
                 await update.message.reply_text("⚠️ 처리 중 오류가 발생했어요.")
+
+    async def _trace_command(self, update: Update, text: str) -> None:
+        """의사결정 경로 트리 조회 (P8-4). 사용: /trace [trace_id]"""
+        try:
+            from observability.trace_bridge import get_trace_text, latest_trace_id
+
+            parts = text.split()
+            tid = parts[1].strip() if len(parts) >= 2 else latest_trace_id()
+            if not tid:
+                await update.message.reply_text("기록된 trace가 없습니다(시그널 발생 후 조회 가능).")
+                return
+            body = get_trace_text(tid)
+            if len(body) > 3500:
+                body = body[:3500] + "
+…(생략)"
+            await update.message.reply_text(f"🧭 <b>의사결정 경로</b>
+<pre>{body}</pre>", parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"❌ trace 명령 오류: {e}")
+            await update.message.reply_text("⚠️ trace 조회 중 오류가 발생했어요.")
 
     # ============================================================
     # 상태 명령어

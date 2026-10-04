@@ -79,7 +79,10 @@
         (BUY=상승, SELL=하락, HOLD=보합 — 임계 ±0.5%)
       - `SignalPipeline` 예측 기록 훅 → 평일 16:00 `calibration_settle` 잡(16잡) → ECE 산출 + AB 피드백
       - 트래커가 메모리 기반이라 `settled.jsonl`에서 매번 재구성(멱등) / 대시보드 9번 섹션
-- [ ] **P8-4** `observability/trace_tree.py` 노출 — 텔레그램 `/trace` + 대시보드
+- [x] **P8-4** `observability/trace_tree.py` 노출 — `observability/trace_bridge.py` 신설 (2026-10-01)
+      - 전역 TraceTree 싱글턴 + `record_stage()` 헬퍼(실패 무시)
+      - `SignalPipeline.process()`가 1단계(입출력/소요시간/성공여부) 기록
+      - 텔레그램 `/trace [trace_id]` 명령 + 대시보드 10번 섹션
 - [ ] **P8-5** `domain/models/market_tick.py`·`position.py` — 배선 또는 `_archive/` 보관
 - [ ] **P8-6** `config/secure_config.py` — 보관/제거 결정 및 문서화
 

@@ -254,3 +254,58 @@ class TestCalibrationBridge:
 
         s = cb.get_calibration_summary(tmp_path / "none.jsonl")
         assert s["regimes"] == {}
+
+
+class TestTraceBridge:
+    """P8-4: 의사결정 경로 트리 브리지."""
+
+    def setup_method(self) -> None:
+        from observability import trace_bridge as tb
+
+        tb.clear()
+
+    def test_record_and_render(self) -> None:
+        from observability.trace_bridge import get_trace_text, record_stage
+
+        nid = record_stage("T-100", "SignalPipeline", "process", "in", "out", 5.0, True)
+        text = get_trace_text("T-100")
+
+        assert nid
+        assert "SignalPipeline" in text and "process" in text
+
+    def test_unknown_trace_is_friendly(self) -> None:
+        from observability.trace_bridge import get_trace_text
+
+        assert "찾을 수 없습니다" in get_trace_text("NOPE")
+
+    def test_empty_trace_id_ignored(self) -> None:
+        from observability.trace_bridge import record_stage
+
+        assert record_stage("", "M", "op") is None
+
+    def test_latest_and_recent(self) -> None:
+        from observability.trace_bridge import latest_trace_id, recent_summaries, record_stage
+
+        record_stage("T-A", "M", "op1")
+        record_stage("T-B", "M", "op2")
+
+        assert latest_trace_id() == "T-B"
+        assert len(recent_summaries(5)) == 2
+
+    def test_failure_does_not_raise(self, monkeypatch: Any) -> None:
+        from observability import trace_bridge as tb
+
+        monkeypatch.setattr(tb, "get_trace_tree", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert tb.record_stage("T-X", "M", "op") is None
+        assert "실패" in tb.get_trace_text("T-X")
+
+    def test_pipeline_records_trace(self) -> None:
+        """SignalPipeline에 trace 기록 훅이 있는지(소스 계약)."""
+        from pathlib import Path
+
+        from application.analysis import signal_pipeline as sp
+
+        assert hasattr(sp.SignalPipeline, "_record_trace")
+        src = Path(sp.__file__).read_text(encoding="utf-8")
+        assert "self._record_trace(data, signal, _t0)" in src
+        assert "await self._run_shadow(data, signal)" in src
