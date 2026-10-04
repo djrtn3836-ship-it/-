@@ -232,3 +232,35 @@ class TestDailyReport:
         except (AttributeError, TypeError):
             # 의존성 없이 호출 불가한 경로는 허용하되, 조용한 손상은 아니어야 함
             pass
+
+
+class TestWeeklyPdfValidationSection:
+    """P10-3: 주간 PDF에 검증 결론/데이터 게이트 진행률 섹션."""
+
+    def test_method_exists_and_is_awaited_in_generate(self) -> None:
+        from pathlib import Path
+
+        from report.weekly_pdf import WeeklyPDFGenerator
+
+        assert hasattr(WeeklyPDFGenerator, "_build_validation_status")
+        text = (Path(__file__).parent.parent.parent / "report" / "weekly_pdf.py").read_text(encoding="utf-8")
+        assert "await self._build_validation_status()" in text
+
+    async def test_no_styles_is_safe_noop(self) -> None:
+        """스타일 미준비 상태(생성 전)에서 조용히 반환해야 한다."""
+        from report.weekly_pdf import WeeklyPDFGenerator
+
+        g = WeeklyPDFGenerator()
+        g.styles = None
+        g.story = []
+
+        await g._build_validation_status()
+
+        assert g.story == []
+
+    def test_sources_state_alpha_conclusion(self) -> None:
+        from pathlib import Path
+
+        text = (Path(__file__).parent.parent.parent / "report" / "weekly_pdf.py").read_text(encoding="utf-8")
+        for phrase in ("α −4.8%", "시장 베타", "감시·리스크 알림", "진행률"):
+            assert phrase in text, f"검증 결론 문구 누락: {phrase}"

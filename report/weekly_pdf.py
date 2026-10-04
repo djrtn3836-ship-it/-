@@ -136,6 +136,7 @@ class WeeklyPDFGenerator:
             self._build_portfolio_positioning(weekly_data)
             self._build_risk_analysis(weekly_data)
             self._build_scenario_analysis(weekly_data)
+            await self._build_validation_status()
             self._build_appendix(weekly_data)
 
             doc.build(self.story)
@@ -546,6 +547,68 @@ class WeeklyPDFGenerator:
             self.story.append(Paragraph(f"<b>{name}</b>", self.styles["SubSectionTitle"]))
             self.story.append(Paragraph(f"• {desc} → {action}", self.styles["BodyText"]))
         self.story.append(PageBreak())
+
+    async def _build_validation_status(self) -> None:
+        """검증 결론 + 데이터 축적 진행률 (P10-3).
+
+        P5/P6 결과(가격 팩터에 유의 알파 없음)와 P7 데이터 게이트 진행률을
+        리포트에 명시해, '전략이 검증됐다'는 오해를 방지한다.
+        """
+        if not self.styles:
+            return
+        self.story.append(Paragraph("11. 전략 검증 상태", self.styles["SectionTitle"]))
+
+        progress = None
+        try:
+            from data.db_manager import DatabaseManager
+            from scheduler.data_readiness_monitor import (
+                MIN_DECISIONS,
+                MIN_OUTCOMES,
+                check_data_readiness,
+            )
+
+            db = DatabaseManager()
+            try:
+                progress = await check_data_readiness(db)
+            finally:
+                await db.close()
+        except Exception as e:
+            logger.debug(f"검증 상태 수집 실패(무시): {e}")
+
+        self.story.append(Paragraph("<b>검증 결론 (P5/P6)</b>", self.styles["SubSectionTitle"]))
+        for line in (
+            "• 앙상블(Trend/Reversal/Breakout): OOS 엣지 없음 (IS +2.16 → OOS −0.19)",
+            "• 횡단면 모멘텀: 시장 베타(β 1.22)이며 초과수익 없음 (α −4.8%/년, t −0.74)",
+            "• 롱숏(시장중립) 진단: 어떤 가격 팩터도 유의 알파 없음 (|t| &lt; 2)",
+            "• 결론: 본 시스템의 가치는 <b>알파 생성이 아니라 감시·리스크 알림</b>에 있음",
+        ):
+            self.story.append(Paragraph(line, self.styles["BodyText"]))
+
+        if progress:
+            self.story.append(Paragraph("<b>비가격 팩터 검증 준비도</b>", self.styles["SubSectionTitle"]))
+            self.story.append(
+                Paragraph(
+                    f"• decisions: {progress.get('decisions', 0):,} / {MIN_DECISIONS:,}건",
+                    self.styles["BodyText"],
+                )
+            )
+            self.story.append(
+                Paragraph(
+                    f"• outcomes: {progress.get('outcomes', 0):,} / {MIN_OUTCOMES:,}건",
+                    self.styles["BodyText"],
+                )
+            )
+            self.story.append(
+                Paragraph(
+                    f"• 진행률: {float(progress.get('progress', 0.0)):.0%} "
+                    f"({'검증 가능' if progress.get('ml_ready') else '축적 중'})",
+                    self.styles["BodyText"],
+                )
+            )
+        else:
+            self.story.append(
+                Paragraph("• 데이터 준비도 조회 실패 (DB 상태 확인 필요)", self.styles["BodyText"])
+            )
 
     def _build_appendix(self, data: Dict[str, Any]) -> None:
         if not self.styles:
