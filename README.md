@@ -80,12 +80,31 @@ python -m validation.momentum_backtest --limit 190 --start 2021-10-01 --end 2026
     --lookback 120 --top-k 20 --hold 20 --cost 0.003 --stress
 ```
 
+### 감시·리스크 (P8~P10 신규)
+```bash
+# 집중도 리스크(상관행렬) — 유동성 상위 50종목 × 60거래일, 평일 17:00 자동
+python -m risk.correlation_monitor --tickers 30
+
+# 신뢰도 캘리브레이션(ECE) — 시그널 예측을 5거래일 뒤 실현가로 채점, 평일 16:00 자동
+python -m analytics.calibration_bridge --report
+python -m analytics.calibration_bridge --settle
+
+# 섀도우 전략 평가 — 프로덕션 vs 실험(low_vol_120d) 시그널 비교(주문 없음)
+python -m application.analysis.shadow_registry --file
+
+# 운영 대시보드 — 서버 없는 단일 HTML(10섹션), 평일 17:30 자동
+python -m report.html_dashboard
+
+# 의사결정 경로 추적(텔레그램 /trace 와 동일 데이터)
+python -m observability.trace_bridge
+```
+
 ### 검증
 ```bash
-python tests/run_all.py          # unit + integration
+python tests/run_all.py          # 소스 정적검사(BOM/구문/뭉개짐/await 누락) + unit + integration
 python tests/run_all.py --unit   # unit만
 ```
-CI: `.github/workflows/ci.yml` (BOM·구문 검사 + 테스트)
+CI: `.github/workflows/ci.yml` (동일 검사 + 테스트)
 
 ---
 
@@ -112,6 +131,7 @@ python app/main.py
 | `현황` / `오늘 장은?` | 시스템 상태(가동 시간, 구독 종목, 큐, 국면) |
 | `신호` / `최근 매수 신호` | 최근 신호 목록 |
 | `삼전` / `005930` | 종합 분석 리포트(재무/뉴스/수급/기술/AI) |
+| `/trace` / `/trace <id>` | 의사결정 경로 트리 조회(P8-4) |
 
 ---
 
@@ -124,8 +144,18 @@ application/    analysis/ (signal_pipeline, hyperparameter_tuner, ...)
 infrastructure/ market_data/ (universe_provider, mock_kiwoom), cache/, dart/, database/, news/
 observability/  tracer, health_score, anomaly_detector, ...
 validation/     backtester, backtest_runner, strategy_backtest, backtest_sweep, momentum_backtest
-scheduler/      ohlcv_backfill, universe_fetcher, momentum_report, daily_collector, macro_collector
-scanner/ analytics/ risk/ report/ core/ data/ (기존 공존 — Strangler Fig 진행 중)
+scheduler/      ohlcv_backfill, universe_fetcher, momentum_report, macro_collector,
+                data_readiness_monitor
+risk/           market_risk_monitor(서킷브레이커), correlation_monitor(집중도), safety_guard
+analytics/      calibration_bridge(ECE 폐루프), performance_tracker, alert_verifier
+observability/  ops_monitor, trace_bridge, anomaly_detector, ...
+report/         html_dashboard(단일 HTML), daily_report, weekly_pdf, telegram_commands
+scanner/ core/ data/ (기존 공존 — Strangler Fig 진행 중)
+
+**스케줄러 16잡**: daily_report · weekly_pdf · momentum_report(08:30) · macro_update ·
+market_risk_check(16:45) · calibration_settle(16:00) · correlation_check(17:00) ·
+dashboard(17:30) · data_readiness(일) · universe_refresh(토) · phase_transition_check ·
+alert_verifier · hyperparameter_tuning · feedback_learning · daily_ohlcv
 ```
 
 ---
@@ -134,16 +164,21 @@ scanner/ analytics/ risk/ report/ core/ data/ (기존 공존 — Strangler Fig �
 
 - **백테스트 전략 앙상블(Trend/Reversal/Breakout)은 롤링 OOS에서 견고한 엣지가 없습니다.**
   (IS Sharpe +2.16 → OOS −0.19, 2개 분할 붕괴) → **프로덕션 파라미터 변경 보류**
-- **횡단면 모멘텀은 OOS·거래비용·생존편향 스트레스(상폐율 10%)에서도 플러스**였으나,
-  OOS 2년이 강세장이라 베타 기여분이 분리되지 않았습니다
+- **횡단면 모멘텀의 플러스 성과는 시장 베타였습니다** (α −4.8%/년, β 1.22, t −0.74).
+  단순 보유(Sharpe 1.23)가 전략(0.94)보다 우위 → **실거래 승격 부결**
   → **참고 신호(모의)로만 운영**: 주문/포지션 없이 픽을 기록하고 20거래일 뒤 성과를 자동 확정
+- **롱숏(시장중립) 진단에서도 유의한 알파가 없었습니다**(전 팩터 |t| < 2).
+  → 본 시스템의 가치는 **알파 생성이 아니라 감시·리스크 알림**에 있습니다.
+- 차기 유일한 미개척 경로는 **비가격 팩터(감성/공시/ML)**이며,
+  `decisions`/`decision_outcomes` 축적(500/300건)이 선행 조건입니다 — 주 1회 자동 점검
+- PostgreSQL 전환은 **보류**(미구현 8개 메서드 존재) — `docs/postgres_migration_assessment.md`
 - 해외거래소/옵션/선물 미지원, 실계좌 연동 없음(Paper Mode only)
 
 ---
 
 ## 🔧 개발자 정보
 
-- 버전: **V10** (문서 기준일 2026-09-30)
+- 버전: **V10** (문서 기준일 2026-10-01)
 - Python: 3.12.9 (Windows)
-- 테스트: `pytest` (asyncio_mode=auto) — 현재 **1252 passed**
+- 테스트: `pytest` (asyncio_mode=auto) — 현재 **1513 passed**
 - 규칙: 승인 기반 개발 / 기존 기능 보존 / **UTF-8 (BOM 없음)** / 작업 후 `DEVELOPMENT_LOG.md` 갱신
