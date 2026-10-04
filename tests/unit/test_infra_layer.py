@@ -236,7 +236,6 @@ class TestExceptionHandlerLoopAbsence:
 
     def test_setup_after_loop_closed(self) -> None:
         """asyncio.run() 이후(루프 닫힘)에도 예외 없이 동작."""
-        import asyncio
 
         from core import exception_handler as eh
 
