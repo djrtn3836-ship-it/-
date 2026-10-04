@@ -67,3 +67,8 @@ dependency_map.json
 app_session*.log
 audit_report.txt
 audit2.txt
+
+# 폰트: 굵기 폴백 2종만 저장소 포함(리눅스 서버용), 나머지 대용량 폰트 팩은 제외
+fonts/*
+!fonts/NanumGothic.ttf
+!fonts/NanumGothicBold.ttf
