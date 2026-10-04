@@ -17,7 +17,6 @@ from decision.hybrid_decider import (
     DecisionContext,
     DecisionPriority,
     HybridDecider,
-    RiskMetrics,
     SignalMetrics,
     TimingMetrics,
 )

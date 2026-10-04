@@ -8,7 +8,7 @@
 """
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, List
 
 import pytest
 
