@@ -64,8 +64,11 @@
 ## 2. 신규 로드맵
 
 ### P8. 고아 모듈 처리 — 배선 / 보관 결정
-- [ ] **P8-1** `risk/correlation_matrix.py` 배선 — OHLCV 5년 데이터로 집중도 리스크 산출
-      → 일 1회 스케줄 + 대시보드 섹션 + 고상관 쌍 경고
+- [x] **P8-1** `risk/correlation_matrix.py` 배선 — `risk/correlation_monitor.py` 신설 (2026-10-01)
+      - 유동성 상위 50종목 · 60거래일 상관행렬 → 분산화 점수 + 고상관(|ρ|≥0.8) 쌍 탐지
+      - 🔴 결측일 종목이 **위치 기반 정렬**로 가짜 상관(ρ 0.95)을 만들던 문제 → 공통 거래일(교집합) 정렬로 수정
+      - 평일 17:00 스케줄(`correlation_check`) + 대시보드 7번 섹션 + 고상관 5쌍 이상 시 경고(6h 쿨다운)
+      - 실측: 30종목 분산도 0.68, 고상관 7쌍(005930↔000660 ρ 0.938 등)
 - [ ] **P8-2** `application/analysis/shadow_mode.py` 배선 — 실험 전략 실시간 평가
       (Phase 1 Shadow Mode 운영과 정합, 주문 없음)
 - [ ] **P8-3** `analytics/calibration_tracker.py` 배선 — ML 신뢰도 ECE 드리프트

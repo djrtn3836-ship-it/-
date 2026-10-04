@@ -114,6 +114,17 @@ def collect_monitor_section() -> Dict[str, Any]:
     return out
 
 
+def collect_risk_section() -> Dict[str, Any]:
+    """집중도 리스크(상관행렬) — 마지막 점검 결과 재사용(P8-1)."""
+    try:
+        from risk.correlation_monitor import get_last_report
+
+        return get_last_report()
+    except Exception as e:
+        logger.debug(f"집중도 리스크 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_macro_section() -> Dict[str, Any]:
     try:
         from filters.macro_filter import MacroFilter
@@ -160,6 +171,7 @@ def render_html(data: Dict[str, Any]) -> str:
     paper = data.get("paper", {})
     mon = data.get("monitor", {})
     macro = data.get("macro", {})
+    risk = data.get("risk", {}) or {}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 시스템 상태
@@ -251,6 +263,31 @@ def render_html(data: Dict[str, Any]) -> str:
       <table style="margin-top:10px">{rows}</table>
     </div>"""
 
+    # --- 집중도 리스크 (P8-1)
+    rscore = risk.get("score")
+    if rscore is None:
+        risk_body = '<div class="note">아직 점검 전 — 평일 17:00 자동 실행</div>'
+    else:
+        lvl = "ok" if float(rscore) >= 0.6 else ("warn" if float(rscore) >= 0.4 else "bad")
+        pairs = "".join(
+            f"<tr><th>{_esc(str(p.get('ticker_a', '?')))} ↔ {_esc(str(p.get('ticker_b', '?')))}</th>"
+            f"<td>{float(p.get('correlation', 0)):+.2f}</td></tr>"
+            for p in (risk.get("top_pairs") or [])[:5]
+        )
+        risk_body = f"""
+      <div class="kpi">{float(rscore):.2f} {_badge('분산도 ' + lvl, lvl)} <small>평균 |ρ| {_fmt(risk.get('avg_abs_correlation'), 3)}</small></div>
+      <table style="margin-top:10px">
+        <tr><th>평가 종목</th><td>{_fmt(risk.get('evaluated_tickers'))}개 / 공통 {_fmt(risk.get('common_dates'))}일</td></tr>
+        <tr><th>고상관 쌍(|ρ|≥0.8)</th><td>{_fmt(risk.get('high_corr_pair_count'))}개</td></tr>
+        {pairs}
+      </table>
+      <div class="note">{_esc(risk.get('recommendation', ''))}</div>"""
+
+    risk_html = f"""
+    <div class="card">
+      <h2>7. 집중도 리스크 (상관행렬)</h2>{risk_body}
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -272,7 +309,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}</div>
 </body></html>"""
 
 
@@ -299,6 +336,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
 
     data["monitor"] = collect_monitor_section()
     data["macro"] = collect_macro_section()
+    data["risk"] = collect_risk_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

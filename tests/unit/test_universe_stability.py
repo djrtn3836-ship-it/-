@@ -200,3 +200,51 @@ class TestNoSilentNoOp:
                         hits.append(f"{path.name}:{node.lineno} self.{f.attr}()")
 
         assert hits == [], f"await 누락(무음 미실행): {hits}"
+
+
+class TestSchedulerRegistration:
+    """스케줄러 잡 등록 회귀 방지 — 잡이 조용히 사라지는 것을 막는다."""
+
+    def _jobs(self) -> list:
+        import ast
+        import re
+
+        src = (Path(__file__).parent.parent.parent / "app" / "bootstrap.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        names = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_job_with_retry"
+            ):
+                found = [
+                    a.value
+                    for a in node.args
+                    if isinstance(a, ast.Constant)
+                    and isinstance(a.value, str)
+                    and re.fullmatch(r"[a-z_]{3,}", a.value)
+                ]
+                names.append(found[0] if found else "?")
+        return names
+
+    def test_expected_jobs_registered(self) -> None:
+        jobs = self._jobs()
+
+        for expected in (
+            "daily_report", "weekly_pdf", "momentum_report", "macro_update",
+            "market_risk_check", "data_readiness", "universe_refresh",
+            "correlation_check", "dashboard", "hyperparameter_tuning",
+            "alert_verifier", "phase_transition_check", "feedback_learning",
+        ):
+            assert expected in jobs, f"{expected} 잡이 등록되지 않음"
+
+    def test_job_count_matches_declared(self) -> None:
+        import re
+
+        src = (Path(__file__).parent.parent.parent / "app" / "bootstrap.py").read_text(encoding="utf-8")
+        declared = int(re.search(r'self\.startup_details\["job_count"\] = (\d+)', src).group(1))
+
+        assert len(self._jobs()) == declared, (
+            f"등록된 잡 {len(self._jobs())}개 != 선언된 job_count {declared}개"
+        )
