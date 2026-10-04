@@ -138,7 +138,7 @@ class TestSnapshot:
         m.record_signal(**_normal())
         snap = m.snapshot()
 
-        assert set(snap) == {"enabled", "stats", "last_report", "recent_count"}
+        assert set(snap) >= {"enabled", "stats", "last_report", "recent_count", "quality", "tuning"}
         assert snap["enabled"] is True
         assert snap["recent_count"] == 0
 
@@ -179,3 +179,52 @@ class TestQualitySnapshot:
     def test_invalid_env_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPS_ANOMALY_THRESHOLD", "abc")
         assert OpsMonitor().quality_snapshot()["thresholds"]["anomaly_threshold"] == 0.65
+
+
+class TestTuningSuggestions:
+    """P10-2: 알림 품질 기반 임계 조정 제안(자동 적용 안 함)."""
+
+    def test_no_suggestions_when_quiet(self) -> None:
+        r = OpsMonitor().suggest_tuning()
+
+        assert r["applied"] is False
+        assert r["suggestions"] == []
+
+    def test_suggests_cooldown_shortening_on_high_suppression(self) -> None:
+        m = OpsMonitor()
+        m._stats.update({"alerts_sent": 1, "alerts_suppressed": 9, "reports": 10,
+                         "signals_observed": 100})
+
+        r = m.suggest_tuning()
+        targets = {s["target"] for s in r["suggestions"]}
+
+        assert "OPS_ALERT_COOLDOWN_SEC" in targets
+        cooldown = next(s for s in r["suggestions"] if s["target"] == "OPS_ALERT_COOLDOWN_SEC")
+        assert cooldown["suggested"] < cooldown["current"]
+
+    def test_suggests_threshold_up_on_many_anomalies(self) -> None:
+        m = OpsMonitor()
+        m._stats.update({"signals_observed": 100, "anomalies": 30, "reports": 30})
+
+        s = next(x for x in m.suggest_tuning()["suggestions"] if x["target"] == "OPS_ANOMALY_THRESHOLD")
+        assert s["suggested"] > s["current"]
+
+    def test_suggests_threshold_down_when_never_detecting(self) -> None:
+        m = OpsMonitor()
+        m._stats.update({"signals_observed": 1000, "anomalies": 0})
+
+        s = next(x for x in m.suggest_tuning()["suggestions"] if x["target"] == "OPS_ANOMALY_THRESHOLD")
+        assert s["suggested"] < s["current"]
+
+    def test_never_auto_applies(self) -> None:
+        """제안은 항상 미적용 상태여야 한다(운영자 승인 없이 임계 변경 금지)."""
+        m = OpsMonitor()
+        m._stats.update({"signals_observed": 1000, "anomalies": 200, "alerts_sent": 1,
+                         "alerts_suppressed": 20, "reports": 21})
+
+        assert m.suggest_tuning()["applied"] is False
+
+    def test_snapshot_includes_quality_and_tuning(self) -> None:
+        snap = OpsMonitor().snapshot()
+
+        assert "quality" in snap and "tuning" in snap

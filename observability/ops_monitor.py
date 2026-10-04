@@ -30,7 +30,7 @@ import logging
 import os
 import time
 from collections import deque
-from typing import Any, Awaitable, Callable, Deque, Dict, Optional
+from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
 
 from observability.anomaly_detector import AnomalyDetector, AnomalyReport
 from observability.model_drift_detector import DriftReport, ModelDriftDetector
@@ -218,6 +218,56 @@ class OpsMonitor:
             "stats": dict(self._stats),
             "last_report": last,
             "recent_count": len(self._recent),
+            "quality": self.quality_snapshot(),
+            "tuning": self.suggest_tuning(),
+        }
+
+    def suggest_tuning(self) -> Dict[str, Any]:
+        """관측 통계로부터 임계/쿨다운 조정 제안을 만든다 (P10-2).
+
+        판정 규칙(보수적 — 자동 적용하지 않고 **제안만** 한다):
+          - 억제율 > 0.5         → 쿨다운 단축 또는 임계 상향
+          - 이상 감지율 > 0.10    → 임계 상향(오탐 과다)
+          - 감지율 0 & 관측 > 500 → 임계 하향(미탐 의심)
+          - 오류율 > 0.01        → 입력 데이터 점검
+        """
+        q = self.quality_snapshot()
+        suggestions: List[Dict[str, Any]] = []
+        th = q["thresholds"]
+
+        if q["suppression_ratio"] > 0.5:
+            suggestions.append({
+                "target": "OPS_ALERT_COOLDOWN_SEC",
+                "current": th["alert_cooldown_sec"],
+                "suggested": max(300.0, round(th["alert_cooldown_sec"] * 0.5, 1)),
+                "reason": f"알림 억제율 {q['suppression_ratio']:.0%} (쿨다운 과다)",
+            })
+        if q["anomaly_rate"] > 0.10:
+            suggestions.append({
+                "target": "OPS_ANOMALY_THRESHOLD",
+                "current": th["anomaly_threshold"],
+                "suggested": round(min(0.95, th["anomaly_threshold"] + 0.05), 3),
+                "reason": f"이상 감지율 {q['anomaly_rate']:.0%} (오탐 의심)",
+            })
+        if q["anomaly_rate"] == 0.0 and q["signals_observed"] > 500:
+            suggestions.append({
+                "target": "OPS_ANOMALY_THRESHOLD",
+                "current": th["anomaly_threshold"],
+                "suggested": round(max(0.4, th["anomaly_threshold"] - 0.05), 3),
+                "reason": f"관측 {q['signals_observed']}건인데 감지 0건 (미탐 의심)",
+            })
+        if q["errors"] and q["errors"] / max(1, q["signals_observed"]) > 0.01:
+            suggestions.append({
+                "target": "입력 데이터",
+                "current": q["errors"],
+                "suggested": 0,
+                "reason": "관측 오류율 1% 초과 — 피처 입력 점검",
+            })
+
+        return {
+            "sample": q["signals_observed"],
+            "applied": False,
+            "suggestions": suggestions,
         }
 
     def recent_reports(self, limit: int = 10) -> list:

@@ -96,7 +96,9 @@ def collect_monitor_section() -> Dict[str, Any]:
     try:
         from observability.ops_monitor import get_ops_snapshot
 
-        out["quality"] = (get_ops_snapshot() or {}).get("quality", {})
+        snap = get_ops_snapshot() or {}
+        out["quality"] = snap.get("quality", {})
+        out["tuning"] = snap.get("tuning", {})
     except Exception as e:
         logger.debug(f"OpsMonitor 스냅샷 실패(무시): {e}")
     try:
@@ -252,6 +254,16 @@ def render_html(data: Dict[str, Any]) -> str:
     cb_badge = _badge("OPEN(차단)", "bad") if cb.get("is_open") else _badge("CLOSED(정상)", "ok")
     hints = "".join(f"<li>{_esc(h)}</li>" for h in q.get("hints", []) or [])
     hints_html = f'<ul class="hint">{hints}</ul>' if hints else ""
+    tuning = mon.get("tuning", {}) or {}
+    tun_rows = "".join(
+        f"<tr><th>{_esc(str(t.get('target')))}</th><td>{_esc(str(t.get('current')))} → "
+        f"<b>{_esc(str(t.get('suggested')))}</b></td></tr>"
+        for t in (tuning.get("suggestions") or [])
+    )
+    tuning_html = (
+        f'<div class="note" style="margin-top:8px">자동 튜닝 제안(미적용)</div><table>{tun_rows}</table>'
+        if tun_rows else ""
+    )
     monitor_html = f"""
     <div class="card">
       <h2>3. 감시 · 알림</h2>
@@ -264,6 +276,7 @@ def render_html(data: Dict[str, Any]) -> str:
         <tr><th>관측 오류율</th><td>{_fmt((q.get('errors', 0) / q.get('signals_observed', 1) if q.get('signals_observed') else 0) * 100, 2, '%')}</td></tr>
       </table>
       {hints_html}
+      {tuning_html}
       <div class="note">임계: {_esc(q.get('thresholds', {}))}</div>
     </div>"""
 
