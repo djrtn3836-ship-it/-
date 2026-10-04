@@ -156,10 +156,10 @@ class TelegramCommandHandler:
                 return
             body = get_trace_text(tid)
             if len(body) > 3500:
-                body = body[:3500] + "
-…(생략)"
-            await update.message.reply_text(f"🧭 <b>의사결정 경로</b>
-<pre>{body}</pre>", parse_mode="HTML")
+                body = body[:3500] + "\n…(생략)"
+            await update.message.reply_text(
+                f"🧭 <b>의사결정 경로</b>\n<pre>{body}</pre>", parse_mode="HTML"
+            )
         except Exception as e:
             logger.error(f"❌ trace 명령 오류: {e}")
             await update.message.reply_text("⚠️ trace 조회 중 오류가 발생했어요.")
