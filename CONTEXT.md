@@ -175,6 +175,29 @@ OOS에서는 **저변동성이 유일하게 양의 알파**(α +10.4%/년, β 0.
 - 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
 - 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
 
+### 🧭 P8~P10 (감사 기반 신규 로드맵) 완료 (2026-10-01)
+**감사 결과**: TODO 0건 · 빈 함수는 추상메서드뿐 · 진짜 문제는 **고아 모듈 7건 + 무테스트 핵심모듈 16건**
+
+| 단계 | 내용 | 핵심 |
+| :--- | :--- | :--- |
+| P8-1 | 상관행렬 배선 | `risk/correlation_monitor.py` — 집중도 리스크. **결측일 위치정렬 가짜상관(ρ .95) 수정** → 공통거래일 정렬 |
+| P8-2 | 섀도우 배선 | `application/analysis/shadow_registry.py` — 프로덕션 vs 실험(`low_vol_120d`) 비교, JSONL, **주문 없음** |
+| P8-3 | 캘리브레이션 배선 | `analytics/calibration_bridge.py` — 매매 없이 **N거래일 뒤 실현가로 승/패 채점** → ECE |
+| P8-4 | 트레이스 노출 | `observability/trace_bridge.py` — 텔레그램 `/trace` + 대시보드 |
+| P8-5 | 도메인 모델 | `MarketTick` → RealtimeMonitor 검증 배선(무효 틱 카운트·거부) / `position.py`는 Phase 2 예약 |
+| P8-6 | secure_config 안전화 | 🔴 `input()` 대기 제거(무인 실행 정지 위험) |
+| P9-1~5 | 무검증 모듈 테스트 | 안전/판단/알림/수집/관측 계층 **약 80개 테스트** 신설. `telegram_commands` SyntaxError 사고 재발 방지 포함 |
+| P10-1~4 | 운영 고도화 | 대시보드 10섹션 · 임계 **제안**(자동적용 금지) · 주간 PDF 검증 섹션 · README |
+
+**발견·수정한 실제 버그 (P8~P10)**
+1. 🔴 `telegram_commands.py` **SyntaxError 상태로 커밋될 뻔** → `tests/run_all.py`에 소스 검사 편입(테스트 전 차단)
+2. 🔴 `exception_handler.setup_global_exception_handler()`가 이벤트 루프 부재/종료 시 `RuntimeError` → **기동 실패 가능**
+3. 🔴 상관행렬 **위치 기반 정렬**이 결측일 종목과 가짜 상관(ρ 0.95) 생성
+4. 🔴 `secure_config`의 대화형 `input()` — 무인 실행 정지 위험
+5. 섀도우 콜러블 **async 계약** 위반 시 오류 흡수 확인(설계 검증)
+
+**스케줄러: 14 → 16잡** (`calibration_settle` 평일 16:00 · `correlation_check` 평일 17:00)
+
 ### 🏗️ P6 고도화 4건 완료 (2026-10-01)
 | 항목 | 결과 | 핵심 |
 | :--- | :--- | :--- |
