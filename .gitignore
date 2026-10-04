@@ -65,3 +65,5 @@ _archive/
 project_structure.txt
 dependency_map.json
 app_session*.log
+audit_report.txt
+audit2.txt
