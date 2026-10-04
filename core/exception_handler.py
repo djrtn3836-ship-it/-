@@ -68,20 +68,42 @@ def global_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict[str,
         future.cancel()
 
 
+def _current_loop() -> Optional[asyncio.AbstractEventLoop]:
+    """현재 이벤트 루프를 안전하게 얻는다(없으면 None).
+
+    🔴 2026-10-01(P9-5) 수정: `asyncio.get_event_loop()`는 Python 3.12에서
+    실행 중인 루프가 없거나 이전 루프가 닫힌 뒤 호출되면 RuntimeError를 던진다.
+    부트스트랩이 루프 밖에서 이 함수를 호출하면 **기동 자체가 실패**할 수 있었다.
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    try:
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+        return None if loop.is_closed() else loop
+    except RuntimeError:
+        return None
+
+
 def setup_global_exception_handler() -> Dict[str, Any]:
     """전역 예외 핸들러 설정.
 
     🔥 Session 40 버그 수정: 원본 핸들러를 교체하기 전에 먼저 캡처합니다.
     (기존 코드는 교체 후에 캡처하여 restore()가 무의미한 no-op이 되던 버그가 있었음)
+    🔴 P9-5: 이벤트 루프가 없어도 예외 없이 동작(가능한 범위까지 설치).
     """
-    loop = asyncio.get_event_loop()
+    loop = _current_loop()
 
     # 1. 원본 핸들러를 먼저 캡처 (교체 전!)
-    original_loop_handler = loop.get_exception_handler()
+    original_loop_handler = loop.get_exception_handler() if loop is not None else None
     original_excepthook = sys.excepthook
 
     # 2. 이제 새 핸들러로 교체
-    loop.set_exception_handler(global_exception_handler)
+    if loop is not None:
+        loop.set_exception_handler(global_exception_handler)
+    else:
+        logger.warning("⚠️ 이벤트 루프 없음 → asyncio 핸들러는 건너뛰고 sys.excepthook만 설치")
 
     def sys_excepthook(
         exc_type: type[BaseException],
@@ -110,8 +132,6 @@ def restore_exception_handler(original_handlers: Dict[str, Any]) -> None:
         sys.excepthook = original_handlers["original_excepthook"]
 
     if "original_loop_handler" in original_handlers:
-        try:
-            loop = asyncio.get_event_loop()
+        loop = _current_loop()
+        if loop is not None:
             loop.set_exception_handler(original_handlers["original_loop_handler"])
-        except RuntimeError:
-            pass

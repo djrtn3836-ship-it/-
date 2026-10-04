@@ -222,3 +222,31 @@ class TestTraceConfig:
         from observability.trace_config import TraceConfigManager
 
         assert isinstance(TraceConfigManager().is_enabled("없는모듈"), bool)
+
+
+class TestExceptionHandlerLoopAbsence:
+    """P9-5 회귀: 이벤트 루프가 없거나 닫힌 상태에서도 기동을 막지 않아야 한다."""
+
+    def test_setup_without_running_loop(self) -> None:
+        from core import exception_handler as eh
+
+        original = eh.setup_global_exception_handler()
+        assert isinstance(original, dict)
+        eh.restore_exception_handler(original)
+
+    def test_setup_after_loop_closed(self) -> None:
+        """asyncio.run() 이후(루프 닫힘)에도 예외 없이 동작."""
+        import asyncio
+
+        from core import exception_handler as eh
+
+        asyncio.run(asyncio.sleep(0))            # 루프 생성 후 종료(닫힘)
+
+        original = eh.setup_global_exception_handler()
+        eh.restore_exception_handler(original)
+
+    def test_current_loop_helper_returns_none_or_loop(self) -> None:
+        from core.exception_handler import _current_loop
+
+        loop = _current_loop()
+        assert loop is None or not loop.is_closed()
