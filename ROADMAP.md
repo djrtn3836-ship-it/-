@@ -93,9 +93,16 @@
       - 용도 문서화: `.env.encrypted` 선택 기능, 평소엔 bootstrap이 `.env` 직접 사용
 
 ### P9. 테스트 커버리지 보강 (무검증 핵심 모듈)
-- [ ] **P9-1** 안전 계층: `core/supervisor.py`, `risk/safety_guard.py`
-- [ ] **P9-2** 판단 계층: `decision/hybrid_decider.py`, `regime/regime_detector.py`
-- [ ] **P9-3** 알림 계층: `report/telegram_commands.py`, `report/daily_report.py`
+- [x] **P9-1** 안전 계층 테스트 (2026-10-01) — `test_safety_layer.py` 19개
+      - `safety_guard`: 방향성(급락=음수), 타당범위 방어선 **전 조건 완비성**, 쿨다운, 차단→해제
+      - `supervisor`: **장중 사망 시 재시작 보류**(수동 개입 요청) / 장외 자동 재시작
+- [x] **P9-2** 판단 계층 테스트 (2026-10-01) — `test_decision_layer.py` 19개
+      - `hybrid_decider`: 강신호 매수, **손절 < 진입 < 익절** 불변식, 리스크 시 수량 축소
+      - `regime_detector`: 레짐 결정성, 정규화 경계, 한국 특수요인(만기/배당/프로그램/외인비율)
+- [x] **P9-3** 알림 계층 테스트 (2026-10-01) — `test_notification_layer.py` 17개
+      - `telegram_commands`: **import 검증(P8-4 SyntaxError 사고 재발 방지)**, `/trace` 경로,
+        권한 가드, 미인식 문장 안내
+      - `daily_report`: 빈 입력 진단, 리스크/액션 목록, 산출 경로
 - [ ] **P9-4** 수집 계층: `collector/collector_status.py`, `infrastructure/dart/client.py`
 - [ ] **P9-5** 관측 계층: `observability/auto_trace.py`, `core/exception_handler.py`
 
