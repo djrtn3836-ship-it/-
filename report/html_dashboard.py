@@ -125,6 +125,17 @@ def collect_risk_section() -> Dict[str, Any]:
         return {}
 
 
+def collect_shadow_section() -> Dict[str, Any]:
+    """섀도우 전략 평가 요약(P8-2) — 세션 내 기록 기준."""
+    try:
+        from application.analysis.shadow_registry import get_shadow_summary
+
+        return get_shadow_summary()
+    except Exception as e:
+        logger.debug(f"섀도우 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_macro_section() -> Dict[str, Any]:
     try:
         from filters.macro_filter import MacroFilter
@@ -172,6 +183,7 @@ def render_html(data: Dict[str, Any]) -> str:
     mon = data.get("monitor", {})
     macro = data.get("macro", {})
     risk = data.get("risk", {}) or {}
+    shadow = data.get("shadow", {}) or {}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 시스템 상태
@@ -288,6 +300,32 @@ def render_html(data: Dict[str, Any]) -> str:
       <h2>7. 집중도 리스크 (상관행렬)</h2>{risk_body}
     </div>"""
 
+    # --- 섀도우 전략 (P8-2)
+    strategies = shadow.get("strategies") or {}
+    if not strategies:
+        shadow_body = '<div class="note">등록된 섀도우 전략 없음 또는 아직 평가 전</div>'
+    else:
+        rows = ""
+        for name, sm in strategies.items():
+            total = int(sm.get("total", 0) or 0)
+            rate = float(sm.get("agreement_rate", 0.0) or 0.0)
+            lvl = "ok" if rate >= 0.7 else ("warn" if rate >= 0.4 else "bad")
+            rows += (
+                f"<tr><th>{_esc(name)}</th><td>{total}건 "
+                f"{_badge(f'일치 {rate:.0%}', lvl)} "
+                f"<small>오류 {_fmt(sm.get('errors'))}</small></td></tr>"
+            )
+        stat = shadow.get("stats", {}) or {}
+        shadow_body = f"""
+      <table>{rows}</table>
+      <div class="note">평가 {_fmt(stat.get('evaluated'))} · 기록 {_fmt(stat.get('recorded'))} ·
+      오류 {_fmt(stat.get('errors'))} — 섀도우는 <b>주문을 만들지 않습니다</b>(비교 기록만).</div>"""
+
+    shadow_html = f"""
+    <div class="card">
+      <h2>8. 섀도우 전략 평가</h2>{shadow_body}
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -309,7 +347,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}</div>
 </body></html>"""
 
 
@@ -337,6 +375,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
     data["monitor"] = collect_monitor_section()
     data["macro"] = collect_macro_section()
     data["risk"] = collect_risk_section()
+    data["shadow"] = collect_shadow_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

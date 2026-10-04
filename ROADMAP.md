@@ -69,8 +69,11 @@
       - 🔴 결측일 종목이 **위치 기반 정렬**로 가짜 상관(ρ 0.95)을 만들던 문제 → 공통 거래일(교집합) 정렬로 수정
       - 평일 17:00 스케줄(`correlation_check`) + 대시보드 7번 섹션 + 고상관 5쌍 이상 시 경고(6h 쿨다운)
       - 실측: 30종목 분산도 0.68, 고상관 7쌍(005930↔000660 ρ 0.938 등)
-- [ ] **P8-2** `application/analysis/shadow_mode.py` 배선 — 실험 전략 실시간 평가
-      (Phase 1 Shadow Mode 운영과 정합, 주문 없음)
+- [x] **P8-2** `application/analysis/shadow_mode.py` 배선 — `application/analysis/shadow_registry.py` 신설 (2026-10-01)
+      - `SignalPipeline.process()` 훅 → 프로덕션 시그널 vs 실험 전략 시그널 실시간 비교
+      - 기본 실험 전략 `low_vol_120d`(P5에서 유일한 양의 OOS 알파 후보) 자동 등록
+      - 기록은 JSONL(`logs/shadow_records.jsonl`) — DB/PG 계약 불변 유지
+      - 안전: 실패/타임아웃은 `ShadowRecord.error`로 흡수, **주문 없음**, 대시보드 8번 섹션
 - [ ] **P8-3** `analytics/calibration_tracker.py` 배선 — ML 신뢰도 ECE 드리프트
 - [ ] **P8-4** `observability/trace_tree.py` 노출 — 텔레그램 `/trace` + 대시보드
 - [ ] **P8-5** `domain/models/market_tick.py`·`position.py` — 배선 또는 `_archive/` 보관

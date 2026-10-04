@@ -465,7 +465,17 @@ class SignalPipeline(TracedService):
             f"sqi_v2={ensemble.sqi_v2:.3f} consensus={ensemble.consensus:.2f}"
         )
         self._observe_signal(ticker, final_score, confidence, effective_sqi, _t0)
+        await self._run_shadow(data, signal)
         return signal
+
+    async def _run_shadow(self, data: Dict[str, Any], signal: Signal) -> None:
+        """섀도우 전략 평가 훅 (P8-2) — 실패해도 프로덕션 흐름에 영향 없음."""
+        try:
+            from application.analysis.shadow_registry import get_shadow_registry
+
+            await get_shadow_registry().evaluate(data, signal)
+        except Exception as e:
+            trace.debug(f"섀도우 평가 건너뜀: {e}")
 
     def _observe_signal(
         self,
