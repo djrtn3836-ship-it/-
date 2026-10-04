@@ -83,8 +83,14 @@
       - 전역 TraceTree 싱글턴 + `record_stage()` 헬퍼(실패 무시)
       - `SignalPipeline.process()`가 1단계(입출력/소요시간/성공여부) 기록
       - 텔레그램 `/trace [trace_id]` 명령 + 대시보드 10번 섹션
-- [ ] **P8-5** `domain/models/market_tick.py`·`position.py` — 배선 또는 `_archive/` 보관
-- [ ] **P8-6** `config/secure_config.py` — 보관/제거 결정 및 문서화
+- [x] **P8-5** 도메인 모델 처리 (2026-10-01)
+      - `market_tick.py` → **배선**: `RealtimeMonitor._on_data()`가 V10 도메인 모델로 검증·정규화.
+        무효 틱(0가/음수/비정상 코드)은 조용히 통과하지 않고 **카운트 후 거부**(이력 오염 방지)
+      - `position.py` → **예약 보관**: Phase 1은 매매가 없어 사용처 없음. Phase 2(실거래) 대기 도메인 모델
+- [x] **P8-6** `config/secure_config.py` — 보관 + **안전화** (2026-10-01)
+      - 🔴 무인 실행 위험 제거: 키 미설정 시 `input()` 대기 → 프로세스 정지 가능했음.
+        대화형 입력 제거하고 명확한 ERROR 후 즉시 반환(AST 테스트로 재발 차단)
+      - 용도 문서화: `.env.encrypted` 선택 기능, 평소엔 bootstrap이 `.env` 직접 사용
 
 ### P9. 테스트 커버리지 보강 (무검증 핵심 모듈)
 - [ ] **P9-1** 안전 계층: `core/supervisor.py`, `risk/safety_guard.py`

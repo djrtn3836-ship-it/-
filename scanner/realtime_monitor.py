@@ -153,6 +153,24 @@ class RealtimeMonitor:
                 except (ValueError, TypeError):
                     volume = 0
 
+                # V10 도메인 모델로 검증·정규화 (P8-5)
+                #   - 잘못된 틱(0가/음수/비정상 코드)은 조용히 버리지 않고 카운트한다.
+                try:
+                    from domain.models.market_tick import MarketTick
+
+                    tick = MarketTick(
+                        ticker=str(ticker),
+                        price=float(price),
+                        volume=int(volume),
+                        timestamp=float(parsed["timestamp"]),
+                    )
+                    parsed["tick"] = tick.to_dict()
+                except Exception as e:
+                    self._invalid_ticks = getattr(self, "_invalid_ticks", 0) + 1
+                    if self._invalid_ticks <= 5 or self._invalid_ticks % 100 == 0:
+                        logger.warning(f"유효하지 않은 틱 무시({self._invalid_ticks}건): {e}")
+                    return
+
                 parsed["price"] = price
                 parsed["volume"] = volume
                 if ticker not in self._history:

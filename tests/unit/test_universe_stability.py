@@ -248,3 +248,68 @@ class TestSchedulerRegistration:
         assert len(self._jobs()) == declared, (
             f"등록된 잡 {len(self._jobs())}개 != 선언된 job_count {declared}개"
         )
+
+
+class TestDomainModelWiring:
+    """P8-5: 고아 도메인 모델 처리 — MarketTick 검증 배선 / Position 예약 보관."""
+
+    def test_market_tick_used_by_realtime_monitor(self) -> None:
+        from pathlib import Path
+
+        src = (Path(__file__).parent.parent.parent / "scanner" / "realtime_monitor.py").read_text(
+            encoding="utf-8"
+        )
+        assert "from domain.models.market_tick import MarketTick" in src
+
+    def test_invalid_tick_is_rejected_and_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+
+        from scanner.realtime_monitor import RealtimeMonitor
+
+        m = RealtimeMonitor.__new__(RealtimeMonitor)
+        m._history = {}
+        m._history_limit = 5
+
+        m._on_data({"ticker": "005930", "price": "71000", "volume": "10", "type": "0B"})
+        m._on_data({"ticker": "005930", "price": "-1", "volume": "10", "type": "0B"})
+        m._on_data({"ticker": "ZZZZZZ", "price": "100", "volume": "10", "type": "0B"})
+
+        assert len(m._history["005930"]) == 1          # 무효 틱은 이력에 남지 않음
+        assert m._invalid_ticks == 2
+        assert m._history["005930"][0]["tick"]["price"] == 71000.0
+
+    def test_position_model_reserved_for_phase2(self) -> None:
+        """Position/TrailingStop은 Phase 2(실거래) 예약 — 순수 도메인 모델로 유지."""
+        from domain.models.position import Position, TrailingStopState
+
+        assert hasattr(Position, "update_price")
+        assert hasattr(TrailingStopState, "update_prices")
+
+
+class TestSecureConfigSafety:
+    """P8-6: 무인 실행에서 input() 대기로 멈추지 않아야 한다."""
+
+    def test_no_interactive_input_call(self) -> None:
+        """AST 기준: input() 호출이 실제로 없어야 한다(주석/독스트링 언급은 허용)."""
+        import ast
+        from pathlib import Path
+
+        src = (Path(__file__).parent.parent.parent / "config" / "secure_config.py").read_text(
+            encoding="utf-8"
+        )
+        calls = [
+            node.lineno
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "input"
+        ]
+        assert calls == [], f"대화형 input() 호출 발견(무인 실행 정지 위험): lines {calls}"
+
+    def test_missing_key_returns_without_blocking(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from config import secure_config as sc
+
+        monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+        monkeypatch.setattr(sc, "CRYPTO_AVAILABLE", True)
+        monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+
+        sc.load_encrypted_env()      # 예외/대기 없이 반환되어야 한다
