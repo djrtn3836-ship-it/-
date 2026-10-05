@@ -141,9 +141,11 @@ def collect_shadow_section() -> Dict[str, Any]:
 def collect_calibration_section() -> Dict[str, Any]:
     """신뢰도 캘리브레이션(ECE) 요약(P8-3)."""
     try:
-        from analytics.calibration_bridge import get_calibration_summary
+        from analytics.calibration_bridge import get_calibration_summary, get_tag_win_rates
 
-        return get_calibration_summary()
+        summary = get_calibration_summary()
+        summary["tag_rates"] = get_tag_win_rates()
+        return summary
     except Exception as e:
         logger.debug(f"캘리브레이션 섹션 실패(무시): {e}")
         return {}
@@ -377,7 +379,22 @@ def render_html(data: Dict[str, Any]) -> str:
                 lvl = "ok" if ece <= 0.05 else ("warn" if ece <= 0.12 else "bad")
                 grows += (f"<tr><th>{_esc(name)}</th><td>{_badge(f'ECE {ece:.3f}', lvl)} "
                           f"<small>n={_fmt(cal.get('total_samples'))}</small></td></tr>")
-        calib_body = f"<table>{grows}</table><div class='note'>ECE 낮을수록 신뢰도가 실제 적중률과 일치(≤0.05 양호).</div>"
+        tag_rows = ""
+        tag_rates = (calib.get("tag_rates") or {}).get("tags") or {}
+        for tag, v in tag_rates.items():
+            if v.get("status") == "ok":
+                wr = float(v.get("win_rate") or 0.0)
+                lvl = "ok" if wr >= 0.55 else ("warn" if wr >= 0.45 else "bad")
+                tag_rows += (f"<tr><th>{_esc(tag)}</th><td>{_badge(f'{wr:.0%}', lvl)} "
+                             f"<small>n={_fmt(v.get('n'))}</small></td></tr>")
+            else:
+                tag_rows += f"<tr><th>{_esc(tag)}</th><td>표본 부족(n={_fmt(v.get('n'))})</td></tr>"
+        tag_html = (f'<div class="note" style="margin-top:8px">비가격 조건 태그별 승률(P12-4)</div>'
+                    f"<table>{tag_rows}</table>") if tag_rows else ""
+        tagged = (calib.get("tag_rates") or {}).get("tagged", 0)
+        calib_body = (f"<table>{grows}</table>{tag_html}"
+                      f"<div class='note'>ECE 낮을수록 신뢰도가 실제 적중률과 일치(≤0.05 양호). "
+                      f"태그 보유 {_fmt(tagged)}건.</div>")
 
     calib_html = f"""
     <div class="card">

@@ -529,6 +529,21 @@ class Bootstrapper(TracedService):
             {"crawler_available": news_crawler is not None}
         )
 
+    def _wire_nonprice_factors(self) -> None:
+        """P12-3: 감성/공시 팩터를 신호 파이프라인에 연결(기록 전용, 행동 변경 없음)."""
+        if self.signal_pipeline is None:
+            return
+        try:
+            self.signal_pipeline.sentiment_pipeline = self.sentiment_pipeline
+            self.signal_pipeline.dart_connector = getattr(self, "dart_connector", None)
+            logger.info(
+                "비가격 팩터 연결: sentiment=%s dart=%s",
+                "on" if self.sentiment_pipeline is not None else "off",
+                "on" if getattr(self, "dart_connector", None) is not None else "off",
+            )
+        except Exception as e:                       # 방어적
+            logger.warning(f"비가격 팩터 연결 실패(무시): {e}")
+
     async def init_data_sources(self) -> None:
         if get_runtime_mode().external_io_disabled:
             logger.warning("🧪 [SAFE MODE] DART 커넥터 생략 (외부 API 비활성)")
@@ -1304,6 +1319,7 @@ class Bootstrapper(TracedService):
             await self.init_hyperparameter_tuner()
             await self.init_sentiment_pipeline()
             await self.init_data_sources()
+            self._wire_nonprice_factors()
             await self.start_performance_tracker()
             await self.start_ab_framework()
             await self.init_execution()

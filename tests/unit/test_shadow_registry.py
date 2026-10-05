@@ -244,9 +244,9 @@ class TestCalibrationBridge:
         from analytics import calibration_bridge as cb
 
         path = tmp_path / "p.jsonl"
-        assert cb.record_prediction("trend", 0.8, "", "BUY", 100.0, path) is False
-        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 0.0, path) is False
-        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 100.0, path) is True
+        assert cb.record_prediction("trend", 0.8, "", "BUY", 100.0, path=path) is False
+        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 0.0, path=path) is False
+        assert cb.record_prediction("trend", 0.8, "005930", "BUY", 100.0, path=path) is True
         assert len(path.read_text(encoding="utf-8").strip().splitlines()) == 1
 
     def test_summary_handles_empty(self, tmp_path: Path) -> None:
@@ -309,3 +309,164 @@ class TestTraceBridge:
         src = Path(sp.__file__).read_text(encoding="utf-8")
         assert "self._record_trace(data, signal, _t0)" in src
         assert "await self._run_shadow(data, signal)" in src
+
+
+class TestNonPriceFactors:
+    """P12-3: 비가격 팩터(감성/공시) + 조건 태그."""
+
+    async def test_compute_without_sources_is_safe(self) -> None:
+        from application.analysis.nonprice_factors import compute
+
+        f = await compute("005930")
+
+        assert f.ticker == "005930"
+        assert f.sentiment_score is None
+        assert "disc_no" in f.tags
+        assert f.error is None
+
+    async def test_positive_sentiment_tags_and_boost(self) -> None:
+        from application.analysis.nonprice_factors import compute
+
+        class _Sent:
+            async def get_sentiment(self, ticker: str):
+                class R:
+                    score = 0.6
+                    impact_score = 0.8
+                    news_count = 7
+                    class L:
+                        value = "positive"
+                    label = L()
+                return R()
+
+        f = await compute("005930", sentiment_pipeline=_Sent())
+
+        assert f.sentiment_score == pytest.approx(0.6)
+        assert "sent_pos" in f.tags
+        assert "news_busy" in f.tags
+        assert f.boost > 0
+
+    async def test_negative_sentiment_is_negative_boost(self) -> None:
+        from application.analysis.nonprice_factors import compute
+
+        class _Sent:
+            async def get_sentiment(self, ticker: str):
+                class R:
+                    score = -0.7
+                    impact_score = 0.9
+                    news_count = 2
+                    class L:
+                        value = "negative"
+                    label = L()
+                return R()
+
+        f = await compute("005930", sentiment_pipeline=_Sent())
+
+        assert "sent_neg" in f.tags
+        assert f.boost < 0
+
+    async def test_sentiment_failure_is_contained(self) -> None:
+        from application.analysis.nonprice_factors import compute
+
+        class _Broken:
+            async def get_sentiment(self, ticker: str):
+                raise RuntimeError("뉴스 크롤 실패")
+
+        f = await compute("005930", sentiment_pipeline=_Broken())
+
+        assert f.sentiment_score is None      # 추정하지 않는다
+        assert f.error is None
+
+    async def test_disabled_by_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from application.analysis import nonprice_factors as npf
+
+        monkeypatch.setenv("NONPRICE_FACTORS_ENABLED", "false")
+        f = await npf.compute("005930")
+
+        assert f.tags == [] and f.error == "disabled"
+
+    def test_dart_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from application.analysis.nonprice_factors import dart_enabled
+
+        monkeypatch.delenv("NONPRICE_DART_ENABLED", raising=False)
+        assert dart_enabled() is False
+
+    def test_boost_is_clamped(self) -> None:
+        from application.analysis.nonprice_factors import MAX_BOOST, apply_boost
+
+        assert apply_boost(0.99, 0.5) == 1.0
+        assert apply_boost(0.01, -0.5) == 0.0
+        assert apply_boost(0.5, MAX_BOOST) == pytest.approx(0.55, abs=1e-9)
+
+
+class TestTagWinRates:
+    """P12-4: 조건 태그별 승률 (표본 부족은 제외)."""
+
+    def _write(self, tmp_path: Path, rows: list) -> Path:
+        p = tmp_path / "settled.jsonl"
+        p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+        return p
+
+    def test_win_rate_per_tag(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import get_tag_win_rates
+
+        p = self._write(tmp_path, [
+            {"tags": ["sent_pos"], "actual_win": True},
+            {"tags": ["sent_pos"], "actual_win": True},
+            {"tags": ["sent_pos"], "actual_win": False},
+            {"tags": ["sent_neg"], "actual_win": False},
+            {"tags": ["sent_neg"], "actual_win": False},
+            {"tags": ["sent_neg"], "actual_win": True},
+        ])
+
+        r = get_tag_win_rates(min_samples=3, settled_path=p)
+
+        assert r["tags"]["sent_pos"]["win_rate"] == pytest.approx(2 / 3, abs=1e-4)
+        assert r["tags"]["sent_neg"]["win_rate"] == pytest.approx(1 / 3, abs=1e-4)
+        assert r["tagged"] == 6
+
+    def test_small_sample_excluded(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import get_tag_win_rates
+
+        p = self._write(tmp_path, [{"tags": ["rare"], "actual_win": True}])
+        r = get_tag_win_rates(min_samples=5, settled_path=p)
+
+        assert r["tags"]["rare"]["status"] == "insufficient_data"
+        assert r["tags"]["rare"]["win_rate"] is None
+
+    def test_records_without_tags_ignored(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import get_tag_win_rates
+
+        p = self._write(tmp_path, [{"actual_win": True}, {"actual_win": False}])
+        r = get_tag_win_rates(min_samples=1, settled_path=p)
+
+        assert r["tags"] == {} and r["tagged"] == 0 and r["total_settled"] == 2
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import get_tag_win_rates
+
+        assert get_tag_win_rates(settled_path=tmp_path / "none.jsonl")["tags"] == {}
+
+
+class TestPredictionTagsRecorded:
+    """P12-3: 태그가 예측 기록에 저장되는지."""
+
+    def test_record_prediction_with_tags(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import record_prediction
+
+        p = tmp_path / "p.jsonl"
+        ok = record_prediction("Bull", 0.8, "005930", "BUY", 70000.0,
+                               tags=["sent_pos", "disc_no"],
+                               factors={"sentiment_score": 0.5}, path=p)
+
+        assert ok
+        row = json.loads(p.read_text(encoding="utf-8").strip())
+        assert row["tags"] == ["sent_pos", "disc_no"]
+        assert row["factors"]["sentiment_score"] == 0.5
+
+    def test_record_without_tags_has_no_field(self, tmp_path: Path) -> None:
+        from analytics.calibration_bridge import record_prediction
+
+        p = tmp_path / "p.jsonl"
+        record_prediction("Bull", 0.8, "005930", "BUY", 70000.0, path=p)
+
+        assert "tags" not in json.loads(p.read_text(encoding="utf-8").strip())

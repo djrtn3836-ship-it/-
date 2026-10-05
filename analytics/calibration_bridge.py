@@ -58,9 +58,16 @@ def record_prediction(
     ticker: str,
     action: str,
     price: float,
+    tags: Optional[List[str]] = None,
+    factors: Optional[Dict[str, Any]] = None,
     path: Path = PRED_PATH,
 ) -> bool:
-    """시그널 예측을 기록한다(실패해도 프로덕션에 영향 없음)."""
+    """시그널 예측을 기록한다(실패해도 프로덕션에 영향 없음).
+
+    Args:
+        tags: 비가격 조건 태그(P12-3) — P12-4 승률 통계의 키
+        factors: 비가격 팩터 스냅샷(감성/공시 등). 값이 없으면 생략.
+    """
     try:
         if not ticker or price <= 0:
             return False
@@ -73,6 +80,10 @@ def record_prediction(
             "action": str(action),
             "price": float(price),
         }
+        if tags:
+            row["tags"] = list(tags)
+        if factors:
+            row["factors"] = dict(factors)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -183,6 +194,57 @@ async def settle_predictions(
     }
 
 
+def get_tag_win_rates(
+    min_samples: int = 5,
+    settled_path: Path = SETTLED_PATH,
+) -> Dict[str, Any]:
+    """조건 태그별 승률 (P12-4).
+
+    P12-3이 기록한 비가격 태그(감성/공시 등)와 실현 결과(actual_win)를 결합해
+    **어떤 조건에서 승률이 높은지**를 계산한다.
+
+    ★ 태그가 승률과 상관있다는 증거가 쌓이기 전에는 신호 점수를 바꾸지 않는다.
+      (표본 min_samples 미만 태그는 통계에서 제외 — 과신 방지)
+
+    Returns:
+        {"tags": {tag: {"n", "wins", "win_rate"}}, "min_samples", "total_settled", "tagged"}
+    """
+    rows = _read_jsonl(settled_path)
+    buckets: Dict[str, Dict[str, int]] = {}
+    tagged = 0
+    for r in rows:
+        tags = r.get("tags") or []
+        if not tags:
+            continue
+        tagged += 1
+        win = bool(r.get("actual_win"))
+        for tag in tags:
+            b = buckets.setdefault(str(tag), {"n": 0, "wins": 0})
+            b["n"] += 1
+            if win:
+                b["wins"] += 1
+
+    out: Dict[str, Any] = {}
+    for tag, b in sorted(buckets.items()):
+        if b["n"] < min_samples:
+            out[tag] = {"n": b["n"], "wins": b["wins"], "win_rate": None,
+                        "status": "insufficient_data"}
+            continue
+        out[tag] = {
+            "n": b["n"],
+            "wins": b["wins"],
+            "win_rate": round(b["wins"] / b["n"], 4),
+            "status": "ok",
+        }
+
+    return {
+        "tags": out,
+        "min_samples": min_samples,
+        "total_settled": len(rows),
+        "tagged": tagged,
+    }
+
+
 def build_tracker(settled_path: Path = SETTLED_PATH) -> CalibrationTracker:
     """settled 기록으로 트래커를 재구성한다(멱등)."""
     tracker = CalibrationTracker()
@@ -261,7 +323,20 @@ def _main() -> int:
     parser.add_argument("--settle", action="store_true", help="미채점 예측 채점")
     parser.add_argument("--report", action="store_true", help="Regime별 캘리브레이션 요약")
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON)
+    parser.add_argument("--tags", action="store_true", help="조건 태그별 승률 출력(P12-4)")
     args = parser.parse_args()
+
+    if args.tags:
+        t = get_tag_win_rates()
+        print(f"채점 {t['total_settled']}건 중 태그 보유 {t['tagged']}건 (표본 기준 {t['min_samples']})")
+        if not t["tags"]:
+            print("  태그 데이터 없음 — 시그널 발생 후 5거래일 뒤 채점되면 집계됩니다")
+        for tag, v in t["tags"].items():
+            if v["status"] == "ok":
+                print(f"  {tag:14} 승률 {v['win_rate']:.1%} (n={v['n']})")
+            else:
+                print(f"  {tag:14} 표본 부족 (n={v['n']})")
+        return 0
 
     if args.settle:
         print(asyncio.run(settle_and_feed_ab(horizon=args.horizon)))

@@ -466,7 +466,7 @@ class SignalPipeline(TracedService):
         )
         self._observe_signal(ticker, final_score, confidence, effective_sqi, _t0)
         self._record_trace(data, signal, _t0)
-        self._record_calibration(data, signal)
+        await self._record_calibration(data, signal)
         await self._run_shadow(data, signal)
         return signal
 
@@ -487,10 +487,31 @@ class SignalPipeline(TracedService):
         except Exception as e:
             trace.debug(f"trace 기록 건너뜀: {e}")
 
-    def _record_calibration(self, data: Dict[str, Any], signal: Signal) -> None:
-        """신뢰도 캘리브레이션용 예측 기록 (P8-3) — 실패해도 무영향."""
+    async def _record_calibration(self, data: Dict[str, Any], signal: Signal) -> None:
+        """신뢰도 캘리브레이션 + 비가격 팩터 태그 기록 (P8-3, P12-3) — 실패해도 무영향.
+
+        ⚠️ P12-3은 **기록만** 한다(감성/공시로 점수를 바꾸지 않음).
+           행동을 바꾸려면 P12-4에서 태그별 승률이 검증된 뒤에 해야 한다
+           (검증 없는 보정 금지 — 프로젝트 원칙).
+        """
         try:
             from analytics.calibration_bridge import record_prediction
+
+            tags: List[str] = []
+            factors: Dict[str, Any] = {}
+            try:
+                from application.analysis.nonprice_factors import compute as compute_nonprice
+
+                npf = await compute_nonprice(
+                    signal.ticker,
+                    sentiment_pipeline=getattr(self, "sentiment_pipeline", None),
+                    dart=getattr(self, "dart_connector", None),
+                )
+                tags = list(npf.tags)
+                factors = npf.to_dict()
+                factors.pop("tags", None)
+            except Exception as e:
+                trace.debug(f"비가격 팩터 건너뜀: {e}")
 
             record_prediction(
                 regime=str(data.get("regime", "unknown")),
@@ -498,6 +519,8 @@ class SignalPipeline(TracedService):
                 ticker=signal.ticker,
                 action=signal.action.value,
                 price=float(signal.price),
+                tags=tags,
+                factors=factors,
             )
         except Exception as e:
             trace.debug(f"캘리브레이션 기록 건너뜀: {e}")

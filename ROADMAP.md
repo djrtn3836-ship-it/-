@@ -151,8 +151,17 @@
         (`core.config`는 `market_*`로 평탄화해 저장 → 기본값 500 사용 / `schema`는 섹션 미처리 → 기본값 200)
       - 수정: `core.config._resolve_nested_aliases()` + `schema`의 market 섹션 평탄화 → **yaml이 단일 소스**
       - `realtime_monitor`의 195 하드코딩 → 설정 참조로 변경 (4개 market 키 전부 일치 검증)
-- [ ] **P12-3** 비가격 팩터 이식(감성 boost + 쌍끌이 수급 + 공시 플래그) → decisions 태그
-- [ ] **P12-4** 조건 태그 승률 통계 (P12-3 태그 × 실현 결과)
+- [x] **P12-3** 비가격 팩터 + 조건 태그 (2026-10-04)
+      - 신규 `application/analysis/nonprice_factors.py`
+      - ✅ 감성(`SentimentPipeline.get_sentiment`, 캐시 기반) → `sent_pos/sent_neg/sent_neutral/news_busy` 태그 + boost(±0.05, 신뢰도 가중)
+      - ✅ 공시(DART, `NONPRICE_DART_ENABLED` 기본 off) → `disc_yes/disc_no`
+      - ❌ 수급(쌍끌이): **현재 데이터 없음 → 미구현**(없는 값을 추정하지 않음)
+      - ⚠️ **행동 변경 없음**: 태그/팩터를 예측 기록에 남기기만 함(검증 전 점수 보정 금지 원칙)
+      - 배선: `bootstrap._wire_nonprice_factors()`가 감성/DART를 파이프라인에 연결
+- [x] **P12-4** 조건 태그 승률 통계 (2026-10-04)
+      - `calibration_bridge.get_tag_win_rates(min_samples=5)` — 태그별 n/승률, 표본 부족은 제외
+      - CLI `--tags`, 대시보드 9번 섹션에 태그 승률 표시
+      - → 표본이 쌓이면 "감성 긍정일 때 승률이 실제로 높은가"를 데이터로 판정 가능
 
 ### 과거 자산에서 얻은 참고 자산 (미착수 백로그)
 | 출처 | 자산 | 용도 |
