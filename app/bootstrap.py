@@ -72,13 +72,17 @@ except ImportError:
 try:
     from infrastructure.kiwoom import KiwoomConnectorV512
 except ImportError:                                    # pragma: no cover - 안전망
-    logger.warning("infrastructure.kiwoom 사용 불가 → data.kiwoom_connector 폴백")
+    logging.getLogger("bootstrap").warning(
+        "infrastructure.kiwoom 사용 불가 → data.kiwoom_connector 폴백"
+    )
     from data.kiwoom_connector import KiwoomConnectorV512
 
 try:
     from infrastructure.kiwoom.monitor import RealtimeMonitor
 except ImportError:                                    # pragma: no cover - 안전망
-    logger.warning("infrastructure.kiwoom.monitor 사용 불가 → scanner 폴백")
+    logging.getLogger("bootstrap").warning(
+        "infrastructure.kiwoom.monitor 사용 불가 → scanner 폴백"
+    )
     from scanner.realtime_monitor import RealtimeMonitor
 
 from scanner.deep_analyzer import DeepAnalyzer
