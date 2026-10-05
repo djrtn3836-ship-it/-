@@ -138,6 +138,15 @@ class ConfigManager:
 
         yaml_data.update(env_overrides)
 
+        # P12-2: YAML은 `market:` 섹션형인데 AppConfig는 평탄형 필드다.
+        #        섹션을 풀어 넣지 않으면 max_subscriptions 등이 기본값(200)으로 남는다.
+        market = yaml_data.pop("market", None)
+        if isinstance(market, dict):
+            for key in ("max_subscriptions", "price_change_ratio",
+                        "cooldown_seconds", "emergency_threshold"):
+                if key in market and key not in yaml_data:
+                    yaml_data[key] = market[key]
+
         try:
             self._config = AppConfig(**yaml_data)
         except Exception as e:

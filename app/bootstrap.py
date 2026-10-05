@@ -66,14 +66,19 @@ try:
 except ImportError:
     from data.news_crawler import NewsCrawler  # type: ignore[assignment]
 
+# 키움 연동: 정식 경로(infrastructure.kiwoom) = data/scanner 원본의 재수출 shim.
+#   과거엔 infrastructure/kiwoom/ 폴더가 없어 try가 항상 실패 → 폴백이 조용히 실행됐다(P12-1).
+#   폴백은 다른 환경 대비 안전망으로만 남겨둔다(사용 시 DEBUG 로그).
 try:
     from infrastructure.kiwoom import KiwoomConnectorV512
-except ImportError:
+except ImportError:                                    # pragma: no cover - 안전망
+    logger.warning("infrastructure.kiwoom 사용 불가 → data.kiwoom_connector 폴백")
     from data.kiwoom_connector import KiwoomConnectorV512
 
 try:
     from infrastructure.kiwoom.monitor import RealtimeMonitor
-except ImportError:
+except ImportError:                                    # pragma: no cover - 안전망
+    logger.warning("infrastructure.kiwoom.monitor 사용 불가 → scanner 폴백")
     from scanner.realtime_monitor import RealtimeMonitor
 
 from scanner.deep_analyzer import DeepAnalyzer

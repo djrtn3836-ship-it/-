@@ -135,3 +135,30 @@
 - 승인 기반 개발 / 기존 기능 보존(삭제 시 `_archive/` 이동) / UTF-8 (BOM 없음)
 - 변경마다 `pytest` + BOM·뭉개짐·ruff F 검사 → TEST_MODE 부팅 확인
 - 커밋 메시지에 검증 결과 명시, `CONTEXT.md`·`ROADMAP.md`·`DEVELOPMENT_LOG.md` 최신화
+
+---
+
+## P12. 과거 자산 조사 기반 보완 (2026-10-04)
+
+> 4개 과거 자산(보조집사 QDSS / APEX 업비트봇 / evolution_ultimate_bot / trade_ai) + `1.txt` 정밀 분석 보고서 조사 결과를 반영.
+
+- [x] **P12-1** `infrastructure/kiwoom/` 실체화 (shim)
+      - 🔴 폴더가 없어 `bootstrap`의 try가 **항상 실패** → `data/kiwoom_connector.py`(771줄) +
+        `scanner/realtime_monitor.py`(390줄)가 **조용히 활성 경로**로 동작(문서↔실제 불일치)
+      - 재수출 shim 생성(동일 객체 보장, 테스트로 identity 검증) + 폴백 사용 시 WARNING 로그
+- [x] **P12-2** 설정 단일화 (`get_config()` 이중 정의 + 값 불일치)
+      - 🔴 발견: config.yaml의 `market.max_subscriptions: 195`가 **양쪽 다 안 읽힘**
+        (`core.config`는 `market_*`로 평탄화해 저장 → 기본값 500 사용 / `schema`는 섹션 미처리 → 기본값 200)
+      - 수정: `core.config._resolve_nested_aliases()` + `schema`의 market 섹션 평탄화 → **yaml이 단일 소스**
+      - `realtime_monitor`의 195 하드코딩 → 설정 참조로 변경 (4개 market 키 전부 일치 검증)
+- [ ] **P12-3** 비가격 팩터 이식(감성 boost + 쌍끌이 수급 + 공시 플래그) → decisions 태그
+- [ ] **P12-4** 조건 태그 승률 통계 (P12-3 태그 × 실현 결과)
+
+### 과거 자산에서 얻은 참고 자산 (미착수 백로그)
+| 출처 | 자산 | 용도 |
+| :--- | :--- | :--- |
+| APEX(bot) | `news_sentiment.py` 감성→임계값 boost 인터페이스 | P12-3 |
+| evolution | `pretrain_v2.py` 비가격 피처 6종 | P12-3 |
+| QDSS | `smart_money_engine.py` 쌍끌이 / `orderbook.py` OBI·VPIN | P12-3, 후속 |
+| APEX(bot) | `monte_carlo.py` 파산확률 / `walk_forward.py` OOS 승격 | 검증 강화 |
+| QDSS | `rate_limiter.py` DART soft-limit / `news_intelligence.py` 공포지수·과열탐지 | 후속 |

@@ -47,7 +47,11 @@ class RealtimeMonitor:
         self.price_change_ratio = config.get_float("price_change_ratio", 0.02)
         self.cooldown_seconds = config.get_int("cooldown_seconds", 300)
         self.emergency_threshold = config.get_float("emergency_threshold", 0.05)
-        self.max_subscriptions = 195  # 키움 실시간 구독 한도 200 (안전 마진 5)
+        # 키움 실시간 구독 한도 200 (안전 마진). 값은 config/config.yaml(market.max_subscriptions)이 단일 소스.
+        try:
+            self.max_subscriptions = get_config().get_int("max_subscriptions", 195)
+        except Exception:
+            self.max_subscriptions = 195
 
     def _get_current_regime(self) -> str:
         return regime_manager.get_regime()

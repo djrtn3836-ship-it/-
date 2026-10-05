@@ -57,8 +57,29 @@ class ConfigManager:
         self._env_loaded = True
         self._load_defaults()
         self._load_yaml()
+        self._resolve_nested_aliases()
         self._validate_config()
         self._last_mtime = self._get_yaml_mtime()
+
+    # YAML은 섹션형(market.max_subscriptions)으로 쓰이지만 DEFAULTS는 평탄형(max_subscriptions)이다.
+    # _update_from_dict가 "market_max_subscriptions"로 저장하므로 YAML 값이 영원히 반영되지 않던
+    # 버그(P12-2: 실제 core=500 / schema=200 / monitor=195 하드코딩)를 여기서 해소한다.
+    _NESTED_ALIASES: Dict[str, str] = {
+        "max_subscriptions": "market_max_subscriptions",
+        "price_change_ratio": "market_price_change_ratio",
+        "cooldown_seconds": "market_cooldown_seconds",
+        "emergency_threshold": "market_emergency_threshold",
+    }
+
+    def _resolve_nested_aliases(self) -> None:
+        """섹션형 YAML 키를 평탄형 표준 키로 승격한다(config.yaml = 단일 소스)."""
+        for canonical, nested in self._NESTED_ALIASES.items():
+            if nested not in self._config:
+                continue
+            value = self._config[nested]
+            if self._config.get(canonical) != value:
+                logger.info(f"⚙️ 설정 단일화: {canonical} = {value} (← {nested})")
+            self._config[canonical] = value
 
     def _get_yaml_mtime(self) -> float:
         config_file = self._config_dir / "config.yaml"
