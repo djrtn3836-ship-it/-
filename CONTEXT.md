@@ -175,6 +175,19 @@ OOS에서는 **저변동성이 유일하게 양의 알파**(α +10.4%/년, β 0.
 - 🟠 `DB_TYPE`은 코드 미사용 (DB 선택은 `DATABASE_URL` 유무로 결정) — 정리 대상
 - 🔎 성과추적기 실측값은 DB에 결정이 쌓여야 의미 있음(현재 decisions 0건)
 
+### 🗂️ P12. 과거 자산 조사 기반 보완 (2026-10-04)
+4개 과거 자산(보조집사 QDSS / APEX 업비트봇 / evolution_ultimate_bot / trade_ai)과
+`1.txt` 정밀 분석 보고서를 조사해 반영.
+
+| 단계 | 내용 | 핵심 |
+| :--- | :--- | :--- |
+| P12-1 | `infrastructure/kiwoom/` **실체화(shim)** | 🔴 폴더 부재로 bootstrap의 try가 **항상 실패** → `data/kiwoom_connector.py`(771줄)·`scanner/realtime_monitor.py`(390줄)가 **조용히 활성 경로**였다(문서↔실제 불일치). 재수출 shim + identity 테스트 |
+| P12-2 | **설정 단일화** | 🔴 `config.yaml`의 `market.max_subscriptions: 195`가 **양쪽 다 안 읽힘**(core는 `market_*`로 평탄화→기본값 500 / schema는 섹션 미처리→기본값 200). 중첩 별칭 해석으로 **yaml = 단일 소스**, monitor 하드코딩 제거 |
+| P12-3 | **비가격 팩터 + 조건 태그** | `application/analysis/nonprice_factors.py` — 감성(캐시)→`sent_pos/neg/neutral`·`news_busy`, 공시(DART, 기본 off)→`disc_yes/no`. **수급은 데이터 부재로 미구현**(추정 금지). **행동 변경 없음**(기록만) |
+| P12-4 | **조건 태그 승률** | `get_tag_win_rates()`(n<5 제외) + CLI `--tags` + 대시보드 9번 섹션 → "감성 긍정일 때 승률이 정말 높은가"를 데이터로 판정 |
+
+**미해결(백로그)**: `get_config()` 이중 정의는 유지(값은 단일화) · 수급(쌍끌이) 팩터 · 과거 자산의 평문 키(폐기 권장)
+
 ### 🧭 P8~P10 (감사 기반 신규 로드맵) 완료 (2026-10-01)
 **감사 결과**: TODO 0건 · 빈 함수는 추상메서드뿐 · 진짜 문제는 **고아 모듈 7건 + 무테스트 핵심모듈 16건**
 
