@@ -21,6 +21,7 @@ P5/P6 검증에서 **가격기반 팩터는 유의한 알파가 없음**이 확�
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -33,7 +34,11 @@ logger = setup_logger("data_readiness")
 MIN_DECISIONS = 500
 MIN_OUTCOMES = 300
 
-STATE_PATH = Path(__file__).parent.parent / "data" / "readiness_state.json"
+# P12-5: 테스트 격리용
+STATE_PATH = Path(
+    os.getenv("READINESS_STATE_PATH",
+              str(Path(__file__).parent.parent / "data" / "readiness_state.json"))
+)
 
 
 async def count_rows(db: Any, table: str) -> int:

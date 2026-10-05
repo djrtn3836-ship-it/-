@@ -42,7 +42,10 @@ from observability.trace_propagation import format_trace_footer
 logger = setup_logger("telegram")
 
 # 발송 감사 로그(JSONL) — alert_verifier가 DB 결정과 대조하는 근거
-AUDIT_PATH = Path(__file__).parent.parent / "logs" / "alerts_audit.jsonl"
+# P12-5: 테스트가 운영 감사로그를 오염시키지 않도록 경로를 환경변수로 격리 가능하게 한다.
+AUDIT_PATH = Path(
+    os.getenv("ALERTS_AUDIT_PATH", str(Path(__file__).parent.parent / "logs" / "alerts_audit.jsonl"))
+)
 
 
 class TelegramSender:

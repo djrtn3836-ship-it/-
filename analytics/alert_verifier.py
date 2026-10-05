@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -24,7 +25,10 @@ from core.logger import setup_logger
 
 logger = setup_logger("alert_verifier")
 
-AUDIT_PATH = Path(__file__).parent.parent / "logs" / "alerts_audit.jsonl"
+# P12-5: 테스트가 운영 감사로그를 오염시키지 않도록 경로를 환경변수로 격리 가능하게 한다.
+AUDIT_PATH = Path(
+    os.getenv("ALERTS_AUDIT_PATH", str(Path(__file__).parent.parent / "logs" / "alerts_audit.jsonl"))
+)
 
 # 진입/청산 "알림 대상" 결정으로 볼 action 집합
 NOTIFIABLE_ACTIONS = {"SIGNAL_ENTRY", "BUY", "SELL"}

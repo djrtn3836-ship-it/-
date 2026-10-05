@@ -31,7 +31,14 @@ logger = setup_logger("chaos_test")
 # 테스트 설정
 # ============================================================
 DB_PATH = PROJECT_ROOT / "data" / "decisions.db"
-DB_TEST_PATH = PROJECT_ROOT / "data" / "decisions_test.db"  # 🔥 복제본
+# P12-5: 복제본을 프로젝트 data/ 가 아니라 임시 폴더에 만든다(테스트가 작업 디렉터리를 더럽히지 않도록).
+import os as _os
+import tempfile as _tempfile
+
+DB_TEST_PATH = Path(
+    _os.getenv("CHAOS_TEST_DB_PATH",
+               str(Path(_tempfile.gettempdir()) / "sa_chaos_test" / "decisions_test.db"))
+)  # 🔥 복제본(임시)
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +114,7 @@ async def test_db_corruption() -> tuple[bool, str]:
             return True, "메인 DB 없음 (스킵)"
 
         # 2) 복제본 생성
+        DB_TEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         if DB_TEST_PATH.exists():
             DB_TEST_PATH.unlink()
         shutil.copy2(DB_PATH, DB_TEST_PATH)

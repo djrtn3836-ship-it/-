@@ -1,7 +1,28 @@
 # tests/conftest.py
 """
 Pytest 공용 설정 및 Fixtures
+
+🔴 P12-5 (2026-10-04): 테스트가 운영 데이터를 오염시키지 않도록 기록 경로를 임시 폴더로 격리한다.
+   - 과거 사고: SignalPipeline을 태우는 테스트들이 logs/calibration_predictions.jsonl,
+     logs/shadow_records.jsonl 에 직접 기록 → 운영 분석 데이터가 가짜 값으로 오염됨.
+   - 모듈 임포트 시점에 경로 상수가 결정되므로 **conftest 최상단(임포트 전)** 에서 설정한다.
 """
+
+import os
+import tempfile
+from pathlib import Path
+
+_TEST_LOG_DIR = Path(tempfile.mkdtemp(prefix="sa_test_logs_"))
+
+# setdefault가 아니라 강제 지정 — 테스트는 어떤 경우에도 운영 경로에 쓰지 않는다.
+os.environ["CALIBRATION_LOG_DIR"] = str(_TEST_LOG_DIR)
+os.environ["SHADOW_RECORDS_PATH"] = str(_TEST_LOG_DIR / "shadow_records.jsonl")
+os.environ["ALERTS_AUDIT_PATH"] = str(_TEST_LOG_DIR / "alerts_audit.jsonl")
+os.environ["READINESS_STATE_PATH"] = str(_TEST_LOG_DIR / "readiness_state.json")
+# 로거/블랙박스도 임시 폴더로 (core/logger.py가 LOG_DIR를 지원)
+os.environ["LOG_DIR"] = str(_TEST_LOG_DIR / "app_logs")
+os.environ["BLACKBOX_DIR"] = str(_TEST_LOG_DIR / "blackbox")
+os.environ["TRACE_DIR"] = str(_TEST_LOG_DIR / "trace")
 
 import pytest
 import asyncio

@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,7 +41,8 @@ from core.logger import setup_logger
 
 logger = setup_logger("calibration")
 
-BASE = Path(__file__).parent.parent / "logs"
+# P12-5: 테스트 격리용 — 운영 로그 경로를 환경변수로 덮어쓸 수 있다.
+BASE = Path(os.getenv("CALIBRATION_LOG_DIR", str(Path(__file__).parent.parent / "logs")))
 PRED_PATH = BASE / "calibration_predictions.jsonl"
 SETTLED_PATH = BASE / "calibration_settled.jsonl"
 

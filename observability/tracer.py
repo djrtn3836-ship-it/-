@@ -16,6 +16,7 @@ v1.0 -> v1.1 변경 사항:
 import functools
 import inspect
 import logging
+import os
 import time
 import traceback
 from logging.handlers import RotatingFileHandler
@@ -25,7 +26,7 @@ from typing import Any, Callable, Optional
 from observability.trace_config import get_trace_manager
 from observability.trace_id import current_trace_id
 
-TRACE_DIR = Path("logs/trace")
+TRACE_DIR = Path(os.getenv("TRACE_DIR", str(Path(os.getenv("LOG_DIR", "logs")) / "trace")))
 TRACE_DIR.mkdir(parents=True, exist_ok=True)
 
 _tracer_cache: dict[str, "ModuleTracer"] = {}

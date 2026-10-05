@@ -8,6 +8,7 @@ import gzip
 import json
 import shutil
 import threading
+import os
 import time
 import traceback
 from collections import deque
@@ -60,7 +61,8 @@ class DebugTower:
         return cls._instance
 
     def _init(self) -> None:
-        self.base_dir = Path(__file__).parent.parent / "logs"
+        # P12-5: 테스트 격리(LOG_DIR) 지원
+        self.base_dir = Path(os.getenv("LOG_DIR", str(Path(__file__).parent.parent / "logs")))
         self.trace_dir = self.base_dir / "debug"
         self.crash_dir = self.base_dir / "crashes"
         self.trace_dir.mkdir(parents=True, exist_ok=True)

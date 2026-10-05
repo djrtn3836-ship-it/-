@@ -39,7 +39,11 @@ from core.logger import setup_logger
 
 logger = setup_logger("shadow_registry")
 
-RECORDS_PATH = Path(__file__).parent.parent.parent / "logs" / "shadow_records.jsonl"
+# P12-5: 테스트 격리용 — 운영 기록 경로를 환경변수로 덮어쓸 수 있다.
+RECORDS_PATH = Path(
+    os.getenv("SHADOW_RECORDS_PATH",
+              str(Path(__file__).parent.parent.parent / "logs" / "shadow_records.jsonl"))
+)
 DEFAULT_MAX_RECORDS = 500
 
 

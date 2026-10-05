@@ -4,11 +4,12 @@ core/blackbox_logger.py - v1.1.0 (Session 35: mypy strict 적용, 로직 무변�
 """
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-BLACKBOX_DIR = Path(__file__).parent.parent / "logs" / "blackbox"
+BLACKBOX_DIR = Path(os.getenv("BLACKBOX_DIR", str(Path(__file__).parent.parent / "logs" / "blackbox")))
 BLACKBOX_DIR.mkdir(parents=True, exist_ok=True)
 
 blackbox_logger = logging.getLogger("BLACKBOX")

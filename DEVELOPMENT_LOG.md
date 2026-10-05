@@ -388,3 +388,14 @@
 - P10: 대시보드 10섹션, 임계 제안(자동적용 금지), 주간 PDF 검증 섹션, README
 - 수정 버그 5건(구문 오류 커밋 위험, 예외 핸들러 기동 실패, 가짜 상관, input() 정지 위험, async 계약)
 - 스케줄러 16잡 / 테스트 1513 passed / ruff F 0
+
+## 2026-10-04 — P12-5: 테스트→운영 데이터 오염 차단 (실측으로 발견)
+- 🔴 발견: 테스트가 운영 로그에 직접 기록 → `logs/calibration_predictions.jsonl` 160건,
+  `logs/shadow_records.jsonl` 177건, `logs/alerts_audit.jsonl` 287건이 **전부 테스트 픽스처**(005930/MOCK)였다.
+  → P12-4 태그 승률 등 모든 분석 데이터가 무효 상태였음.
+- 조치: 기록 경로를 환경변수로 격리(`CALIBRATION_LOG_DIR`/`SHADOW_RECORDS_PATH`/`ALERTS_AUDIT_PATH`/
+  `READINESS_STATE_PATH`/`BLACKBOX_DIR`/`TRACE_DIR`/`LOG_DIR`) + `tests/conftest.py` 최상단에서 강제 지정.
+  카오스 테스트의 DB 복제본도 임시 폴더로 이동.
+- 결과: 전체 테스트(1536) 실행 후 `logs/` 파일 **0개**, JSONL/DB 오염 0건.
+- 정리: 오염 데이터 삭제, 개발 로그 87개(24MB)는 `_archive/dev_logs_20261004/`로 아카이브.
+- 유지: `momentum_paper` 20건(실제 시세 기반 픽, 오염 아님).
