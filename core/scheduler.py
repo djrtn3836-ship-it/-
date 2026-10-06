@@ -44,6 +44,8 @@ class SchedulerManager:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
         self._jobs: list[Any] = []
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        # run_coroutine_threadsafe가 돌려준 Future는 GC되면 작업이 취소될 수 있어 보관한다.
+        self._pending_futures: set[Any] = set()
 
     def _capture_loop(self) -> None:
         """메인 이벤트 루프를 기억한다(스케줄 잡이 스레드에서 실행될 때 복귀용)."""
@@ -106,7 +108,9 @@ class SchedulerManager:
                 #  "Timeout context manager should be used inside a task"로 깨진다)
                 loop = self._main_loop
                 if loop is not None and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(_wrapped_coro(), loop)
+                    fut = asyncio.run_coroutine_threadsafe(_wrapped_coro(), loop)
+                    self._pending_futures.add(fut)
+                    fut.add_done_callback(self._pending_futures.discard)
                 else:
                     asyncio.run(_wrapped_coro())
 

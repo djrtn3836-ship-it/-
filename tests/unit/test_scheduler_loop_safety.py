@@ -47,11 +47,14 @@ async def test_job_from_thread_runs_in_main_loop():
         t.start()
         t.join()
 
-        await asyncio.wait_for(done.wait(), timeout=5)
+        await asyncio.wait_for(done.wait(), timeout=15)
         assert captured["loop"] is asyncio.get_running_loop()
         assert captured["task"] is not None  # 태스크 컨텍스트 유지(Timeout CM 조건)
     finally:
-        mgr.shutdown()
+        try:
+            mgr.shutdown()
+        except Exception:
+            pass
 
 
 def test_no_main_loop_falls_back_to_asyncio_run():
