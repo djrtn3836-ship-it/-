@@ -74,6 +74,35 @@ class AsyncRateLimiter:
                 self.tokens -= 1
 
 
+
+# 키움 웹소켓 REAL 메시지의 values(숫자 키) → 표준 필드명 매핑
+#   0B(주식체결): 10=현재가 11=전일대비 12=등락률 13=누적거래량 14=누적거래대금(백만원)
+#                 16=시가 17=고가 18=저가 20=체결시간 27=매도호가 28=매수호가
+_WS_VALUE_FIELDS: Dict[str, Dict[str, str]] = {
+    "0B": {
+        "10": "price",
+        "11": "change",
+        "12": "change_rate",
+        "13": "volume",
+        "14": "trading_value",
+        "16": "open",
+        "17": "high",
+        "18": "low",
+        "20": "tick_time",
+        "27": "ask_price",
+        "28": "bid_price",
+    },
+}
+
+
+def _to_float(value: Any) -> Optional[float]:
+    """'+18630' / '-20' / ' 0' 등 부호·공백·콤마 포함 문자열을 float로 변환."""
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class KiwoomConnectorV512:
     REST_BASE_URL: str = "https://api.kiwoom.com"
     WS_URL: str = "wss://api.kiwoom.com:10000/api/dostk/websocket"
@@ -150,6 +179,35 @@ class KiwoomConnectorV512:
                     return value
         return None
 
+    def _normalize_ws_values(self, data: Dict[str, Any]) -> None:
+        """웹소켓 REAL 메시지의 values(숫자 키)를 표준 필드명으로 변환한다.
+
+        키움은 {"values": {"10": "+18630", ...}, "type": "0B"} 형태로 보내지만
+        하위 핸들러(RealtimeMonitor 등)는 price/volume 같은 이름 필드를 기대한다.
+        이 변환이 없으면 모든 틱이 price=None → 0.0 → 무효 처리된다.
+        """
+        values = data.get("values")
+        if not isinstance(values, dict):
+            return
+        mapping = _WS_VALUE_FIELDS.get(str(data.get("type") or ""))
+        if not mapping:
+            return
+        for code, field in mapping.items():
+            if field in data:
+                continue
+            raw = values.get(code)
+            if raw is None:
+                continue
+            if field == "tick_time":
+                data[field] = str(raw).strip()
+            elif field == "volume":
+                num = _to_float(raw)
+                data[field] = int(num) if num is not None else 0
+            else:
+                num = _to_float(raw)
+                if num is not None:
+                    data[field] = num
+
     async def _handle_ws_message(self, data: Dict[str, Any]) -> None:
         ticker = self._extract_ticker(data)
         if not ticker:
@@ -162,6 +220,7 @@ class KiwoomConnectorV512:
             return
 
         data["ticker"] = ticker
+        self._normalize_ws_values(data)
         debug_tower.log(
             ticker,
             "WS_RECV",

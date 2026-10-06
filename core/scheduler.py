@@ -28,7 +28,7 @@ v2.0 → v2.1 (기존 유지):
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -43,8 +43,19 @@ class SchedulerManager:
     def __init__(self) -> None:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
         self._jobs: list[Any] = []
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _capture_loop(self) -> None:
+        """메인 이벤트 루프를 기억한다(스케줄 잡이 스레드에서 실행될 때 복귀용)."""
+        if self._main_loop is not None:
+            return
+        try:
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
 
     def start(self) -> None:
+        self._capture_loop()
         self.scheduler.start()
         logger.info("⏰ Scheduler started")
 
@@ -71,6 +82,8 @@ class SchedulerManager:
                                 daily_reporter, max_retries=3, retry_delay=5)
         """
 
+        self._capture_loop()
+
         async def _wrapped_coro() -> None:
             for attempt in range(max_retries + 1):
                 try:
@@ -88,7 +101,14 @@ class SchedulerManager:
                 asyncio.get_running_loop()  # ensure we're in async context
                 asyncio.create_task(_wrapped_coro())
             except RuntimeError:
-                asyncio.run(_wrapped_coro())
+                # APScheduler가 스레드에서 실행한 경우 → 메인 이벤트 루프로 복귀시킨다.
+                # (asyncio.run으로 새 루프를 만들면 메인 루프에 묶인 aiohttp 세션이
+                #  "Timeout context manager should be used inside a task"로 깨진다)
+                loop = self._main_loop
+                if loop is not None and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(_wrapped_coro(), loop)
+                else:
+                    asyncio.run(_wrapped_coro())
 
         self.scheduler.add_job(_wrapper, trigger=trigger, id=job_id, replace_existing=True)
         logger.info(f"📅 스케줄 등록: {job_id} (재시도 {max_retries}회)")
