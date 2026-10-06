@@ -78,6 +78,11 @@ class AsyncRateLimiter:
 # 키움 웹소켓 REAL 메시지의 values(숫자 키) → 표준 필드명 매핑
 #   0B(주식체결): 10=현재가 11=전일대비 12=등락률 13=누적거래량 14=누적거래대금(백만원)
 #                 16=시가 17=고가 18=저가 20=체결시간 27=매도호가 28=매수호가
+# 가격 필드: 키움은 '+'/'-'를 "전일 종가 대비 방향" 표시로 붙인다(값의 부호가 아님).
+#   예: 000720 하락일 → 시가 "+115100"(전일보다 높음), 저가 "-112500"(전일보다 낮음)
+#   → 가격 필드는 abs()로 절댓값 사용. 11(전일대비)/12(등락률)은 부호가 실제 값이므로 유지.
+_WS_ABS_FIELDS = frozenset({"price", "open", "high", "low", "ask_price", "bid_price"})
+
 _WS_VALUE_FIELDS: Dict[str, Dict[str, str]] = {
     "0B": {
         "10": "price",
@@ -206,7 +211,7 @@ class KiwoomConnectorV512:
             else:
                 num = _to_float(raw)
                 if num is not None:
-                    data[field] = num
+                    data[field] = abs(num) if field in _WS_ABS_FIELDS else num
 
     async def _handle_ws_message(self, data: Dict[str, Any]) -> None:
         ticker = self._extract_ticker(data)

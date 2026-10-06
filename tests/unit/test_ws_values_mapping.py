@@ -92,6 +92,24 @@ class TestNormalize:
         connector._normalize_ws_values(data)
         assert data["price"] == 999.0
 
+    def test_falling_stock_sign_is_direction_marker(self, connector):
+        """하락 종목: '+'/'-'는 전일 대비 방향 표시 → 가격 필드는 abs()"""
+        data = {
+            "values": {"10": "-113300", "11": "-1100", "12": "-0.96",
+                       "16": "+115100", "17": "+116600", "18": "-112500",
+                       "13": "564875", "20": "182745"},
+            "type": "0B", "name": "주식체결", "item": "000720",
+        }
+        connector._normalize_ws_values(data)
+        assert data["price"] == 113300.0
+        assert data["open"] == 115100.0
+        assert data["high"] == 116600.0
+        assert data["low"] == 112500.0
+        assert data["change"] == -1100.0      # 부호 유지(실제 값)
+        assert data["change_rate"] == -0.96   # 부호 유지
+        prev = abs(data["change"]) / abs(data["change_rate"]) * 100
+        assert round(prev) == 114583  # 전일종가 ≈ 114,400~114,600 구간
+
     def test_invalid_number_skipped(self, connector):
         data = {"values": {"10": "N/A", "13": "N/A"}, "type": "0B", "item": "000000"}
         connector._normalize_ws_values(data)
