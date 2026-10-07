@@ -8,6 +8,7 @@ core/supervisor.py - v1.3 (mypy strict 완전 적용)
 """
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -50,9 +51,30 @@ class SystemSupervisor:
         self.max_restarts: int = 5
         self.restart_count: int = 0
         self.last_restart_time: float = 0.0
-        self.memory_threshold_mb: int = 1024
+        # 🔴 2026-10-07 사고: 절대값 1024MB 하드코딩 + 쿨다운 부재 →
+        #  32GB PC에서 1.6GB 사용(정상)인데도 30초마다 텔레그램 도배.
+        #  → 기본은 "시스템 전체 RAM의 80%"로 판단하고, 환경변수로 고정 가능하게 한다.
+        env_thr = os.getenv("SUPERVISOR_MEMORY_THRESHOLD_MB", "").strip()
+        if env_thr.isdigit() and int(env_thr) > 0:
+            self.memory_threshold_mb: int = int(env_thr)
+        else:
+            try:
+                total_mb = psutil.virtual_memory().total / (1024 * 1024)
+                self.memory_threshold_mb = max(1024, int(total_mb * 0.8))
+            except Exception:
+                self.memory_threshold_mb = 4096
+        self.alert_cooldown_sec: int = int(os.getenv("SUPERVISOR_ALERT_COOLDOWN_SEC", "1800"))
+        self._last_alert_at: dict[str, float] = {}
         self.queue_threshold: int = 50000
         self._restart_pending: bool = False
+
+    def _should_alert(self, key: str) -> bool:
+        """같은 종류 알림은 쿨다운(기본 30분) 내 재발송하지 않는다."""
+        now = time.time()
+        if now - self._last_alert_at.get(key, 0.0) < self.alert_cooldown_sec:
+            return False
+        self._last_alert_at[key] = now
+        return True
 
     async def run(self) -> None:
         """Main supervisor loop"""
@@ -62,7 +84,7 @@ class SystemSupervisor:
         while True:
             try:
                 error_count = self._count_recent_errors()
-                if error_count >= 25:
+                if error_count >= 25 and self._should_alert("errors"):
                     await self._send_alert(
                         f"[Supervisor] 25+ errors in last 100 lines: {error_count} errors"
                     )
@@ -157,7 +179,7 @@ class SystemSupervisor:
                 pid = int(f.read().strip())
             proc = psutil.Process(pid)
             memory_mb: float = proc.memory_info().rss / (1024 * 1024)
-            if memory_mb > self.memory_threshold_mb:
+            if memory_mb > self.memory_threshold_mb and self._should_alert("memory"):
                 await telegram.send_raw(
                     f"[Supervisor] Memory usage high: {memory_mb:.0f}MB "
                     f"(threshold: {self.memory_threshold_mb}MB)"
