@@ -581,6 +581,7 @@ async def main() -> None:
     log_event("SYSTEM_START", {"pid": os.getpid(), "version": "v8.0.0"})
     debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v8.0.0"})
 
+    _ensure_utf8_stdout()
     check_and_create_pid()
     load_dotenv(override=True)
     validate_env()
@@ -988,6 +989,15 @@ async def main() -> None:
 # ============================================================
 # 유틸리티
 # ============================================================
+def _ensure_utf8_stdout() -> None:
+    """콘솔이 cp949여도 이모지/한글 출력이 깨지지 않게 한다(중복 실행 차단 메시지 크래시 방지)."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 def _pid_alive(pid: int) -> bool:
     """PID 생존 확인(Windows/POSIX 공용, 외부 프로세스 의존 없음)."""
     if pid <= 0:
