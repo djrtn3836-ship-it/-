@@ -377,7 +377,8 @@ class KiwoomConnectorV512:
 
                     if self._subscribed_items:
                         logger.info(f"📡 저장된 {len(self._subscribed_items)}개 종목 REG 재전송")
-                        for ticker, types in self._subscribed_items.items():
+                        # 재구독 중 _subscribed_items가 변경될 수 있어 스냅샷으로 순회(크래시 방지)
+                        for ticker, types in list(self._subscribed_items.items()):
                             handler = self._realtime_handlers.get(ticker)
                             if handler:
                                 success = await self._register_with_retry(ticker, handler, types)

@@ -34,7 +34,6 @@ import asyncio
 import logging
 import os
 import signal
-import subprocess
 import sys
 import time
 import traceback
@@ -989,22 +988,48 @@ async def main() -> None:
 # ============================================================
 # 유틸리티
 # ============================================================
+def _pid_alive(pid: int) -> bool:
+    """PID 생존 확인(Windows/POSIX 공용, 외부 프로세스 의존 없음)."""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            # OpenProcess 실패 시에도 존재하는 PID(Access denied)일 수 있어 0으로 판정
+            return False
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
 def check_and_create_pid() -> None:
+    # 🔴 2026-10-07 사고: 기존 구현은 tasklist 실행이 실패하면 PID 파일을 지우고
+    # 그대로 진행해, app/main.py와 동시 실행(키움 연결 경합)이 가능했다. → fail-closed.
     if PID_FILE.exists():
         try:
             with open(PID_FILE) as f:
-                old_pid = int(f.read().strip())
-            result = subprocess.run(["tasklist", "/FI", f"PID eq {old_pid}"], capture_output=True, text=True)
-            if str(old_pid) in result.stdout:
-                print(f"❌ 이미 실행 중인 프로세스가 있습니다 (PID: {old_pid})")
-                sys.exit(1)
-            else:
-                PID_FILE.unlink()
+                old_pid = int(f.read().strip() or "0")
         except Exception:
-            try:
-                PID_FILE.unlink()
-            except Exception:
-                pass
+            old_pid = 0
+
+        if old_pid and old_pid != os.getpid() and _pid_alive(old_pid):
+            print(f"❌ 이미 실행 중인 프로세스가 있습니다 (PID: {old_pid})")
+            print("   (다른 진입점 app/main.py 포함) 중복 실행을 중단합니다.")
+            sys.exit(1)
+
+        try:
+            PID_FILE.unlink()
+            print(f"스테일 PID 파일 정리 (이전 PID {old_pid})")
+        except Exception:
+            pass
+
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     print(f"✅ PID 파일 생성: {os.getpid()}")

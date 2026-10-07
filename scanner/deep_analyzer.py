@@ -784,7 +784,7 @@ class DeepAnalyzer:
                 final_action = strategy_action
                 final_confidence = strategy_confidence
             else:
-                decision = self.decider.decide(
+                decision = await self.decider.decide(
                     {
                         "score": final_score, "macro": macro_score, "sector": sector_score,
                         "stock": stock_score, "korean": korean_score,
