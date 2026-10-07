@@ -28,7 +28,12 @@ from core.debug_tower import debug_tower
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
 from data.news_crawler import NewsCrawler
-from decision.hybrid_decider import HybridDecider
+from decision.hybrid_decider import (
+    DecisionContext,
+    HybridDecider,
+    SignalMetrics,
+    TimingMetrics,
+)
 from filters.dynamic_weighter import DynamicWeighter
 from filters.korean_special_filter import KoreanSpecialFilter
 from filters.macro_filter import MacroFilter
@@ -784,14 +789,62 @@ class DeepAnalyzer:
                 final_action = strategy_action
                 final_confidence = strategy_confidence
             else:
-                decision = await self.decider.decide(
-                    {
-                        "score": final_score, "macro": macro_score, "sector": sector_score,
-                        "stock": stock_score, "korean": korean_score,
-                    }
+                # 🔴 2026-10-07 사고: HybridDecider.decide()는 DecisionContext 객체를
+                #   요구하는데 dict를 넘겨 'dict' object has no attribute 'signals'로
+                #   밤새 33,534건 실패. → 규격에 맞는 컨텍스트 객체로 교체.
+                consensus_str = str(strategy_result.get("consensus", "") or "")
+                consensus_val = 0.5
+                try:
+                    import re as _re
+
+                    _m = _re.search(r"(\d+)\s*/\s*(\d+)", consensus_str)
+                    if _m and int(_m.group(2)) > 0:
+                        consensus_val = int(_m.group(1)) / int(_m.group(2))
+                except Exception:
+                    pass
+
+                signals_metrics = SignalMetrics(
+                    action=str(strategy_action) if str(strategy_action) in ("BUY", "SELL") else "HOLD",
+                    score=float(final_score),
+                    confidence=float(strategy_confidence),
+                    sqi=float(final_score),
+                    consensus=float(consensus_val),
                 )
-                final_action = str(decision.get("action", "HOLD"))
-                final_confidence = float(decision.get("confidence", 0.5))
+                timing_metrics = TimingMetrics(
+                    entry_readiness=float(final_score) * 100.0,
+                    exit_readiness=(1.0 - float(final_score)) * 100.0,
+                    entry_recommendation="BUY" if final_score >= 0.6 else "HOLD",
+                    exit_recommendation="SELL" if final_score <= 0.4 else "HOLD",
+                    best_time="즉시" if final_score >= 0.6 else "대기",
+                )
+                try:
+                    _positions = self.portfolio_manager.get_positions() or {}
+                    _existing = len(_positions)
+                except Exception:
+                    _existing = 0
+                try:
+                    # 지표 의미: risk_adj_factor 1.0 = 패널티 없음(정상), 낮을수록 위험
+                    _risk_factor = float(self.portfolio_manager.get_global_risk_penalty() or 1.0)
+                    if _risk_factor > 1.0:
+                        _risk_factor = 1.0
+                    _risk = max(0.0, min(100.0, (1.0 - _risk_factor) * 100.0))
+                except Exception:
+                    _risk = 0.0
+
+                decision = await self.decider.decide(
+                    DecisionContext(
+                        ticker=str(ticker),
+                        current_price=float(current_price),
+                        signals=signals_metrics,
+                        timing=timing_metrics,
+                        portfolio_value=0.0,
+                        existing_positions=int(_existing),
+                        portfolio_risk=float(_risk),
+                    )
+                )
+                _act = getattr(decision, "action", "HOLD")
+                final_action = str(getattr(_act, "value", _act) or "HOLD")
+                final_confidence = float(getattr(decision, "confidence", 0.5) or 0.5)
 
             original_action_label: str = {"BUY": "매수", "SELL": "매도", "HOLD": "관망"}.get(final_action, "관망")
 
@@ -820,10 +873,10 @@ class DeepAnalyzer:
 
             # 🔥 decision이 None일 수 있으므로(전략 기반 결정 경로) 안전하게 참조
             negatives: List[str] = (
-                (list(decision.get("risks", ["시장 변동성 주의"])) if decision is not None else ["시장 변동성 주의"])
+                (list(getattr(decision, "warnings", None) or ["시장 변동성 주의"]) if decision is not None else ["시장 변동성 주의"])
                 if final_action != "HOLD" else ["관망 유지"]
             )
-            counterfactuals: List[str] = list(decision.get("counterfactuals", [])) if decision is not None else []
+            counterfactuals: List[str] = []
 
             result: Dict[str, Any] = {
                 "ticker": ticker,
