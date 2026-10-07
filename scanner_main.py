@@ -582,6 +582,20 @@ async def main() -> None:
     debug_tower.log("SYSTEM", "MAIN_START", {"pid": os.getpid(), "version": "v8.0.0"})
 
     _ensure_utf8_stdout()
+
+    # 🔴 2026-10-07 사고: 실운영 중 이 레거시 진입점(v8.0)을 실행해
+    # app/main.py(V10)와 키움 연결을 경합, 오전 데이터가 두절됐다.
+    # 기본 차단 + 롤백이 필요할 때만 SCANNER_ALLOW_LEGACY=1 로 우회.
+    if os.getenv("SCANNER_ALLOW_LEGACY") != "1":
+        print("=" * 62)
+        print("[중단] scanner_main.py 는 레거시(v8.0) 진입점입니다.")
+        print("  실운영은 다음을 사용하세요:")
+        print(r'    cd "C:\Users\hdw38\Desktop\stock_analyzer"')
+        print("    python app/main.py")
+        print("  (롤백이 필요하면 SCANNER_ALLOW_LEGACY=1 을 설정 후 실행)")
+        print("=" * 62)
+        return 1
+
     check_and_create_pid()
     load_dotenv(override=True)
     validate_env()
