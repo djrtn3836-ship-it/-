@@ -175,6 +175,12 @@ class Bootstrapper(TracedService):
 
         self.start_time: float = 0.0
         self._last_data_time: float = 0.0
+        # 🔴 2026-10-08 사고: 틱마다 심층 분석 → 하루 decisions 285만 건 / DB +1.5GB /
+        #   로그 +2.2GB / 메모리 7.3GB. → 종목당 일정 간격으로만 분석한다.
+        self._analysis_interval_sec: float = float(os.getenv("ANALYSIS_MIN_INTERVAL_SEC", "300"))
+        self._analysis_last_at: Dict[str, float] = {}
+        # 급변(기본 |변동률| >= 2%)은 알림 지연 방지를 위해 즉시 분석
+        self._signal_bypass_pct: float = float(os.getenv("ANALYSIS_BYPASS_PCT", "2.0"))
         self.startup_details: Dict[str, Any] = {}
 
     def load_env(self) -> None:
@@ -264,6 +270,17 @@ class Bootstrapper(TracedService):
 
         PID_FILE.write_text(str(my_pid))
         logger.info(f"PID 파일 생성: {my_pid}")
+
+    def _should_analyze(self, ticker: str, change_abs: float, now: float) -> bool:
+        """종목당 심층 분석 간격 제한.
+
+        - 급변(|변동률| >= ANALYSIS_BYPASS_PCT, 기본 2%)은 즉시 분석(알림 지연 방지)
+        - 그 외에는 ANALYSIS_MIN_INTERVAL_SEC(기본 300초)에 1회만 분석
+        2026-10-08 사고: 틱마다 분석 → decisions 285만 건/일, DB +1.5GB, 로그 +2.2GB, 메모리 7.3GB.
+        """
+        if change_abs >= self._signal_bypass_pct:
+            return True
+        return (now - self._analysis_last_at.get(ticker, 0.0)) >= self._analysis_interval_sec
 
     def cleanup_pid(self) -> None:
         try:
@@ -984,6 +1001,17 @@ class Bootstrapper(TracedService):
 
                 ticker = str(stock_data.get("ticker", "UNKNOWN"))
                 debug_tower.log(ticker, "WORKER_PROCESS", {"worker": wid})
+
+                # 종목당 심층 분석 간격 제한(급변은 즉시) — 2026-10-08 자원 폭발 대응
+                _now_ts = time.time()
+                try:
+                    _chg_abs = abs(float(stock_data.get("change_rate") or 0.0))
+                except (TypeError, ValueError):
+                    _chg_abs = 0.0
+                if not self._should_analyze(ticker, _chg_abs, _now_ts):
+                    self.message_queue.task_done()
+                    continue
+                self._analysis_last_at[ticker] = _now_ts
 
                 token = bind_trace_id(str(stock_data.get("trace_id", new_trace_id())))
                 try:

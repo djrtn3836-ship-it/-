@@ -10,7 +10,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+# 🔴 2026-10-09: Windows 애플리케이션 제어 정책이 mypy의 네이티브 DLL(fscache)을
+#   차단하면 mypy 자체가 기동하지 못한다(환경 문제). 이때는 건너뛴다.
+#   (CI 러너에서는 정상 동작하므로 게이트는 유지된다.)
+_detect = subprocess.run(
+    [sys.executable, "-m", "mypy", "--version"], capture_output=True, text=True
+)
+if _detect.returncode != 0:
+    pytest.skip(
+        "mypy 실행 불가(환경 제약: DLL 차단 등) — CI에서만 검증",
+        allow_module_level=True,
+    )
 
 
 def _run_mypy_strict(target: str) -> tuple[int, str]:
