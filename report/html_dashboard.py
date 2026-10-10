@@ -151,6 +151,20 @@ def collect_calibration_section() -> Dict[str, Any]:
         return {}
 
 
+def collect_paper_trade_section() -> Dict[str, Any]:
+    """모의매매 성과(신호 → 실현가 채점). 2026-10-10 신설.
+
+    승률을 과장하지 않도록 항상 Wilson 95% 신뢰구간과 무작위 기준선을 함께 보여준다.
+    """
+    try:
+        from analytics.paper_trader import PaperTrader
+
+        return PaperTrader(db=None).summary(days=90)
+    except Exception as e:
+        logger.debug(f"모의매매 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_trace_section() -> Dict[str, Any]:
     """최근 의사결정 경로 요약(P8-4)."""
     try:
@@ -416,6 +430,57 @@ def render_html(data: Dict[str, Any]) -> str:
                       f"{_badge('실패 ' + str(ok), 'bad') if ok else _badge('정상', 'ok')}</td></tr>")
         trace_body = f"<table>{trows}</table>"
 
+    # --- 모의매매 성과 (2026-10-10) — 실현가 채점, 주문 없음
+    ptd = data.get("paper_trades", {}) or {}
+    pt_horizons = ptd.get("by_horizon") or {}
+    baseline = float(ptd.get("baseline_up_prob", 0.0) or 0.0)
+    if not ptd.get("settled"):
+        pt_body = (
+            f'<div class="note">확정 신호 없음 — 신호 발생 후 자동 채점됩니다 '
+            f'(미확정 {_fmt(ptd.get("pending"))}건). '
+            f'무작위 기준선(상승확률) {baseline:.1f}%</div>'
+        )
+    else:
+        pt_rows = ""
+        for h in sorted(pt_horizons, key=lambda x: int(x)):
+            st = pt_horizons[h] or {}
+            st_n = int(st.get("n", 0) or 0)
+            if not st_n:
+                continue
+            st_wr = float(st.get("win_rate", 0.0) or 0.0)
+            st_lo = float(st.get("ci_low", 0.0) or 0.0)
+            st_hi = float(st.get("ci_high", 0.0) or 0.0)
+            st_avg = float(st.get("avg_return", 0.0) or 0.0)
+            lvl = "ok" if st.get("beats_baseline") else "warn"
+            pt_rows += (
+                f"<tr><th>{h}일</th><td>{_fmt(st_n)}건 "
+                f"{_badge(f'승률 {st_wr:.1f}%', lvl)} "
+                f"<small>95% {st_lo:.0f}~{st_hi:.0f}% · 평균 {st_avg:+.2f}%</small></td></tr>"
+            )
+        pt_tag_rows = ""
+        for t, st_t in (ptd.get("by_tag") or {}).items():
+            st_t = st_t or {}
+            if int(st_t.get("n", 0) or 0) < 5:
+                continue
+            pt_tag_rows += (
+                f"<tr><th>{_esc(t)}</th><td>{_fmt(st_t.get('n'))}건 "
+                f"승률 {float(st_t.get('win_rate', 0.0)):.1f}%</td></tr>"
+            )
+        pt_body = f"<table>{pt_rows}</table>"
+        if pt_tag_rows:
+            pt_body += f'<div class="note">조건 태그별(5일)</div><table>{pt_tag_rows}</table>'
+        pt_body += (
+            f'<div class="note">기준선(무작위 상승확률) {baseline:.1f}% · '
+            f'확정 {_fmt(ptd.get("settled"))}건 · 미확정 {_fmt(ptd.get("pending"))}건. '
+            f'✅ = 95% 신뢰구간 하한이 기준선을 넘음(통계적 우위). '
+            f'<b>실제 주문은 발생하지 않습니다.</b></div>'
+        )
+
+    paper_trades_html = f"""
+    <div class="card">
+      <h2>11. 모의매매 성과 (실현가 채점)</h2>{pt_body}
+    </div>"""
+
     trace_html = f"""
     <div class="card">
       <h2>10. 의사결정 경로 (Trace)</h2>{trace_body}
@@ -442,7 +507,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
 </body></html>"""
 
 
@@ -473,6 +538,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
     data["shadow"] = collect_shadow_section()
     data["calibration"] = collect_calibration_section()
     data["trace"] = collect_trace_section()
+    data["paper_trades"] = collect_paper_trade_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

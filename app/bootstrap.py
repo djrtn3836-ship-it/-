@@ -97,6 +97,7 @@ from orchestrator.sentiment_pipeline import SentimentPipeline
 from orchestrator.portfolio_manager import PortfolioManager
 
 from analytics.performance_tracker import performance_tracker
+from analytics.paper_trader import PaperTrader
 from analytics.calibration_executor import ExecutionCalibrator
 from analytics.alert_verifier import scheduled_verify
 from scheduler.momentum_report import send_momentum_report
@@ -157,6 +158,8 @@ class Bootstrapper(TracedService):
         self.analyzer: Optional[DeepAnalyzer] = None
         self.signal_pipeline: Optional[SignalPipeline] = None
         self.ops_monitor: Optional[OpsMonitor] = None
+        # 모의매매 측정(2026-10-10): 신호 기록 → 실현가 채점 → 정직한 승률
+        self.paper_trader: Optional[PaperTrader] = None
         self.bandit: Optional[StrategyBandit] = None
         self.bandit_bridge: Optional[BanditFeedbackBridge] = None
         self.ab_manager: Optional[ABTestManager] = None
@@ -378,6 +381,21 @@ class Bootstrapper(TracedService):
         except Exception as e:
             logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
 
+    async def _run_paper_settle(self) -> None:
+        """모의매매 채점 + 성과 리포트 전송(평일 16:10).
+
+        실현 종가로만 채점하므로 승률을 과장할 여지가 없다.
+        """
+        if self.paper_trader is None:
+            return
+        try:
+            settled = await self.paper_trader.settle_pending()
+            report = self.paper_trader.format_report(days=90)
+            logger.info(f"모의매매 채점 완료: {settled}건 확정")
+            await TelegramSender().send_raw(report)
+        except Exception as e:
+            logger.warning(f"모의매매 리포트 실패(무시): {e}")
+
     def get_ops_snapshot(self) -> Optional[dict]:
         """관측 상태 스냅샷(헬스/명령어 응답용)."""
         return self.ops_monitor.snapshot() if self.ops_monitor else None
@@ -476,6 +494,8 @@ class Bootstrapper(TracedService):
             on_alert=self._send_ops_alert,
             cb_provider=cb_input_provider,
         )
+        self.paper_trader = PaperTrader(db=self.db)
+        logger.info("PaperTrader 초기화 (모의매매 측정 — 돈 안 씀)")
 
         # 🔴 2026-10-10: FeedbackLearner 결과 → OpsMonitor 드리프트 감지 배선
         if learner is not None and self.ops_monitor is not None:
@@ -801,6 +821,11 @@ class Bootstrapper(TracedService):
             "calibration_settle", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            self._run_paper_settle,
+            CronTrigger(day_of_week="mon-fri", hour=16, minute=10, timezone="Asia/Seoul"),
+            "paper_settle", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_dashboard,
             CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
             "dashboard", max_retries=1, retry_delay=30,
@@ -821,7 +846,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 16
+        self.startup_details["job_count"] = 17
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
@@ -1079,6 +1104,21 @@ class Bootstrapper(TracedService):
                         "EVENT_LIFECYCLE_ADVICE",
                     ):
                         success = await sender.send(analysis)
+                        # 🔴 모의매매 측정: 매매 신호를 기록(실제 돈 안 씀)
+                        if action in ("SIGNAL_ENTRY", "BUY", "SELL") and self.paper_trader is not None:
+                            self.paper_trader.record_signal(
+                                ticker=ticker,
+                                action=action,
+                                price=float(
+                                    analysis.get("price")
+                                    or analysis.get("price_at_decision")
+                                    or 0.0
+                                ),
+                                confidence=float(analysis.get("confidence") or 0.0),
+                                regime=str(analysis.get("regime") or ""),
+                                tags=analysis.get("tags"),
+                                factors=analysis.get("factors"),
+                            )
                         if success:
                             processed_count += 1
                             tp_str = f" TP{analysis.get('tp_level')}" if action == "EVENT_TP_HIT" else ""
