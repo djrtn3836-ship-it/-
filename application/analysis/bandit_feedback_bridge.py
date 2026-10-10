@@ -15,7 +15,7 @@ application/analysis/bandit_feedback_bridge.py - StrategyBandit ↔ PerformanceT
                         └─► DB.get_strategy_outcomes()
                         └─► _compute_strategy_rewards()
                         └─► StrategyBandit.bulk_update(outcomes)
-                        └─► DeepAnalyzer.update_strategy_weights(weights)
+                        └─► weight_sink(weights)  # SignalPipeline.apply_learned_weights
 
 설계 원칙:
     - 비동기 안전: asyncio.Lock 보호
@@ -33,7 +33,7 @@ application/analysis/bandit_feedback_bridge.py - StrategyBandit ↔ PerformanceT
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional, cast, Any
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, cast, Any
 
 if TYPE_CHECKING:
     from data.db_manager import DatabaseManager
@@ -94,16 +94,22 @@ class BanditFeedbackBridge:
         db: "DatabaseManager",
         bandit: "StrategyBandit",
         feedback_days: int = 7,
+        weight_sink: Optional[Callable[[Dict[str, float]], Any]] = None,
     ) -> None:
         """
         Args:
             db: DB 매니저 (get_strategy_outcomes 사용)
             bandit: 피드백을 받을 StrategyBandit 인스턴스
             feedback_days: 피드백 수집 기간 (기본 7일 — 최신 결과 위주)
+            weight_sink: 학습된 가중치를 실제 전략 선택에 반영하는 콜백
+                         (예: SignalPipeline.apply_learned_weights).
+                         🔴 미지정 시 가중치가 표시용으로만 소비되어 학습이
+                         행동을 바꾸지 않는다(2026-10-10 이전 상태).
         """
         self._db = db
         self._bandit = bandit
         self._feedback_days = feedback_days
+        self._weight_sink = weight_sink
         self._lock = asyncio.Lock()
         self._last_feedback: Optional[datetime] = None
         self._total_feedbacks: int = 0
@@ -146,6 +152,13 @@ class BanditFeedbackBridge:
                 self._last_outcome_count = len(outcomes)
 
                 weights = self._bandit.get_weights()
+                # 🔴 학습 고리 연결: 학습된 가중치를 전략 선택에 실제 반영
+                #   (2026-10-10 이전에는 반환값이 상태 표시용으로만 소비됐다)
+                if self._weight_sink is not None:
+                    try:
+                        self._weight_sink(dict(weights))
+                    except Exception as sink_err:
+                        logger.warning("BanditBridge: 가중치 반영 실패(무시): %s", sink_err)
                 logger.info(
                     "BanditBridge: 피드백 완료 (outcome=%d건, strategies=%s, weights=%s)",
                     len(outcomes),

@@ -601,6 +601,11 @@ class Bootstrapper(TracedService):
             db=self.db,
             bandit=self.bandit,
             feedback_days=7,
+            # 🔴 학습 고리 연결: 학습된 가중치를 전략 선택에 실제 반영
+            weight_sink=(
+                self.signal_pipeline.apply_learned_weights
+                if self.signal_pipeline is not None else None
+            ),
         )
         performance_tracker.attach_bandit_bridge(self.bandit_bridge)
         logger.info("BanditFeedbackBridge attached to PerformanceTracker")

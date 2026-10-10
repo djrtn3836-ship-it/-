@@ -218,6 +218,8 @@ class SignalPipeline(TracedService):
         # Strategy.weight가 읽기 전용 프로퍼티여도 안전하게 동작합니다.
         # 키: strategy.name (예: "Trend", "Reversal", "Breakout")
         self._strategy_weights: Dict[str, float] = self._read_strategy_weights()
+        # 학습(Bandit) 가중치를 상대 반영하기 위한 기준값 — 반복 적용 시 누적 드리프트 방지
+        self._base_strategy_weights: Dict[str, float] = dict(self._strategy_weights)
 
     def _read_strategy_weights(self) -> Dict[str, float]:
         """전략 객체에서 초기 가중치를 읽어 이름 기준 딕셔너리로 반환.
@@ -248,6 +250,47 @@ class SignalPipeline(TracedService):
     # ═══════════════════════════════════════════════════════════════
     #  HyperparameterTuner 연동 API
     # ═══════════════════════════════════════════════════════════════
+
+    def apply_learned_weights(self, weights: Dict[str, float]) -> Dict[str, float]:
+        """Bandit이 학습한 전략 가중치(합계≈1.0)를 전략 선택에 반영한다.
+
+        🔴 2026-10-10 이전에는 Bandit이 학습해도 `get_weights()` 반환값이
+        표시용으로만 소비되어 **전략 선택에 전혀 반영되지 않았다**(끊긴 학습 고리).
+        이 메서드가 그 고리를 연결한다.
+
+        반영 규칙(보수적):
+            - 균등 분배(1/n) 대비 상대비를 **기준 가중치**에 곱한다(누적 드리프트 없음).
+            - 상대비는 0.5x ~ 2.0x로 클램프 — 학습 초기 잡음으로 급변하지 않게.
+            - 모르는 전략명/빈 입력은 무시하고 기존 가중치를 유지한다.
+
+        Args:
+            weights: {전략명: 가중치} — StrategyBandit.get_weights() 형식
+
+        Returns:
+            dict: 반영 후 전체 전략 가중치
+        """
+        try:
+            n = len(self._base_strategy_weights)
+            if not weights or n == 0:
+                return dict(self._strategy_weights)
+            uniform = 1.0 / n
+            updated: Dict[str, float] = {}
+            for name, w in weights.items():
+                if name not in self._base_strategy_weights:
+                    continue
+                try:
+                    rel = float(w) / uniform if uniform > 0 else 1.0
+                except (TypeError, ValueError):
+                    continue
+                rel = max(0.5, min(2.0, rel))
+                updated[name] = round(self._base_strategy_weights[name] * rel, 6)
+            if updated:
+                self._strategy_weights.update(updated)
+                logger.debug(f"학습 가중치 반영: {updated}")
+            return dict(self._strategy_weights)
+        except Exception as e:
+            logger.warning(f"학습 가중치 반영 실패(무시): {e}")
+            return dict(self._strategy_weights)
 
     def update_hyperparameters(self, params: Dict[str, float]) -> Dict[str, float]:
         """HyperparameterTuner의 TuningResult.best_params를 받아 즉시 반영.

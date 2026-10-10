@@ -66,6 +66,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# 프로세스 내 최신 스냅샷 캐시 — 대시보드(report/html_dashboard.py)가
+# `from observability.ops_monitor import get_ops_snapshot` 으로 읽는다.
+# 🔴 2026-10-10 이전에는 이 함수가 없어 ImportError가 무음 삼켜지고
+#    대시보드의 관측(품질/튜닝 제안) 섹션이 항상 비어 있었다.
+_LATEST_SNAPSHOT: Optional[Dict[str, Any]] = None
+
+
+def get_ops_snapshot() -> Optional[Dict[str, Any]]:
+    """마지막으로 생성된 OpsMonitor 스냅샷(없으면 None)."""
+    return _LATEST_SNAPSHOT
+
+
 class OpsMonitor:
     """이상탐지·드리프트·근본원인 분석을 묶은 관측 파사드.
 
@@ -213,7 +225,7 @@ class OpsMonitor:
     def snapshot(self) -> Dict[str, Any]:
         """현재 관측 상태 요약(헬스 리포트/대시보드용)."""
         last = self._recent[-1].to_dict() if self._recent else None
-        return {
+        snap = {
             "enabled": self._enabled,
             "stats": dict(self._stats),
             "last_report": last,
@@ -221,6 +233,11 @@ class OpsMonitor:
             "quality": self.quality_snapshot(),
             "tuning": self.suggest_tuning(),
         }
+        # 🔴 대시보드(report/html_dashboard.py)가 모듈 함수 get_ops_snapshot()을
+        #   import 하는데 존재하지 않아 관측 섹션이 무음으로 비어 있었다.
+        global _LATEST_SNAPSHOT
+        _LATEST_SNAPSHOT = snap
+        return snap
 
     def suggest_tuning(self) -> Dict[str, Any]:
         """관측 통계로부터 임계/쿨다운 조정 제안을 만든다 (P10-2).
