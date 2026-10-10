@@ -27,6 +27,7 @@ observability/anomaly_detector.py - 비정상 패턴 자동 탐지 v1.0 (Isolati
 """
 
 import math
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.logger import setup_logger
 
 logger = setup_logger("anomaly_detector")
+
+# 경고 로그 쿨다운(초). 리포트는 항상 history에 적재되고 로그만 억제한다.
+# 🔴 2026-10-09: 관측마다 경고 → 하루 17,862줄/5.2MB 폭주.
+_ANOMALY_LOG_COOLDOWN_SEC = float(os.environ.get("ANOMALY_LOG_COOLDOWN_SEC", "1800"))
 
 # ─── 상수 ────────────────────────────────────────────────────────
 _ANOMALY_THRESHOLD = 0.60       # anomaly_score > 이 값이면 ANOMALY
@@ -301,6 +306,8 @@ class AnomalyDetector:
         self._report_history: List[AnomalyReport] = []
         self._fit_count = 0     # 재학습 횟수
         self._refit_every = 50  # n샘플마다 재학습
+        # 경고 로그 쿨다운 (🔴 2026-10-09: 관측마다 경고 → 하루 17,862줄/5.2MB)
+        self._last_warn_at = 0.0
 
     # ── 공개 API ──────────────────────────────────────────────────
 
@@ -349,11 +356,14 @@ class AnomalyDetector:
             self._report_history.append(report)
             if len(self._report_history) > 500:
                 self._report_history.pop(0)
-            logger.warning(
-                "[AnomalyDetector] ANOMALY detected: score=%.3f "
-                "score=%.3f conf=%.3f lat=%.1fms sqi=%.3f",
-                score, signal_score, confidence, latency_ms, sqi,
-            )
+            _warn_now = time.time()
+            if _warn_now - self._last_warn_at >= _ANOMALY_LOG_COOLDOWN_SEC:
+                logger.warning(
+                    "[AnomalyDetector] ANOMALY detected: score=%.3f "
+                    "score=%.3f conf=%.3f lat=%.1fms sqi=%.3f",
+                    score, signal_score, confidence, latency_ms, sqi,
+                )
+                self._last_warn_at = _warn_now
             return report
 
         return None

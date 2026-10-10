@@ -35,6 +35,10 @@ from domain.models.signal import Action, Signal
 
 logger = setup_logger("shadow_mode")
 
+# 일치 로그 요약 주기(초). 불일치는 즉시 기록한다.
+# 🔴 2026-10-09: 틱마다 DEBUG 기록 → 하루 26,268줄/7MB 폭주.
+_SHADOW_AGREE_LOG_INTERVAL_SEC = 1800.0
+
 # ─── 타입 별칭 ──────────────────────────────────────────────────────
 # Shadow 실행기가 호출할 수 있는 async callable: (data) → Signal
 ShadowCallable = Callable[[Dict[str, Any]], Coroutine[Any, Any, Signal]]
@@ -119,6 +123,8 @@ class ShadowRunner:
         self.strategy_name = strategy_name
         self._shadow_fn = shadow_fn
         self._timeout = timeout
+        self._agree_count = 0
+        self._last_agree_log_at = 0.0
 
     async def run(
         self,
@@ -172,12 +178,26 @@ class ShadowRunner:
 
         agreement = production_signal.action == shadow_action
 
-        logger.debug(
-            "[ShadowMode] %s | %s | prod=%s shadow=%s agree=%s lat=%.1fms",
-            self.strategy_name, ticker,
-            production_signal.action.value, shadow_action.value,
-            agreement, latency_ms,
-        )
+        # 🔴 2026-10-09: 틱마다 DEBUG 기록 → 하루 26,268줄/7MB.
+        #   불일치(의미 있는 신호)만 기록하고, 일치는 요약 주기마다 1회.
+        if not agreement:
+            logger.debug(
+                "[ShadowMode] %s | %s | prod=%s shadow=%s agree=%s lat=%.1fms",
+                self.strategy_name, ticker,
+                production_signal.action.value, shadow_action.value,
+                agreement, latency_ms,
+            )
+        else:
+            self._agree_count += 1
+            _now = time.time()
+            if _now - self._last_agree_log_at >= _SHADOW_AGREE_LOG_INTERVAL_SEC:
+                logger.debug(
+                    "[ShadowMode] %s | 일치 %d건 (최근 %.0f분)",
+                    self.strategy_name, self._agree_count,
+                    _SHADOW_AGREE_LOG_INTERVAL_SEC / 60.0,
+                )
+                self._agree_count = 0
+                self._last_agree_log_at = _now
 
         return ShadowRecord(
             strategy_name=self.strategy_name,

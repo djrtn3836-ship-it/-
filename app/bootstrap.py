@@ -271,6 +271,18 @@ class Bootstrapper(TracedService):
         PID_FILE.write_text(str(my_pid))
         logger.info(f"PID 파일 생성: {my_pid}")
 
+    @staticmethod
+    def _in_data_flow_window(now_dt: datetime) -> bool:
+        """데이터 흐름 감시 창 = 거래일 09:00~15:20.
+
+        🔴 2026-10-09 사고: 거래일 검사 없이 시간대만 봐서 휴장일(한글날)에도
+           3분마다 강제 재연결(disconnect→connect→resubscribe) + ERROR 로그
+           → kiwoom_rest.log 4.2MB + bootstrap 오류 도배.
+        """
+        if not is_trading_day(now_dt):
+            return False
+        return 9 <= now_dt.hour <= 15 and not (now_dt.hour == 15 and now_dt.minute >= 20)
+
     def _should_analyze(self, ticker: str, change_abs: float, now: float) -> bool:
         """종목당 심층 분석 간격 제한.
 
@@ -1120,7 +1132,7 @@ class Bootstrapper(TracedService):
                     continue
 
                 now_dt = datetime.now()
-                if 9 <= now_dt.hour <= 15 and not (now_dt.hour == 15 and now_dt.minute >= 20):
+                if self._in_data_flow_window(now_dt):
                     elapsed = time.time() - self._last_data_time
                     if elapsed > _DATA_FLOW_TIMEOUT:
                         log_event("DATA_FLOW_TIMEOUT", {"seconds": _DATA_FLOW_TIMEOUT})
