@@ -518,3 +518,21 @@
 2. 알림에 신뢰도·과거 승률 표시(측정 데이터 축적 후)
 3. 비가격 팩터(감성/공시)를 **판단에 반영** — 현재는 태그 기록만. 측정으로 효과 확인 후
 4. 다중 시간대 확인(단기·중기 모멘텀 일치 요구), 시장 국면(Bear/Panic) 매수 차단 강화
+
+## 2026-10-10 — Session 102: 알림 파이프라인 신뢰성 (약점 3건)
+알림은 이 시스템의 핵심 산출물인데, 전달 경로가 취약했다:
+
+- **① 워커 블로킹**: `await sender.send()`가 네트워크 장애 시 send_raw 재시도
+  (4회 × 30초 ≈ 3분)로 **워커 2개를 동시에 정지**시켰다 — 알림이 가장 필요한
+  순간에 분석 파이프라인이 멈춘다. → 전송을 백그라운드 큐로 분리(워커는 즉시 반환).
+- **② 영구 유실**: 전송 실패 알림은 로그만 남기고 사라졌다.
+  → `logs/pending_alerts.jsonl`에 보관, 다음 성공 전송 직후 소량씩 재시도,
+  다음 기동 시 복구.
+- **③ 셧다운 유실**: 종료 시 큐에 남은 알림이 사라질 수 있었다.
+  → 최대 8초 드레인 + 미소진분 파일 보관.
+- 구현: `TelegramSender.format()`(순수 포맷) / `send_formatted()`(전송+감사) 분리,
+  bootstrap에 `_alert_worker`/`_enqueue_alert`/`_retry_alert_backlog` 추가.
+  감사 로그는 **실제 전송 성공 시에만** 기록(기존과 동일 보장).
+
+[검증] pytest 1639 passed(+15) / ruff F 0 / 신규 test_alert_pipeline.py(15)
+[환경변수] ALERT_QUEUE_MAX=1000 · ALERT_BACKLOG_PATH=logs/pending_alerts.jsonl · ALERT_BACKLOG_MAX=200

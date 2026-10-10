@@ -61,9 +61,15 @@ class TelegramSender:
         else:
             logger.warning("❌ Telegram bot not configured")
 
-    async def send(self, report: Dict[str, Any]) -> bool:
+    def format(self, report: Dict[str, Any]) -> Optional[str]:
+        """알림 메시지 텍스트를 만든다(전송하지 않음). 보낼 것이 없으면 None.
+
+        🔴 2026-10-10: 전송(I/O)과 분리했다. 워커가 포맷만 하고 큐에 넣으면,
+        네트워크 장애 시 send_raw 재시도(최대 약 3분)로 워커가 정지하던
+        문제가 없어진다.
+        """
         if not self.bot or not self.chat_id:
-            return False
+            return None
 
         action = report.get("action")
         ticker = report.get("ticker", "UNKNOWN")
@@ -71,7 +77,7 @@ class TelegramSender:
 
         if action in ("ERROR", "IGNORE"):
             debug_tower.log(ticker, "TELEGRAM_SKIP", {"action": action})
-            return True
+            return None
 
         try:
             if action == "SIGNAL_ENTRY" or action in ("BUY", "SELL"):
@@ -89,9 +95,20 @@ class TelegramSender:
             else:
                 logger.warning(f"⚠️ 알 수 없는 action 타입 수신: {action!r}")
                 debug_tower.log(ticker, "TELEGRAM_UNKNOWN_ACTION", {"action": action})
-                return True
+                return None
 
-            result = await self.send_raw(message + format_trace_footer(report.get("trace_id")))
+            return message + format_trace_footer(report.get("trace_id"))
+        except Exception as e:
+            logger.error(f"❌ Telegram 메시지 생성 오류: {e}")
+            debug_tower.capture_snapshot(ticker, e, f"TELEGRAM_{action}")
+            return None
+
+    async def send_formatted(self, text: str, report: Dict[str, Any]) -> bool:
+        """미리 만든 텍스트를 전송하고, **성공 시에만** 감사 로그를 남긴다."""
+        action = report.get("action")
+        ticker = report.get("ticker", "UNKNOWN")
+        try:
+            result = await self.send_raw(text)
             if result:
                 self._write_audit(report)
                 debug_tower.log(ticker, "TELEGRAM_SEND_SUCCESS", {"action": action})
@@ -102,6 +119,15 @@ class TelegramSender:
             logger.error(f"❌ Telegram 전송 오류: {e}")
             debug_tower.capture_snapshot(ticker, e, f"TELEGRAM_{action}")
             return False
+
+    async def send(self, report: Dict[str, Any]) -> bool:
+        """동기 전송(기존 API 유지). 큐 경로는 format → send_formatted를 쓴다."""
+        if not self.bot or not self.chat_id:
+            return False
+        text = self.format(report)
+        if text is None:
+            return True
+        return await self.send_formatted(text, report)
 
     def _write_audit(self, report: Dict[str, Any]) -> None:
         """전송 성공한 알림을 감사 로그(JSONL)에 1줄 기록한다.

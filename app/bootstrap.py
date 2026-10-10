@@ -23,10 +23,11 @@ import logging
 import os
 import subprocess
 import sys
+import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -172,6 +173,20 @@ class Bootstrapper(TracedService):
         self.dart_connector: Optional[Any] = None
         self._error_sender: Optional[TelegramSender] = None
         self._original_exception_handlers: Optional[Dict[str, Any]] = None
+
+        # 🔴 2026-10-10 알림 신뢰성: 전송을 워커에서 분리한다.
+        #   (a) 네트워크 장애 시 send_raw 재시도(≈3분)로 워커 2개가 동시에 멈추던 문제
+        #   (b) 전송 실패 알림이 로그만 남기고 영구 유실되던 문제
+        self._alert_queue: "asyncio.Queue[Tuple[str, Dict[str, Any]]]" = asyncio.Queue(
+            maxsize=int(os.getenv("ALERT_QUEUE_MAX", "1000"))
+        )
+        self._alert_task: Optional["asyncio.Task[Any]"] = None
+        self._alert_backlog: List[Dict[str, Any]] = []
+        self._alert_backlog_path = Path(
+            os.getenv("ALERT_BACKLOG_PATH", "logs/pending_alerts.jsonl")
+        )
+        self._alert_backlog_max = int(os.getenv("ALERT_BACKLOG_MAX", "200"))
+        self._alert_backlog_last_try: float = 0.0
 
         self.message_queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(
             maxsize=config.queue_maxsize
@@ -883,6 +898,12 @@ class Bootstrapper(TracedService):
             self.all_tasks.append(task)
         logger.info("Strategy workers started (×2)")
 
+        # 알림 워커: 큐를 소비해 전송(실패 시 보관) — 워커와 독립적으로 동작
+        self._load_alert_backlog()
+        self._alert_task = asyncio.create_task(self._alert_worker())
+        self.all_tasks.append(self._alert_task)
+        logger.info("Alert worker started (queue-based delivery)")
+
     async def start_supervisor(self) -> None:
         supervisor = SystemSupervisor()
         task = asyncio.create_task(supervisor.run())
@@ -1127,7 +1148,15 @@ class Bootstrapper(TracedService):
                             debug_tower.log(ticker, "ALERT_SUPPRESSED", {"action": action})
                             success = False
                         else:
-                            success = await sender.send(analysis)
+                            # 🔴 2026-10-10: 전송을 백그라운드 큐로 위임(워커 비블로킹).
+                            #   네트워크 장애에도 워커가 멈추지 않고, 실패분은 보관→재시도.
+                            _msg = sender.format(analysis)
+                            if _msg is not None:
+                                success = self._enqueue_alert(_msg, analysis)
+                            elif not sender.bot or not sender.chat_id:
+                                success = False
+                            else:
+                                success = True
                         # 🔴 모의매매 측정: 매매 신호를 기록(실제 돈 안 씀)
                         if action in ("SIGNAL_ENTRY", "BUY", "SELL") and self.paper_trader is not None:
                             self.paper_trader.record_signal(
@@ -1493,6 +1522,135 @@ class Bootstrapper(TracedService):
                 await self._send_shutdown_notification("정상 종료")
             await self.shutdown()
 
+    # ============================================================
+    # 알림 큐 (2026-10-10): 워커 비블로킹 전송 + 실패 보관/재시도
+    # ============================================================
+    def _enqueue_alert(self, text: str, report: Dict[str, Any]) -> bool:
+        """알림을 큐에 넣는다(즉시 반환). 큐가 가득 차면 1건 폐기 후 False."""
+        try:
+            self._alert_queue.put_nowait((text, report))
+            debug_tower.log(
+                str(report.get("ticker", "")), "TELEGRAM_QUEUED",
+                {"action": report.get("action")},
+            )
+            return True
+        except asyncio.QueueFull:
+            logger.error(f"알림 큐 포화({self._alert_queue.maxsize}건) — 1건 폐기")
+            return False
+
+    def _load_alert_backlog(self) -> None:
+        """이전 실행에서 미전송으로 보관된 알림을 복구한다."""
+        self._alert_backlog = []
+        try:
+            if self._alert_backlog_path.exists():
+                items: List[Dict[str, Any]] = []
+                for line in self._alert_backlog_path.read_text(
+                    encoding="utf-8"
+                ).splitlines():
+                    if line.strip():
+                        items.append(json.loads(line))
+                self._alert_backlog = items[-self._alert_backlog_max:]
+                if self._alert_backlog:
+                    logger.warning(
+                        f"미전송 알림 {len(self._alert_backlog)}건 복구 → 재전송 대기"
+                    )
+        except Exception as e:
+            logger.warning(f"미전송 알림 복구 실패(무시): {e}")
+            self._alert_backlog = []
+
+    def _save_alert_backlog(self) -> None:
+        """보관 중인 미전송 알림을 파일로 저장(0건이면 파일 제거)."""
+        try:
+            if not self._alert_backlog:
+                if self._alert_backlog_path.exists():
+                    self._alert_backlog_path.unlink()
+                return
+            self._alert_backlog_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._alert_backlog_path, "w", encoding="utf-8") as f:
+                for item in self._alert_backlog:
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"미전송 알림 보관 실패(무시): {e}")
+
+    async def _retry_alert_backlog(self, sender: TelegramSender) -> None:
+        """새 전송이 성공한 직후에만 보관분을 소량 재시도(네트워크 복구 판단)."""
+        now = time.time()
+        if now - self._alert_backlog_last_try < 60.0:
+            return
+        self._alert_backlog_last_try = now
+        head, tail = self._alert_backlog[:5], self._alert_backlog[5:]
+        remain: List[Dict[str, Any]] = []
+        sent = 0
+        for item in head:
+            ok = await sender.send_formatted(
+                str(item.get("text", "")), item.get("report") or {}
+            )
+            if ok:
+                sent += 1
+            else:
+                remain.append(item)
+        self._alert_backlog = remain + list(tail)
+        self._save_alert_backlog()
+        if sent:
+            logger.info(
+                f"밀린 알림 {sent}건 재전송 완료(대기 {len(self._alert_backlog)}건)"
+            )
+
+    async def _alert_worker(self) -> None:
+        """알림 큐를 소비해 전송한다. 실패분은 보관하고 나중에 재시도한다."""
+        sender = self._error_sender or TelegramSender()
+        logger.info("알림 워커 시작(백그라운드 전송)")
+        while True:
+            if self._shutdown_requested and self._alert_queue.empty():
+                break
+            try:
+                text, report = await asyncio.wait_for(
+                    self._alert_queue.get(), timeout=1.0
+                )
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            try:
+                ok = await sender.send_formatted(text, report)
+                if not ok:
+                    self._alert_backlog.append({
+                        "ts": datetime.now().isoformat(timespec="seconds"),
+                        "text": text,
+                        "report": report,
+                    })
+                    self._alert_backlog = self._alert_backlog[-self._alert_backlog_max:]
+                    self._save_alert_backlog()
+                    logger.warning(
+                        f"알림 전송 실패 → 보관({len(self._alert_backlog)}건 대기)"
+                    )
+                elif self._alert_backlog:
+                    await self._retry_alert_backlog(sender)
+            except Exception as e:
+                logger.warning(f"알림 워커 오류(무시): {e}")
+            finally:
+                self._alert_queue.task_done()
+
+    def _persist_queue_remainder(self) -> None:
+        """셧다운 시 큐에 남은 알림을 보관 파일로 옮긴다(유실 방지)."""
+        try:
+            moved = 0
+            while not self._alert_queue.empty():
+                text, report = self._alert_queue.get_nowait()
+                self._alert_backlog.append({
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "text": text,
+                    "report": report,
+                })
+                self._alert_queue.task_done()
+                moved += 1
+            self._alert_backlog = self._alert_backlog[-self._alert_backlog_max:]
+            self._save_alert_backlog()
+            if moved:
+                logger.info(f"미전송 알림 {moved}건 보관(다음 실행 시 재전송)")
+        except Exception as e:
+            logger.warning(f"미전송 알림 보관 실패(무시): {e}")
+
     async def shutdown(self) -> None:
         self._shutdown_requested = True
         log_event("SYSTEM_SHUTDOWN", {})
@@ -1516,6 +1674,18 @@ class Bootstrapper(TracedService):
                     logger.info("trailing_stops cleared (empty)")
             except Exception as e:
                 logger.warning(f"trailing_stops save failed: {e}")
+
+        # 🔴 2026-10-10: 알림 큐 드레인(최대 8초) — 종료 직전 미전송 알림 소진 시도
+        if self._alert_task is not None and not self._alert_task.done():
+            try:
+                await asyncio.wait_for(self._alert_queue.join(), timeout=8.0)
+                logger.info("알림 큐 드레인 완료")
+            except Exception:
+                logger.warning(
+                    f"알림 큐 미소진 {self._alert_queue.qsize()}건 → 보관 후 종료"
+                )
+                self._persist_queue_remainder()
+            self._alert_task.cancel()
 
         for t in self.worker_tasks:
             if not t.done():
