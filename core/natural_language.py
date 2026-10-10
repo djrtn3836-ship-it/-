@@ -183,7 +183,7 @@ class NaturalLanguageEngine:
             self._model_path.parent.mkdir(parents=True, exist_ok=True)
             joblib.dump({"vectorizer": self._vectorizer, "classifier": self._intent_classifier}, self._model_path)
             logger.debug("✅ NLU 모델 저장 완료")
-        except:
+        except Exception:
             logger.warning("⚠️ NLU 모델 저장 실패")
 
     def load(self) -> bool:
@@ -258,7 +258,7 @@ class NaturalLanguageEngine:
                 matches = difflib.get_close_matches(text, STOCK_NAME_MAP.keys(), n=1, cutoff=threshold / 100)
                 if matches:
                     return str(STOCK_NAME_MAP[matches[0]])
-            except:
+            except Exception:
                 pass
         return None
 

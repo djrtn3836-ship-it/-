@@ -123,7 +123,11 @@ class PaperTrader:
         if not pending:
             return 0
 
-        remaining: List[Dict[str, Any]] = []
+        # 🔴 2026-10-10 수정: 처리 대상(최근 max_rows)만 다루면서 파일 전체를
+        #   그 결과로 덮어쓰면, 200건을 넘는 오래된 미확정 기록이 **삭제**된다.
+        #   → 처리하지 않는 나머지는 그대로 보존한다.
+        untouched = pending[:-max_rows] if len(pending) > max_rows else []
+        remaining: List[Dict[str, Any]] = list(untouched)
         settled_count = 0
         for rec in pending[-max_rows:]:
             try:

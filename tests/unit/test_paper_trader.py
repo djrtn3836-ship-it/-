@@ -99,6 +99,16 @@ class TestSettle:
         t.record_signal("005930", "BUY", 100.0, ts=_TS)
         assert asyncio.run(t.settle_pending()) == 0
 
+    def test_pending_over_limit_preserved(self, tmp_path):
+        """미확정이 max_rows를 넘어도 오래된 기록이 삭제되면 안 된다."""
+        t = _trader(tmp_path, [100.0])          # 채점 불가(데이터 1일)
+        for i in range(5):
+            t.record_signal(f"00000{i}", "BUY", 100.0, ts=_TS)
+        before = len(t._load_jsonl(t.signals_path))
+        asyncio.run(t.settle_pending(max_rows=2))
+        after = t._load_jsonl(t.signals_path)
+        assert len(after) == before, f"미확정 {before}건이 {len(after)}건으로 삭제됨"
+
     def test_settlement_is_reproducible(self, tmp_path):
         first = _trader(tmp_path, [100.0, 103.0] * 8)
         first.record_signal("005930", "BUY", 100.0, ts=_TS)

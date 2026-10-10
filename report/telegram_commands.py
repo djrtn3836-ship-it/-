@@ -271,7 +271,7 @@ class TelegramCommandHandler:
                 from infrastructure.market_data.universe_provider import get_universe
                 universe = get_universe()
                 stock_name = str(universe.get(ticker, ticker))
-            except:
+            except Exception:
                 stock_name = ticker
 
             price, price_status = await self._get_price_robust(ticker)
@@ -339,7 +339,7 @@ class TelegramCommandHandler:
                 if price > 0:
                     status = "실시간"
                     return price, status
-            except:
+            except Exception:
                 pass
 
         if self._db_manager:
@@ -491,7 +491,7 @@ class TelegramCommandHandler:
                     tech_str = f"20일선 {ma20:,.0f} | 60일선 {ma60:,.0f} | 거래량 {vol_ratio:.1f}배"
                 else:
                     tech_str = "기술 데이터 수집 중"
-        except:
+        except Exception:
             pass
 
         fin_str = "데이터 부족"
@@ -501,7 +501,7 @@ class TelegramCommandHandler:
                 debt = float(fin.get("debt_ratio", 0))
                 op_margin = float(fin.get("op_margin", 0))
                 fin_str = f"ROE {roe:.1f}% | 부채비율 {debt:.1f}% | 영업이익률 {op_margin:.1f}%"
-        except:
+        except Exception:
             pass
 
         news_str = "데이터 부족"
@@ -513,7 +513,7 @@ class TelegramCommandHandler:
                 news_str = f"감성 {sentiment:+.2f} ({sentiment_label})"
                 if headlines and isinstance(headlines[0], str):
                     news_str += f"\n📰 {headlines[0][:50]}..." if len(headlines[0]) > 50 else f"\n📰 {headlines[0]}"
-        except:
+        except Exception:
             pass
 
         supply_str = "데이터 부족"
@@ -526,7 +526,7 @@ class TelegramCommandHandler:
                 supply_str = f"외국인 {foreign_label} ({foreign:+,.0f}주) | 기관 {inst_label} ({inst:+,.0f}주)"
             elif isinstance(supply, dict) and "error" in supply:
                 supply_str = str(supply.get("error", "수급 데이터 수집 중"))
-        except:
+        except Exception:
             pass
 
         msg = f"""
