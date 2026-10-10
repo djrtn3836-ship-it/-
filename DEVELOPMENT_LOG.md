@@ -460,3 +460,22 @@
 
 남은 제안(승인 필요): 드리프트 배선 · 튜닝 결과 영속화(+자동적용 정책 재검토) · calibration_executor의 `hash()` 가짜 슬리피지 → 실가격 · FeedbackLearner 팩터 가중치 사용 여부.
 [검증] pytest 1590 passed(+11) / ruff F 0 / 레포=실행폴더 272파일 100% 일치
+
+## 2026-10-10 — Session 98: 학습 고리 4건 연결 + 전수 스캔 (e75d052)
+사용자 승인("추천대로 전부 진행")에 따라 미연결 4건 전부 적용:
+
+| # | 항목 | 이전 상태 | 조치 |
+| :--- | :--- | :--- | :--- |
+| ① | 드리프트 감지 | `record_outcome` 프로덕션 호출 0건(영구 꺼짐) | FeedbackLearner가 결과를 OpsMonitor에 공급, bootstrap 2경로 주입 |
+| ② | 튜닝 결과 | 인메모리 → 재기동 시 소실 | `save/load_tuning_state`(env `TUNING_STATE_PATH`) + 기동 시 복원 |
+| ③ | calibration | `hash(ticker)` 가짜 슬리피지 | DB 실가격(결정가→다음 거래일 시가, ±100bp) + RealisticExecutionSimulator |
+| ④ | 팩터 가중치 | DB 로드만 하고 미사용(죽은 값) | `_learned_factor_multipliers()` — 평균 1.0 정규화 + 0.5x~2.0x 클램프 |
+
+부수 수정: 시뮬레이터가 '현재 시각'으로 장중 판정 → 16:00 잡에서 슬리피지 0이 되던 문제(결정 시각 전달), 시뮬레이터 클래스명(`RealisticExecutionSimulator`) 정정.
+
+**전수 스캔 결과(2026-10-10): 프로젝트 .py 135개**
+- TODO/FIXME/XXX/HACK: **0건** · `raise NotImplementedError`: **0건**
+- 미구현 주석 2건: PostgreSQL 메서드 격차(P6-3, 의도적 보류) · `order_executor` Phase 2(모의투자)
+- 참조 0회 모듈 14개 = 전부 의도적(진입점 `app/main.py`·레거시 `main.py`/`scanner_main.py`, CLI `ohlcv_backfill`, dev 스크립트 7개, `position.py`(Phase 2 예약), `secure_config.py`)
+
+[검증] pytest 1603 passed(+13) / ruff F 0 / BOM0 syntax0 unawaited0 / 레포=실행폴더 100% 일치
