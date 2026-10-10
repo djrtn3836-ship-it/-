@@ -399,3 +399,44 @@
 - 결과: 전체 테스트(1536) 실행 후 `logs/` 파일 **0개**, JSONL/DB 오염 0건.
 - 정리: 오염 데이터 삭제, 개발 로그 87개(24MB)는 `_archive/dev_logs_20261004/`로 아카이브.
 - 유지: `momentum_paper` 20건(실제 시세 기반 픽, 오염 아님).
+
+## 2026-10-06 — 실시간 경로 첫 실전 검증: 틱 전멸 2건 (435631c, 782791d)
+- 🔴 장중 메시지 232만 건 전부 폐기(decisions 0) — 최초 발견.
+  ① 키움 WS REAL은 `{"values":{"10":"+18630",...},"type":"0B"}`(숫자 키) 형식인데 변환 코드 부재 → `_normalize_ws_values()` 신설
+     (`+`/`-`는 값 부호가 아니라 **전일 대비 방향** → 가격 필드 `abs()` 필수)
+  ② APScheduler 스레드에서 `asyncio.run()` → 메인 루프 aiohttp 세션 파손(196크래시) → `run_coroutine_threadsafe`
+- 재검증: WS_RECV 1,145건 100% 파싱 성공.
+
+## 2026-10-07 — 실전 2일차: 분석 전멸·경합·스팸 수정 (a56040d, 9697529, ca421fb, b2c68d8, f0170c0)
+- 🔴 `await` 누락(deep_analyzer 787) → coroutine 오류 36,965건
+- 🔴 dict 변조 크래시(kiwoom 재구독 루프) 6건
+- 🔴 사용자가 레거시 `scanner_main.py`를 함께 실행 → 키움 연결 경합으로 오전 데이터 두절
+  → 기본 차단(`SCANNER_ALLOW_LEGACY=1` 필요) + PID ctypes 가드 + `run_app.bat`
+- 🔴 Supervisor 텔레그램 도배(30초마다): 임계 1024MB 하드코딩 → **시스템 RAM 80%** + 30분 쿨다운
+- 🔴 HybridDecider 컨텍스트 규격 불일치(dict vs DecisionContext) → 밤새 33,534건 실패
+- CI: await 누락 전역 탐지 + `--check-only` 일원화. 테스트 1536 → 1564.
+
+## 2026-10-08 — 실전 3일차 종일 운영: 자원 폭발 실측
+- 앱 정상 가동(WS 28,395 / ANALYZE 28,390, 오류 175건)했으나 **decisions 0건**.
+- 🔴 원인①: 앱이 `.env SQLITE_DB_PATH=data/genspark.db`(OHLCV 176행, 005930 0행)를 사용
+  → 120일 이력 부재 → 전략 전멸 → **285만 건 전부 HOLD**.
+- 🔴 원인②: 틱마다 심층 분석 → DB +1.5GB, 로그 +2.2GB(calibration 1.2GB/shadow 818MB), 메모리 7.3GB.
+
+## 2026-10-09 — 휴장일(한글날): 재연결·로그 폭주 3건 (Session 95, b098798)
+- 🔴 데이터흐름 감시 창이 "09:00~15:20" 시간만 보고 **거래일 검사 누락** → 휴장일에도 3분마다
+  강제 재연결 + ERROR → 하루 23MB. → `_in_data_flow_window()`(거래일 한정)
+- shadow_mode 일치 로그 틱당 기록(26,268줄/7MB) → 불일치만 + 30분 요약
+- anomaly_detector 경고 관측당 기록(17,862줄/5.2MB) → 30분 쿨다운(report_history는 유지)
+
+## 2026-10-09~10 — DB 전환·스로틀·오프라인 종단검증
+- ① `.env` DB → `data/decisions.db`(23.3만행, 최신 2026-10-08 복구) + 최근 일봉 백필(195/195)
+- ② `bootstrap._should_analyze()`: 종목당 300초 1회 / 급변(±2%) 즉시 → 부하 약 1/200
+- ③ 정리: `genspark.db` 1.5GB + 폭주 로그 2.2GB → `_archive/junk_20261009/`(삭제 아님)
+- ✅ **오프라인 종단 검증**: 실제 분석기 실행 → **000660 SIGNAL_ENTRY**(conf 0.667, ATR 76,692),
+  035420 HOLD(score 0.427) — 알림 대상은 `SIGNAL_ENTRY/BUY/SELL`(HOLD 제외)
+- ✅ **GitHub = 개발폴더 = 실행폴더 100% 일치**(267파일 전수 대조), 백업 ZIP 11.2MB 재생성
+- ⚠️ mypy가 Windows 정책으로 DLL 차단 → 해당 테스트는 환경 감지 skip(CI 전용)
+- 테스트 1574 passed / ruff F 0 / BOM·syntax·await 0
+
+### 다음 (월 2026-10-12 거래일)
+- `run_app.bat` 기동 → 장중 실제 신호·텔레그램 알림·자원 소모 검증 (최초의 정상 종단 확인 시도)
