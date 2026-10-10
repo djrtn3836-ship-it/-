@@ -440,3 +440,23 @@
 
 ### 다음 (월 2026-10-12 거래일)
 - `run_app.bat` 기동 → 장중 실제 신호·텔레그램 알림·자원 소모 검증 (최초의 정상 종단 확인 시도)
+
+## 2026-10-10 — 자동학습 로직 정밀 진단 + 끊긴 고리 2개 연결 (Session 97, e3a13ae)
+조사(서브에이전트 정밀 맵 + 직접 검증) 결과: **기록→결과계산은 닫혀 있으나 "결과→행동 변경" 고리가 여러 곳에서 끊겨 있었다.**
+
+| 컴포넌트 | 결과 계산 | 행동 환류 | 조치 |
+| :--- | :--- | :--- | :--- |
+| StrategyBandit | ✅ Beta(α,β) 갱신 | ❌ **전략 선택 미반영** | ✅ weight_sink 연결 |
+| FeedbackLearner | ✅ XGB 학습 | ⚠️ XGB만 사용, 팩터 가중치는 죽은 값 | 🔲 결정 필요 |
+| HyperparameterTuner | ✅ Optuna | ⚠️ 자동 적용되나 **인메모리(재시작 시 소실)** | 🔲 영속화 제안 |
+| Calibration | ✅ N=5일 settle | ❌ ECE 소비자 없음(기록만) | 🔲 리포트 연동 제안 |
+| ModelDrift | ❌ record_outcome 프로덕션 호출 0 | ❌ | 🔲 배선 제안 |
+| DataReadiness | ✅ 게이트 판정 | ❌ 알림만(차단 없음) | 🔲 유지 |
+
+수정 2건:
+- ① **Bandit 학습 → 전략 선택 고리 연결**: 브리지 docstring이 `DeepAnalyzer.update_strategy_weights()`를 호출한다고 주장했으나 **그 메서드는 존재하지 않았다**(호출 0건).
+  `SignalPipeline.apply_learned_weights()` 신설(균등 대비 상대비 × 기준가중치, 0.5x~2.0x 클램프, 누적 드리프트 없음) + `BanditFeedbackBridge(weight_sink=...)` + bootstrap 배선.
+- ② **대시보드 관측 섹션 무음 공백**: `html_dashboard.py:97`이 없는 함수 `get_ops_snapshot`을 import → ImportError 무음 삼킴. 모듈 캐시 + 함수 추가.
+
+남은 제안(승인 필요): 드리프트 배선 · 튜닝 결과 영속화(+자동적용 정책 재검토) · calibration_executor의 `hash()` 가짜 슬리피지 → 실가격 · FeedbackLearner 팩터 가중치 사용 여부.
+[검증] pytest 1590 passed(+11) / ruff F 0 / 레포=실행폴더 272파일 100% 일치
