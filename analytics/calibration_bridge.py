@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from analytics.calibration_tracker import CalibrationTracker
+from core.jsonl_rotator import rotate_if_needed
 from core.logger import setup_logger
 
 logger = setup_logger("calibration")
@@ -87,6 +88,7 @@ def record_prediction(
         if factors:
             row["factors"] = dict(factors)
         path.parent.mkdir(parents=True, exist_ok=True)
+        rotate_if_needed(path)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
         return True

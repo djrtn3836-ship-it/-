@@ -35,6 +35,7 @@ from telegram import Bot
 from telegram.error import NetworkError, TelegramError, TimedOut
 
 from core.debug_tower import debug_tower
+from core.jsonl_rotator import rotate_if_needed
 from core.logger import setup_logger
 from core.runtime_mode import get_runtime_mode
 from observability.trace_propagation import format_trace_footer
@@ -118,6 +119,7 @@ class TelegramSender:
                 "trace_id": report.get("trace_id"),
             }
             AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            rotate_if_needed(AUDIT_PATH)
             with open(AUDIT_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception as e:

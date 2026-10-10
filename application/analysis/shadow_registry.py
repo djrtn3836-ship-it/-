@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional
 
 from application.analysis.shadow_mode import ShadowEvaluator, ShadowRecord, ShadowRunner
+from core.jsonl_rotator import rotate_if_needed
 from core.logger import setup_logger
 
 logger = setup_logger("shadow_registry")
@@ -175,6 +176,7 @@ class ShadowRegistry:
     def _append_jsonl(self, records: List[ShadowRecord]) -> None:
         try:
             self._records_path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_if_needed(self._records_path)
             with open(self._records_path, "a", encoding="utf-8") as f:
                 for r in records:
                     f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
