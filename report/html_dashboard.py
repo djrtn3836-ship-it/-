@@ -473,6 +473,7 @@ def render_html(data: Dict[str, Any]) -> str:
             f'<div class="note">기준선(무작위 상승확률) {baseline:.1f}% · '
             f'확정 {_fmt(ptd.get("settled"))}건 · 미확정 {_fmt(ptd.get("pending"))}건. '
             f'✅ = 95% 신뢰구간 하한이 기준선을 넘음(통계적 우위). '
+            f'거래비용(수수료·세금) 미반영. '
             f'<b>실제 주문은 발생하지 않습니다.</b></div>'
         )
 

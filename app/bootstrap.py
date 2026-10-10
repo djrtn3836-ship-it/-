@@ -160,6 +160,9 @@ class Bootstrapper(TracedService):
         self.ops_monitor: Optional[OpsMonitor] = None
         # 모의매매 측정(2026-10-10): 신호 기록 → 실현가 채점 → 정직한 승률
         self.paper_trader: Optional[PaperTrader] = None
+        # 알림 정밀도(2026-10-10): 같은 종목·행동 반복 알림 억제
+        self._alert_last_at: Dict[str, float] = {}
+        self._alert_cooldown_sec: float = float(os.getenv("ALERT_COOLDOWN_SEC", "1800"))
         self.bandit: Optional[StrategyBandit] = None
         self.bandit_bridge: Optional[BanditFeedbackBridge] = None
         self.ab_manager: Optional[ABTestManager] = None
@@ -380,6 +383,20 @@ class Bootstrapper(TracedService):
             await TelegramSender().send_raw(message)
         except Exception as e:
             logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
+
+    def _should_send_alert(self, ticker: str, action: str, now: Optional[float] = None) -> bool:
+        """같은 종목·행동의 반복 알림을 억제한다 (기본 30분).
+
+        호출 시각을 기록하므로 True를 반환한 호출만 실제 발송된다.
+        """
+        key = f"{ticker}:{action}"
+        _now = time.time() if now is None else now
+        last = self._alert_last_at.get(key)
+        # 첫 알림(기록 없음)은 항상 발송 — 시계 값이 작은 환경(테스트 등)에서도 동작
+        if last is not None and (_now - last) < self._alert_cooldown_sec:
+            return False
+        self._alert_last_at[key] = _now
+        return True
 
     async def _run_paper_settle(self) -> None:
         """모의매매 채점 + 성과 리포트 전송(평일 16:10).
@@ -1103,7 +1120,14 @@ class Bootstrapper(TracedService):
                         "EVENT_EXIT",
                         "EVENT_LIFECYCLE_ADVICE",
                     ):
-                        success = await sender.send(analysis)
+                        # 🔴 2026-10-10 알림 정밀도: 같은 종목·행동 반복 알림 억제
+                        #   (5분 스로틀로도 같은 종목이 계속 신호를 내면 알림이 반복됐다)
+                        _suppressed = not self._should_send_alert(ticker, action)
+                        if _suppressed:
+                            debug_tower.log(ticker, "ALERT_SUPPRESSED", {"action": action})
+                            success = False
+                        else:
+                            success = await sender.send(analysis)
                         # 🔴 모의매매 측정: 매매 신호를 기록(실제 돈 안 씀)
                         if action in ("SIGNAL_ENTRY", "BUY", "SELL") and self.paper_trader is not None:
                             self.paper_trader.record_signal(
@@ -1123,7 +1147,7 @@ class Bootstrapper(TracedService):
                             processed_count += 1
                             tp_str = f" TP{analysis.get('tp_level')}" if action == "EVENT_TP_HIT" else ""
                             logger.info(f"Worker-{wid} [{action}] {ticker}{tp_str}")
-                        else:
+                        elif not _suppressed:
                             debug_tower.log(ticker, "TELEGRAM_SEND_FAILED", {"action": action})
 
                         if action == "EVENT_EXIT":

@@ -166,6 +166,18 @@ class DeepAnalyzer:
             logger.info(f"📊 최신 가중치 로드: {self.weights}")
             debug_tower.log("SYSTEM", "WEIGHTS_LOADED", {"weights": self.weights})
 
+    @staticmethod
+    def _has_sufficient_evidence(tech_data: Any, atr: float) -> bool:
+        """판단 근거가 충분한가 (2026-10-10 판단력 정밀화).
+
+        이력(지표)과 ATR이 모두 있어야 신호를 낸다. 둘 중 하나라도 없으면
+        무근거 신호가 되므로 판단을 보류한다(HOLD).
+        """
+        try:
+            return bool(tech_data) and float(atr) > 0
+        except (TypeError, ValueError):
+            return False
+
     def _learned_factor_multipliers(self) -> Dict[str, float]:
         """학습된 팩터 가중치 → 스코어 배율(평균 1.0 정규화, 0.5x~2.0x 클램프).
 
@@ -814,7 +826,15 @@ class DeepAnalyzer:
             # 참조될 때 발생하던 NameError를 원천 차단
             decision: Optional[Dict[str, Any]] = None
 
-            if strategy_action in ["BUY", "SELL"] and strategy_confidence > 0.6:
+            # 🔴 2026-10-10 판단력 정밀화: 근거(이력/ATR)가 없으면 판단하지 않는다.
+            #   이전에는 지표가 비어 있어도 전략을 돌려 무근거 신호가 나갈 수 있었다
+            #   (실측: "ATR 계산 실패" 하루 175건). 근거 없으면 HOLD로 보류.
+            _data_ok: bool = self._has_sufficient_evidence(tech_data, atr)
+            if not _data_ok:
+                final_action = "HOLD"
+                final_confidence = 0.0
+                logger.debug(f"판단 보류(근거 부족: 이력/ATR) — {ticker}")
+            elif strategy_action in ["BUY", "SELL"] and strategy_confidence > 0.6:
                 final_action = strategy_action
                 final_confidence = strategy_confidence
             else:
@@ -905,6 +925,8 @@ class DeepAnalyzer:
                 (list(getattr(decision, "warnings", None) or ["시장 변동성 주의"]) if decision is not None else ["시장 변동성 주의"])
                 if final_action != "HOLD" else ["관망 유지"]
             )
+            if not _data_ok:
+                negatives.append("⚠️ 이력/ATR 부족 → 근거 없는 신호 방지를 위해 판단 보류")
             counterfactuals: List[str] = []
 
             result: Dict[str, Any] = {
