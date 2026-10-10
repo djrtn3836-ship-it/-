@@ -72,3 +72,6 @@ audit2.txt
 fonts/*
 !fonts/NanumGothic.ttf
 !fonts/NanumGothicBold.ttf
+
+# 런타임 학습 상태(테스트/실행 생성)
+data/tuning_state.json
