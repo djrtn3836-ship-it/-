@@ -30,6 +30,8 @@ class FeedbackLearner:
         self.telegram = TelegramSender()
         self._xgb_model: Optional[Any] = None
         self._model_ready: bool = False
+        # 🔴 2026-10-10: 드리프트 감지 배선용(미지정 시 비활성) — bootstrap에서 주입
+        self.ops_monitor: Optional[Any] = None
         try:
             import xgboost as xgb
             self._xgb: Optional[Any] = xgb
@@ -100,6 +102,19 @@ class FeedbackLearner:
         if not outcomes:
             logger.warning("⚠️ 유효한 결과 없음")
             return
+
+        # 🔴 2026-10-10: 결과를 관측기에 공급 → 모델 드리프트 감지 배선
+        #   (이전에는 record_outcome이 프로덕션에서 호출되지 않아 드리프트가 꺼져 있었다)
+        if self.ops_monitor is not None:
+            for _o in outcomes:
+                try:
+                    self.ops_monitor.record_outcome(
+                        str(_o.get("strategy_name") or _o.get("strategy") or "ensemble"),
+                        float(_o.get("confidence", 0.5) or 0.5),
+                        bool(_o.get("is_correct")),
+                    )
+                except Exception:
+                    pass
 
         stats = await self._generate_stats(outcomes)
 

@@ -7,8 +7,11 @@ DB의 최근 결정/결과를 조회해 HyperparameterTuner를 실행하고,
 """
 
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from pathlib import Path
+from typing import Optional, Dict, List, Any
 
 from core.logger import setup_logger
 from data.db_manager import DatabaseManager
@@ -25,6 +28,54 @@ _ACTION_MAP = {
     "EVENT_TP_HIT": "SELL",
 }
 _MIN_SAMPLES = 20
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  튜닝 결과 영속화 (2026-10-10)
+#  🔴 이전에는 튜닝 결과가 인메모리에만 적용되어 재기동 시 소실됐다.
+# ═══════════════════════════════════════════════════════════════════
+
+def _tuning_state_path() -> Path:
+    return Path(os.getenv("TUNING_STATE_PATH", "data/tuning_state.json"))
+
+
+def save_tuning_state(
+    applied: Dict[str, float],
+    meta: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """튜닝 결과를 파일로 저장 — 재기동 시 복원해 소실을 방지."""
+    try:
+        path = _tuning_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "params": {str(k): float(v) for k, v in applied.items()},
+            "meta": dict(meta or {}),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        logger.info(f"튜닝 상태 저장: {path} ({len(applied)}개 파라미터)")
+        return True
+    except Exception as e:
+        logger.warning(f"튜닝 상태 저장 실패(무시): {e}")
+        return False
+
+
+def load_tuning_state() -> Optional[Dict[str, float]]:
+    """저장된 튜닝 파라미터 로드(없으면 None)."""
+    try:
+        path = _tuning_state_path()
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        params = payload.get("params")
+        if not isinstance(params, dict) or not params:
+            return None
+        return {str(k): float(v) for k, v in params.items()}
+    except Exception as e:
+        logger.warning(f"튜닝 상태 로드 실패(무시): {e}")
+        return None
 
 
 class TuningExecutor:
@@ -105,6 +156,11 @@ class TuningExecutor:
             return None
 
         applied = self.tuner.apply_to_pipeline(self.pipeline, result)
+        # 🔴 2026-10-10: 재기동 후에도 유지되도록 영속화
+        save_tuning_state(applied, {
+            "samples": len(samples), "days": days,
+            "best_value": result.best_value, "n_trials": result.n_trials,
+        })
 
         msg = (
             f"🔧 <b>하이퍼파라미터 튜닝 완료</b>\n"

@@ -91,7 +91,7 @@ from application.analysis.signal_pipeline import SignalPipeline
 from application.analysis.strategy_bandit import StrategyBandit
 from application.analysis.bandit_feedback_bridge import BanditFeedbackBridge
 from application.analysis.ab_framework import get_ab_manager, ABTestManager
-from application.analysis.tuning_executor import TuningExecutor
+from application.analysis.tuning_executor import TuningExecutor, load_tuning_state
 
 from orchestrator.sentiment_pipeline import SentimentPipeline
 from orchestrator.portfolio_manager import PortfolioManager
@@ -477,6 +477,10 @@ class Bootstrapper(TracedService):
             cb_provider=cb_input_provider,
         )
 
+        # 🔴 2026-10-10: FeedbackLearner 결과 → OpsMonitor 드리프트 감지 배선
+        if learner is not None and self.ops_monitor is not None:
+            learner.ops_monitor = self.ops_monitor
+
         self.signal_pipeline = SignalPipeline(
             db_manager=self.db,
             realtime_price_provider=self._get_realtime_price,
@@ -515,6 +519,15 @@ class Bootstrapper(TracedService):
         logger.info(
             "TuningExecutor 초기화 완료 (매주 일요일 03:00 자동 튜닝 예정, n_trials=50)"
         )
+        # 🔴 2026-10-10: 지난 튜닝 결과 복원 (이전에는 재기동 시 소실됐다)
+        try:
+            saved_params = load_tuning_state()
+            if saved_params and self.signal_pipeline is not None:
+                self.signal_pipeline.update_hyperparameters(saved_params)
+                logger.info(f"저장된 튜닝값 복원 적용: {saved_params}")
+                debug_tower.log("SYSTEM", "TUNING_STATE_RESTORED", {"params": saved_params})
+        except Exception as e:
+            logger.warning(f"튜닝값 복원 실패(무시): {e}")
 
     async def _run_hyperparameter_tuning(self) -> None:
         if self.tuning_executor is None:
@@ -722,6 +735,8 @@ class Bootstrapper(TracedService):
         daily_reporter = DailyReportGenerator(db_manager=self.db, telegram_sender=sender)
         weekly_pdf_gen = WeeklyPDFGenerator(db_manager=self.db, kiwoom_connector=self.kiwoom)
         feedback_learner = FeedbackLearner(self.kiwoom, self.db)
+        # 🔴 2026-10-10: 드리프트 감지 배선 (스케줄 잡 경로)
+        feedback_learner.ops_monitor = self.ops_monitor
         calibrator: Optional[ExecutionCalibrator] = ExecutionCalibrator(self.db, sender) if self.db else None
 
         self.scheduler.add_job_with_retry(

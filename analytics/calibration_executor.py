@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List
 """
 analytics/calibration_executor.py - v1.0 (P3-2: Slippage Calibration)
 - 실제 Paper 체결 결과와 시뮬레이션 예측 슬리피지 비교
@@ -30,6 +30,11 @@ class CalibrationReport:
     sample_count: int
     period: str
     status: str  # "SUCCESS" | "INSUFFICIENT_DATA"
+
+
+# 실현 슬리피지 클램프 상한(bp) / 기본 주문금액(원)
+_MAX_SLIPPAGE_BPS = 100.0
+_DEFAULT_ORDER_KRW = 5_000_000.0
 
 
 class ExecutionCalibrator:
@@ -132,23 +137,74 @@ class ExecutionCalibrator:
     # 내부 헬퍼
     # ============================================================
     async def _get_paper_trades(self, days: int) -> list[dict[str, Any]]:
-        """DB에서 Paper 체결 기록 조회 (paper_trades 테이블 가정)"""
-        # 실제 구현: paper_trades 테이블이 없으면 decisions + outcomes로 대체
-        # 여기서는 간단히 decisions 테이블에서 action이 "SIGNAL_ENTRY"인 것들의 가상 데이터 생성
+        """실현 슬리피지 vs 시뮬레이터 추정 슬리피지 산출 (실데이터).
+
+        🔴 2026-10-10 이전: `hash(ticker)` 기반 **가짜 슬리피지**를 생성해
+            보정 리포트가 실데이터와 무관했다(재현 불가·의미 없음).
+        이제 DB 실가격으로 계산한다:
+            - 실현(actual): 결정가 → **다음 거래일 시가** 변화율(bp)
+            - 추정(simulated): ExecutionSimulator 모델값
+        다음 거래일 데이터가 없거나 값이 0이면 해당 건은 제외한다(추정 금지).
+        """
+        from validation.execution_simulator import RealisticExecutionSimulator
+
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         decisions = await self.db.get_decisions_by_date_range(
             start_date.strftime("%Y-%m-%d"),
             end_date.strftime("%Y-%m-%d"),
         )
-        trades = []
+        simulator = RealisticExecutionSimulator()
+        trades: List[Dict[str, float]] = []
         for d in decisions:
-            if d.get("action") == "SIGNAL_ENTRY":
-                # 가상의 슬리피지 데이터 (실제로는 paper_trades 테이블에서 가져와야 함)
-                trades.append({
-                    "slippage_bps": 5.0 + (hash(d["ticker"]) % 10) * 0.5,  # 예시
-                    "simulated_slippage_bps": 3.0 + (hash(d["ticker"]) % 5) * 0.5,
-                })
+            if d.get("action") != "SIGNAL_ENTRY":
+                continue
+            ticker = str(d.get("ticker", ""))
+            try:
+                price = float(d.get("price_at_decision") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            dec_date = str(d.get("created_at", ""))[:10]
+            if not ticker or price <= 0 or not dec_date:
+                continue
+            # 시뮬레이터는 '현재 시각'으로 장중 여부를 판정한다.
+            # 잡이 16:00(장 마감 후)에 돌면 슬리피지가 0이 되므로 **결정 시각**을 넘긴다.
+            try:
+                dec_dt = datetime.strptime(str(d.get("created_at", ""))[:19], "%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError):
+                continue
+            rows = await self.db.get_ohlcv(ticker, 30)
+            nxt = next((r for r in rows if str(r.get("date", ""))[:10] > dec_date), None)
+            if nxt is None:
+                continue
+            try:
+                next_open = float(nxt.get("open") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if next_open <= 0:
+                continue
+            actual_bps = (next_open - price) / price * 10000.0
+            actual_bps = max(-_MAX_SLIPPAGE_BPS, min(_MAX_SLIPPAGE_BPS, actual_bps))
+            try:
+                res = simulator.execute(
+                    ticker=ticker,
+                    action="BUY",
+                    price=price,
+                    volume=0,
+                    order_size=max(1, int(_DEFAULT_ORDER_KRW / price)),
+                    market_cap=0.0,
+                    current_time=dec_dt,
+                )
+                sim_bps = float(res.slippage_bps)
+            except Exception as e:
+                logger.debug(f"시뮬레이터 추정 실패({ticker}): {e}")
+                sim_bps = 0.0
+            if actual_bps == 0.0 or sim_bps == 0.0:
+                continue
+            trades.append({
+                "slippage_bps": float(actual_bps),
+                "simulated_slippage_bps": float(sim_bps),
+            })
         return trades
 
     async def _send_report(self, report: CalibrationReport) -> None:

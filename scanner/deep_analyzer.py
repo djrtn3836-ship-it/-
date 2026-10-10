@@ -166,6 +166,31 @@ class DeepAnalyzer:
             logger.info(f"📊 최신 가중치 로드: {self.weights}")
             debug_tower.log("SYSTEM", "WEIGHTS_LOADED", {"weights": self.weights})
 
+    def _learned_factor_multipliers(self) -> Dict[str, float]:
+        """학습된 팩터 가중치 → 스코어 배율(평균 1.0 정규화, 0.5x~2.0x 클램프).
+
+        DB(feedback_weights)에서 로드한 self.weights를 실제 스코어링에 반영한다.
+        기본값이 모두 1.0이라 **학습 데이터가 없으면 기존 동작과 완전히 동일**하다.
+        """
+        try:
+            lw = self.weights or {}
+            raw = {
+                "macro": float(lw.get("macro", 1.0)),
+                "sector": float(lw.get("sector", 1.0)),
+                "stock": (
+                    float(lw.get("momentum", 1.0))
+                    + float(lw.get("volume", 1.0))
+                    + float(lw.get("volatility", 1.0))
+                ) / 3.0,
+            }
+            clamped = {k: max(0.5, min(2.0, v)) for k, v in raw.items()}
+            avg = sum(clamped.values()) / len(clamped)
+            if avg <= 0:
+                return {"macro": 1.0, "sector": 1.0, "stock": 1.0}
+            return {k: v / avg for k, v in clamped.items()}
+        except (TypeError, ValueError, ZeroDivisionError):
+            return {"macro": 1.0, "sector": 1.0, "stock": 1.0}
+
     async def calculate_atr(self, ticker: str, period: int = 14) -> float:
         if not self.db:
             return 0.0
@@ -722,10 +747,14 @@ class DeepAnalyzer:
 
             weights: Dict[str, Any] = self.weighter.calculate({"regime": regime, "flow": stock.get("flow", {})})
 
+            # 🔴 2026-10-10: FeedbackLearner가 학습한 팩터 가중치를 실제 스코어에 반영.
+            #   (이전에는 DB에서 로드만 하고 어디에도 쓰이지 않는 '죽은 값'이었다)
+            #   평균 1.0 정규화 → 전체 스케일 불변, 상대 비중만 조정
+            _fw = self._learned_factor_multipliers()
             base_score: float = (
-                float(macro_score["score"]) * float(weights.get("trend_weight", 0.3))
-                + float(sector_score["score"]) * float(weights.get("risk_weight", 0.2))
-                + float(stock_score["score"]) * float(weights.get("flow_weight", 0.4))
+                float(macro_score["score"]) * float(weights.get("trend_weight", 0.3)) * _fw["macro"]
+                + float(sector_score["score"]) * float(weights.get("risk_weight", 0.2)) * _fw["sector"]
+                + float(stock_score["score"]) * float(weights.get("flow_weight", 0.4)) * _fw["stock"]
                 + float(korean_score["score"]) * 0.1
             )
 
