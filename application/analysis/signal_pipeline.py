@@ -554,6 +554,14 @@ class SignalPipeline(TracedService):
                 tags = list(npf.tags)
                 factors = npf.to_dict()
                 factors.pop("tags", None)
+                # 🔴 2026-10-10: 태그/팩터가 워커→모의매매·알림으로 전달되도록
+                #   Signal(frozen)에 부착한다. 이전에는 캘리브레이션 기록에만
+                #   남아 paper_trader 태그 승률이 영원히 비어 있었다.
+                try:
+                    object.__setattr__(signal, "tags", list(tags))
+                    object.__setattr__(signal, "factors", dict(factors))
+                except Exception:
+                    pass
             except Exception as e:
                 trace.debug(f"비가격 팩터 건너뜀: {e}")
 

@@ -155,11 +155,30 @@ class DartConnector:
             resp.raise_for_status()
 
             content_type = resp.headers.get("Content-Type", "")
-            if "xml" not in content_type and not resp.text.strip().startswith("<?xml"):
+            content = resp.content
+
+            # 🔴 2026-10-10 수정(실검증 발견): DART corpCode.xml은 **ZIP**으로
+            #   내려온다(content-type: application/x-msdownload). 이전 코드는
+            #   XML만 기대해 매핑이 영원히 실패 → 재무/공시 경로 전체가 죽어 있었다.
+            if content[:2] == b"PK" or "zip" in content_type.lower() or "msdownload" in content_type.lower():
+                try:
+                    import io
+                    import zipfile
+
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        names = zf.namelist()
+                        xml_bytes = zf.read(names[0]) if names else b""
+                    content = xml_bytes
+                    content_type = "application/xml"
+                except Exception as ze:
+                    logger.warning(f"⚠️ DART ZIP 해제 실패: {ze}")
+                    return {}
+
+            if "xml" not in content_type.lower() and not content.strip().startswith(b"<?xml"):
                 logger.warning(f"⚠️ DART 응답이 XML 아님 (Content-Type: {content_type})")
                 return {}
 
-            root = ET.fromstring(resp.content)
+            root = ET.fromstring(content)
             mapping: Dict[str, str] = {}
             for corp in root.findall("list"):
                 corp_code = corp.findtext("corp_code")
@@ -429,28 +448,42 @@ class DartConnector:
                 if data.get("status") == "000":
                     result: Dict[str, float] = {}
                     target = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"]
-                    for item in data.get("list", []):
-                        if item.get("sj_div") != "CFS":
-                            continue
-                        acc = item.get("account_nm")
-                        if acc in target:
-                            raw = str(item.get("thstrm_amount", "0"))
+                    # 🔴 2026-10-10 수정(실검증 발견): sj_div는 재무제표 종류
+                    #   (BS/IS/CIS...), 연결/별도 구분은 fs_div(CFS/OFS)다.
+                    #   이전 코드는 `sj_div != "CFS"`로 걸러 **모든 항목을 버렸고**
+                    #   재무 경로(판단·/재무 명령)가 영원히 빈 값이었다.
+                    #   → 연결(CFS) 우선, 없으면 별도(OFS)도 사용.
+                    items = [
+                        it for it in data.get("list", [])
+                        if it.get("fs_div") in (None, "", "CFS")
+                    ]
+                    if not items:
+                        items = list(data.get("list", []))
+                    for item in items:
+                        acc = str(item.get("account_nm") or "")
+                        # "(손실)"·"(이익)" 등 접미 변형 허용
+                        base = acc.split("(")[0].strip()
+                        key = base if base in target else acc
+                        if key in target and key not in result:
+                            raw = str(item.get("thstrm_amount", ""))
                             try:
-                                result[acc] = float(raw.replace(",", ""))
-                            except Exception:
-                                result[acc] = 0.0
+                                result[key] = float(raw.replace(",", ""))
+                            except (TypeError, ValueError):
+                                pass  # 🔴 결측을 0.0으로 위장하지 않는다(가짜 리스크 방지)
 
-                    revenue = result.get("매출액", 0.0)
-                    op = result.get("영업이익", 0.0)
-                    net = result.get("당기순이익", 0.0)
-                    eq = result.get("자본총계", 0.0)
-                    debt = result.get("부채총계", 0.0)
+                    revenue = result.get("매출액")
+                    op = result.get("영업이익")
+                    net = result.get("당기순이익")
+                    eq = result.get("자본총계")
+                    debt = result.get("부채총계")
 
-                    if revenue > 0:
-                        result["영업이익률"] = (op / revenue) * 100 if op else 0.0
-                    if eq > 0:
-                        result["ROE"] = (net / eq) * 100 if net else 0.0
-                        result["부채비율"] = (debt / eq) * 100 if debt else 0.0
+                    if revenue and revenue > 0 and op is not None:
+                        result["영업이익률"] = (op / revenue) * 100
+                    if eq and eq > 0:
+                        if net is not None:
+                            result["ROE"] = (net / eq) * 100
+                        if debt is not None:
+                            result["부채비율"] = (debt / eq) * 100
 
                     logger.debug(f"✅ {corp_code} 재무제표 정규화 완료 ({try_year})")
                     collector_status.record_success("dart_connector", {"year": try_year})

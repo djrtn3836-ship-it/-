@@ -603,3 +603,24 @@
 - [검증] pytest 1704 passed(+18) / ruff F 0 / 신규 test_supply_demand.py(18)
 - [부수] PG 격차 문서 8→11건 갱신(parity 테스트 연동)
 - ⚠️ 실 API 응답 구조는 월요일 16:35 첫 수집에서 확인 필요(미확인 시 무음 skip)
+
+## 2026-10-10 — Session 107: 재무(펀더멘털) 판단 반영 + 실버그 2건
+1순위(재무 반영) 진행 — 실검증이 죽어 있던 경로를 드러냈다:
+
+- **🔴 실버그 ① DART corpCode.xml은 ZIP으로 내려온다**: 다운로드 코드가 XML만
+  기대해(Content-Type: application/x-msdownload) corp_code 매핑이 **영원히 실패**
+  → 재무·공시 경로 전체가 빈 값(그동안 아무도 몰랐음 — 로그 경고만). ZIP 해제 추가.
+- **🔴 실버그 ② `sj_div != "CFS"` 필터 오류**: sj_div는 재무제표 종류(BS/IS),
+  연결/별도는 fs_div(CFS/OFS). 이 필터가 전 항목을 버려 재무가 항상 {}였다.
+- **🔴 실버그 ③ 결측 0.0 위장 → 가짜 리스크**: 당기순이익 누락을 0으로 채워
+  정상 기업이 "적자(fund_risky)"로 오판됐다(삼성전자 실측). 결측은 결측대로
+  통과시키도록 수정.
+- **구현**: `collector/fundamentals_provider.py`(DART + 7일 TTL 캐시 + 분류 규칙),
+  비가격 팩터에 재무 태그(`fund_solid/fund_ok/fund_risky`)·수치(ROE/부채/영업이익률)
+  기록. Signal(frozen)에 태그/팩터 부착 → **워커→결정→모의매매 태그 승률**까지 연결
+  (이전에는 태그가 어디에도 전달되지 않아 승률 측정이 영원히 빈 상태였다).
+- **실검증**: 삼성전자 ROE 10.4%/부채 29.9%/영업이익률 13.1% → fund_solid,
+  SK하이닉스 ROE 35.6% → fund_solid (양성 확인)
+- 행동 원칙: 점수는 여전히 바꾸지 않는다 — 태그 기록 → 모의매매 승률 검증 후 반영.
+
+[검증] pytest 1714 passed(+10) / ruff F 0 / test_fundamentals.py(10)

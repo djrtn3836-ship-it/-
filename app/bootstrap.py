@@ -1260,6 +1260,13 @@ class Bootstrapper(TracedService):
                             v10_signal = await self.signal_pipeline.process(stock_data)
                             if hasattr(v10_signal, "confidence"):
                                 analysis["v10_sqi"] = round(float(v10_signal.confidence), 3)
+                            # 🔴 2026-10-10: 비가격 태그/팩터를 결정·알림·모의매매로 전달
+                            _tags = getattr(v10_signal, "tags", None)
+                            if _tags:
+                                analysis["tags"] = list(_tags)
+                            _factors = getattr(v10_signal, "factors", None)
+                            if _factors:
+                                analysis["factors"] = dict(_factors)
                         except Exception as e_pipe:
                             logger.debug(f"SignalPipeline skipped ({ticker}): {e_pipe}")
 

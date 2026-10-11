@@ -42,6 +42,7 @@ NEWS_BUSY_COUNT = 5            # 뉴스 5건 이상 → 관심 집중(과열 가
 MAX_BOOST = 0.05               # 신호 점수 보정 상한(0~1 스케일의 ±5%)
 DART_DAYS = 3                  # 공시 조회 기간(일)
 FETCH_TIMEOUT_SEC = 2.0        # 팩터 계산이 본류를 지연시키지 않도록 하는 상한
+FUND_TIMEOUT_SEC = 3.0         # 재무 조회 상한(DART는 캐시 미스 때만)
 
 
 def dart_enabled() -> bool:
@@ -62,6 +63,8 @@ class NonPriceFactors:
     sentiment_score: Optional[float] = None      # -1.0 ~ +1.0
     flow_foreign_5d: Optional[float] = None      # 외국인 5거래일 순매수 합계(주)
     flow_inst_5d: Optional[float] = None         # 기관 5거래일 순매수 합계(주)
+    fund_tags: List[str] = field(default_factory=list)   # 재무 태그(fund_risky 등)
+    fund_risk: Optional[bool] = None                     # 재무 리스크 플래그
     sentiment_impact: Optional[float] = None     # 0.0 ~ 1.0
     sentiment_label: str = "unknown"
     news_count: int = 0
@@ -110,6 +113,9 @@ def build_tags(f: NonPriceFactors) -> List[str]:
         tags.append("flow_i_buy" if f.flow_inst_5d > 0 else "flow_i_sell")
     if (f.flow_foreign_5d or 0) > 0 and (f.flow_inst_5d or 0) > 0:
         tags.append("flow_both_buy")  # 쌍끌이(외국인+기관 동반 순매수)
+    # 재무 태그(2026-10-10): 데이터가 있을 때만(없으면 태그 없음 — 추정 금지)
+    if f.fund_tags:
+        tags.extend(f.fund_tags)
     return tags
 
 
@@ -143,6 +149,42 @@ async def _sentiment_part(ticker: str, pipeline: Any) -> Dict[str, Any]:
         "sentiment_impact": float(getattr(result, "impact_score", 0.0)),
         "sentiment_label": str(getattr(getattr(result, "label", None), "value", "unknown")),
         "news_count": int(getattr(result, "news_count", 0) or 0),
+    }
+
+
+async def _fundamental_part(ticker: str, dart: Any) -> Dict[str, Any]:
+    """재무(ROE·부채비율·영업이익률) → 태그/리스크 플래그.
+
+    DART 재무제표 기반(7일 캐시). 점수는 바꾸지 않는다 — 태그 기록 전용.
+    """
+    if dart is None:
+        return {}
+    try:
+        from collector.fundamentals_provider import (
+            classify,
+            fundamentals_enabled,
+            get_fundamentals,
+        )
+    except Exception:
+        return {}
+    if not fundamentals_enabled():
+        return {}
+    try:
+        data = await asyncio.wait_for(
+            get_fundamentals(ticker, dart), timeout=FUND_TIMEOUT_SEC
+        )
+    except Exception as e:
+        logger.debug(f"[{ticker}] 재무 조회 실패(무시): {e}")
+        return {}
+    if not data:
+        return {}
+    cls = classify(data)
+    return {
+        "roe": data.get("roe"),
+        "debt_ratio": data.get("debt_ratio"),
+        "op_margin": data.get("op_margin"),
+        "fund_tags": list(cls.get("tags") or []),
+        "fund_risk": bool(cls.get("risk")),
     }
 
 
@@ -238,6 +280,7 @@ async def compute(
         parts: Dict[str, Any] = {}
         parts.update(await _sentiment_part(ticker, sentiment_pipeline))
         parts.update(await _disclosure_part(ticker, dart))
+        parts.update(await _fundamental_part(ticker, dart))
         parts.update(await _flow_part(ticker, db))
         for key, value in parts.items():
             setattr(f, key, value)
