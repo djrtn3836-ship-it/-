@@ -102,6 +102,8 @@ def check_sources() -> int:
         "create_task", "gather", "run_coroutine_threadsafe", "run",
         "ensure_future", "wait_for", "shield", "call_soon_threadsafe",
     }
+    # 동기 호출인데 async 이름과 겹치는 오탐(sqlite3.connect 등)
+    sync_attr_calls = {"sqlite3.connect"}
     for rel, tree in trees.items():
         if rel.startswith("tests"):
             continue
@@ -138,6 +140,15 @@ def check_sources() -> int:
             f = node.func
             fname = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
             if fname and fname in async_names:
+                parts: list[str] = []
+                cur = f
+                while isinstance(cur, ast.Attribute):
+                    parts.append(cur.attr)
+                    cur = cur.value
+                if isinstance(cur, ast.Name):
+                    parts.append(cur.id)
+                if ".".join(reversed(parts)) in sync_attr_calls:
+                    continue
                 unawaited.append(f"{rel}:{node.lineno} {fname}()")
 
     problems = len(bad) + len(bom) + len(flat) + len(unawaited)

@@ -536,3 +536,21 @@
 
 [검증] pytest 1639 passed(+15) / ruff F 0 / 신규 test_alert_pipeline.py(15)
 [환경변수] ALERT_QUEUE_MAX=1000 · ALERT_BACKLOG_PATH=logs/pending_alerts.jsonl · ALERT_BACKLOG_MAX=200
+
+## 2026-10-10 — Session 103: DB 자동 백업 + 정산 순서 교정 + 관리 알림 큐
+약점 연속 보완(사용자 무승인 진행 허용):
+
+- **① DB 자동 백업** (`core/db_backup.py` 신설): decisions.db는 학습 데이터의 전부인데
+  자동 백업이 없었다(수동 ZIP뿐). sqlite3 온라인 백업 API로 **일관성 스냅샷** →
+  `PRAGMA integrity_check` 통과분만 보관 → 7개 초과 시 오래된 것 삭제.
+  잡 `db_backup`(평일 07:30, 18번째) + **기동 시 24시간 경과하면 즉시 1회**.
+  실패 시 텔레그램 알림(성공은 조용히 — 로그만).
+- **② 정산 순서 교정(실버그)**: 정산 잡들이 일봉 수집(16:30)보다 먼저 실행되어
+  (calibration_settle 16:00, paper_settle 16:10) 필요한 종가가 DB에 없어
+  **항상 하루 늦게 채점**되던 문제 → 17:15 / 17:05로 이동(일봉 16:30 이후).
+- **③ 관리 알림 큐 경유**: 시작/종료 알림도 백그라운드 큐로(RAW 모드, 감사 로그 미기록 —
+  alert_verifier 대조 오염 방지). 네트워크 장애 시 기동·종료 지연 제거.
+
+[검증] pytest 1657 passed(+18) / ruff F 0 / 실DB 백업 실증(28.3MB, 무결성 ok, 233,611행)
+[신규 테스트] test_db_backup.py(10: 백업·회전·손상·무결성·정산순서) · test_alert_pipeline.py RAW(3)
+[부수] tests/run_all.py 검사기: sqlite3.connect 동기 호출 오탐 제거

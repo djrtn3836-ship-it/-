@@ -113,6 +113,7 @@ from observability.ops_monitor import OpsMonitor
 from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_check
 from scheduler.data_readiness_monitor import scheduled_data_readiness_check
 from scheduler.universe_fetcher import scheduled_universe_refresh
+from core.db_backup import backup_sqlite, last_backup_age_hours
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -412,6 +413,50 @@ class Bootstrapper(TracedService):
             return False
         self._alert_last_at[key] = _now
         return True
+
+    async def _run_db_backup(self) -> None:
+        """DB 스냅샷 백업 + 무결성 검사. 실패하면 알림(성공은 조용히)."""
+        try:
+            path = await asyncio.to_thread(backup_sqlite)
+            if path is None:
+                logger.warning("DB 백업 건너뜀(원본 DB 없음)")
+                return
+            size_mb = path.stat().st_size / 1048576
+            logger.info(f"DB 백업 완료: {path.name} ({size_mb:.1f}MB)")
+            debug_tower.log("SYSTEM", "DB_BACKUP_OK", {"file": path.name})
+        except Exception as e:
+            logger.error(f"DB 백업 실패: {e}")
+            debug_tower.log("SYSTEM", "DB_BACKUP_FAILED", {"error": str(e)[:200]})
+            self._enqueue_admin_message(
+                f"🗄️ <b>DB 백업 실패</b>\n📌 {str(e)[:200]}"
+            )
+
+    def _backup_if_stale(self) -> None:
+        """기동 시 마지막 백업이 24시간보다 오래됐으면 즉시 1회 백업한다."""
+        try:
+            age = last_backup_age_hours()
+            if age is None or age >= 24.0:
+                task = asyncio.create_task(self._run_db_backup())
+                self.all_tasks.append(task)
+                logger.info("백업이 없거나 오래됨 → 기동 백업 실행")
+        except Exception as e:
+            logger.debug(f"백업 신선도 검사 실패(무시): {e}")
+
+    def _enqueue_admin_message(self, text: str) -> bool:
+        """관리 알림을 큐로 보낸다(워커 비블로킹). 큐 미가동이면 직접 발송 시도."""
+        try:
+            if self._alert_task is not None and not self._alert_task.done():
+                return self._enqueue_alert(
+                    text, {"action": "RAW", "ticker": "SYSTEM", "text": text}
+                )
+        except Exception:
+            pass
+        try:
+            sender = self._error_sender or TelegramSender()
+            asyncio.create_task(sender.send_raw(text))
+            return True
+        except Exception:
+            return False
 
     async def _run_paper_settle(self) -> None:
         """모의매매 채점 + 성과 리포트 전송(평일 16:10).
@@ -849,13 +894,18 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.add_job_with_retry(
             settle_and_feed_ab,
-            CronTrigger(day_of_week="mon-fri", hour=16, minute=0, timezone="Asia/Seoul"),
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=15, timezone="Asia/Seoul"),
             "calibration_settle", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
             self._run_paper_settle,
-            CronTrigger(day_of_week="mon-fri", hour=16, minute=10, timezone="Asia/Seoul"),
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=5, timezone="Asia/Seoul"),
             "paper_settle", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
+            self._run_db_backup,
+            CronTrigger(hour=int(os.getenv("DB_BACKUP_HOUR", "7")), minute=30, timezone="Asia/Seoul"),
+            "db_backup", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
             scheduled_dashboard,
@@ -878,7 +928,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 17
+        self.startup_details["job_count"] = 18
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
@@ -903,6 +953,9 @@ class Bootstrapper(TracedService):
         self._alert_task = asyncio.create_task(self._alert_worker())
         self.all_tasks.append(self._alert_task)
         logger.info("Alert worker started (queue-based delivery)")
+
+        # 기동 백업: 마지막 백업이 24시간보다 오래됐으면 즉시 1회
+        self._backup_if_stale()
 
     async def start_supervisor(self) -> None:
         supervisor = SystemSupervisor()
@@ -1360,8 +1413,9 @@ class Bootstrapper(TracedService):
             )
 
         try:
-            sender = self._error_sender or TelegramSender()
-            await sender.send_raw(msg)
+            if not self._enqueue_admin_message(msg):
+                sender = self._error_sender or TelegramSender()
+                await sender.send_raw(msg)
         except Exception:
             pass
 
@@ -1374,8 +1428,9 @@ class Bootstrapper(TracedService):
                 f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━"
             )
-            sender = self._error_sender or TelegramSender()
-            await sender.send_raw(msg)
+            if not self._enqueue_admin_message(msg):
+                sender = self._error_sender or TelegramSender()
+                await sender.send_raw(msg)
         except Exception:
             pass
 

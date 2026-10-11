@@ -85,7 +85,7 @@ python -m validation.momentum_backtest --limit 190 --start 2021-10-01 --end 2026
 # 집중도 리스크(상관행렬) — 유동성 상위 50종목 × 60거래일, 평일 17:00 자동
 python -m risk.correlation_monitor --tickers 30
 
-# 신뢰도 캘리브레이션(ECE) — 시그널 예측을 5거래일 뒤 실현가로 채점, 평일 16:00 자동
+# 신뢰도 캘리브레이션(ECE) — 시그널 예측을 5거래일 뒤 실현가로 채점, 평일 17:15 자동
 python -m analytics.calibration_bridge --report
 python -m analytics.calibration_bridge --settle
 
@@ -154,12 +154,14 @@ scanner/ core/ data/ (기존 공존 — Strangler Fig 진행 중)
 
 **모의매매 측정**: `analytics/paper_trader.py` — 매매 신호를 기록하고 1/3/5/10거래일 뒤
 실현 종가로 채점한다(승률 + Wilson 95% 신뢰구간 + 무작위 기준선 44.3% 대비 판정).
-평일 16:10 텔레그램 리포트 / 대시보드 11번 섹션. **실제 주문은 발생하지 않는다.**
+평일 17:05 텔레그램 리포트 / 대시보드 11번 섹션. **실제 주문은 발생하지 않는다.**
+(17:05·17:15는 일봉 수집 16:30 이후 — 신선한 종가로 채점하기 위한 순서)
 
-**스케줄러 17잡**: daily_report · weekly_pdf · momentum_report(08:30) · macro_update ·
-market_risk_check(16:45) · calibration_settle(16:00) · correlation_check(17:00) ·
-dashboard(17:30) · data_readiness(일) · universe_refresh(토) · phase_transition_check ·
-alert_verifier · hyperparameter_tuning · feedback_learning · daily_ohlcv
+**스케줄러 18잡**: daily_report · weekly_pdf · momentum_report(08:30) · db_backup(07:30) ·
+macro_update · market_risk_check(16:45) · daily_ohlcv(16:30) · paper_settle(17:05) ·
+calibration_settle(17:15) · correlation_check(17:00) · dashboard(17:30) ·
+data_readiness(일) · universe_refresh(토) · phase_transition_check · alert_verifier ·
+hyperparameter_tuning · feedback_learning
 ```
 
 ---

@@ -77,7 +77,7 @@
 - [x] **P8-3** `analytics/calibration_tracker.py` 배선 — `analytics/calibration_bridge.py` 신설 (2026-10-01)
       - **결과 라벨 부재 문제 해결**: 매매 대신 N거래일(5일) 후 실현가로 승/패 채점
         (BUY=상승, SELL=하락, HOLD=보합 — 임계 ±0.5%)
-      - `SignalPipeline` 예측 기록 훅 → 평일 16:00 `calibration_settle` 잡(17잡) → ECE 산출 + AB 피드백
+      - `SignalPipeline` 예측 기록 훅 → 평일 17:15 `calibration_settle` 잡(18잡) → ECE 산출 + AB 피드백
       - 트래커가 메모리 기반이라 `settled.jsonl`에서 매번 재구성(멱등) / 대시보드 9번 섹션
 - [x] **P8-4** `observability/trace_tree.py` 노출 — `observability/trace_bridge.py` 신설 (2026-10-01)
       - 전역 TraceTree 싱글턴 + `record_stage()` 헬퍼(실패 무시)
@@ -120,7 +120,7 @@
       - "11. 전략 검증 상태": P5/P6 결론(α −4.8%, 시장 베타, 감시 가치) + P7 게이트 진행률
       - '전략이 검증됐다'는 오해 방지 문구 고정
 - [x] **P10-4** README 운영 문서 최신화 (2026-10-01)
-      - CLI 도구 5종(상관/캘리브레이션/섀도우/대시보드/트레이스), 스케줄러 **17잡** 명시
+      - CLI 도구 5종(상관/캘리브레이션/섀도우/대시보드/트레이스), 스케줄러 **18잡** 명시
       - 알려진 한계 정정: 모멘텀=베타, 롱숏 알파 부재, PG 보류, 데이터 게이트 선행 조건
       - 텔레그램 `/trace` 명령, 테스트 수(1513) 갱신
 

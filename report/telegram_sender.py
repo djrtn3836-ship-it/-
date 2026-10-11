@@ -71,6 +71,11 @@ class TelegramSender:
         if not self.bot or not self.chat_id:
             return None
 
+        # RAW: 리포트가 아닌 관리 알림(백업 결과 등) — 감사 로그 대상이 아니다
+        if report.get("action") == "RAW":
+            text = str(report.get("text") or "")
+            return text or None
+
         action = report.get("action")
         ticker = report.get("ticker", "UNKNOWN")
         debug_tower.log(ticker, "TELEGRAM_SEND_START", {"action": action})
@@ -105,6 +110,14 @@ class TelegramSender:
 
     async def send_formatted(self, text: str, report: Dict[str, Any]) -> bool:
         """미리 만든 텍스트를 전송하고, **성공 시에만** 감사 로그를 남긴다."""
+        if report.get("action") == "RAW":
+            # 관리 알림: 알림 대조(alert_verifier) 대상이 아니므로 감사 미기록
+            try:
+                return await self.send_raw(text)
+            except Exception as e:
+                logger.warning(f"관리 알림 전송 실패: {e}")
+                return False
+
         action = report.get("action")
         ticker = report.get("ticker", "UNKNOWN")
         try:

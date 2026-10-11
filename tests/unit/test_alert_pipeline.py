@@ -248,3 +248,46 @@ class TestAlertQueue:
         app._alert_backlog = app._alert_backlog[-app._alert_backlog_max:]
         assert len(app._alert_backlog) == 3
         assert app._alert_backlog[-1]["text"] == "t9"
+
+
+class TestAdminRawMessages:
+    """관리 알림(RAW): 전송은 하되 감사 로그는 남기지 않는다."""
+
+    def test_format_raw_returns_text(self):
+        s = _sender()
+        assert s.format({"action": "RAW", "text": "백업 실패"}) == "백업 실패"
+        assert s.format({"action": "RAW", "text": ""}) is None
+
+    def test_raw_send_skips_audit(self, tmp_path):
+        from report import telegram_sender as ts
+
+        s = _sender()
+        calls = []
+
+        async def fake_raw(text, max_retries=4):
+            calls.append(text)
+            return True
+
+        s.send_raw = fake_raw
+        before = _audit_lines(ts)
+        ok = asyncio.run(
+            s.send_formatted("관리알림", {"action": "RAW", "ticker": "SYSTEM", "text": "관리알림"})
+        )
+        assert ok is True and calls == ["관리알림"]
+        assert _audit_lines(ts) == before, "RAW 알림이 감사 로그를 오염시킴"
+
+    def test_admin_message_goes_through_queue(self, tmp_path):
+        app = _app(tmp_path)
+        fake = FakeSender(ok=True)
+        app._error_sender = fake
+
+        class _AliveTask:
+            def done(self):
+                return False
+
+        app._alert_task = _AliveTask()  # 살아있는 워커로 판정되게
+
+        ok = app._enqueue_admin_message("백업 완료")
+        assert ok is True
+        text, report = app._alert_queue.get_nowait()
+        assert text == "백업 완료" and report["action"] == "RAW"
