@@ -114,6 +114,8 @@ from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_ch
 from scheduler.data_readiness_monitor import scheduled_data_readiness_check
 from scheduler.universe_fetcher import scheduled_universe_refresh
 from core.db_backup import backup_sqlite, last_backup_age_hours
+from core.disk_guard import check_disk
+from core.db_maintenance import maintain_sqlite
 from feedback.feedback_learner import FeedbackLearner
 from monitor.phase_transition_validator import PhaseTransitionValidator
 from risk.safety_guard import SafetyGuard
@@ -188,6 +190,11 @@ class Bootstrapper(TracedService):
         )
         self._alert_backlog_max = int(os.getenv("ALERT_BACKLOG_MAX", "200"))
         self._alert_backlog_last_try: float = 0.0
+        # 디스크 여유 부족 알림 쿨다운(기본 6시간) — 도배 방지
+        self._disk_alert_last_at: float = 0.0
+        self._disk_alert_cooldown_sec: float = float(
+            os.getenv("DISK_ALERT_COOLDOWN_SEC", "21600")
+        )
 
         self.message_queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(
             maxsize=config.queue_maxsize
@@ -413,6 +420,44 @@ class Bootstrapper(TracedService):
             return False
         self._alert_last_at[key] = _now
         return True
+
+    async def _run_disk_check(self) -> None:
+        """디스크 여유 확인. 부족하면 쿨다운 내 1회 알림(성공은 조용히)."""
+        try:
+            warn = await asyncio.to_thread(check_disk)
+        except Exception as e:
+            logger.debug(f"디스크 검사 실패(무시): {e}")
+            return
+        if not warn:
+            return
+        now = time.time()
+        if now - self._disk_alert_last_at < self._disk_alert_cooldown_sec:
+            logger.warning("디스크 여유 부족(알림 쿨다운 중)")
+            return
+        self._disk_alert_last_at = now
+        logger.error("디스크 여유 부족 → 알림 발송")
+        debug_tower.log("SYSTEM", "DISK_LOW", {})
+        self._enqueue_admin_message(warn)
+
+    async def _run_db_maintenance(self) -> None:
+        """주간 SQLite 유지보수(PRAGMA optimize) + 통계 로그. 실패 시 알림."""
+        try:
+            r = await asyncio.to_thread(maintain_sqlite)
+        except Exception as e:
+            logger.error(f"DB 유지보수 실패: {e}")
+            self._enqueue_admin_message(
+                f"🧰 <b>DB 유지보수 실패</b>\n📌 {str(e)[:200]}"
+            )
+            return
+        if r.get("status") != "ok":
+            logger.warning(f"DB 유지보수 건너뜀: {r}")
+            return
+        top = sorted(r["tables"].items(), key=lambda kv: kv[1], reverse=True)[:5]
+        summary = ", ".join(f"{k}={v:,}" for k, v in top)
+        logger.info(
+            f"DB 유지보수 완료: {r['size_mb']}MB 무결성 {r['integrity']} | {summary}"
+        )
+        debug_tower.log("SYSTEM", "DB_MAINTENANCE_OK", {"size_mb": r["size_mb"]})
 
     async def _run_db_backup(self) -> None:
         """DB 스냅샷 백업 + 무결성 검사. 실패하면 알림(성공은 조용히)."""
@@ -908,6 +953,16 @@ class Bootstrapper(TracedService):
             "db_backup", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            self._run_disk_check,
+            CronTrigger(minute=7, timezone="Asia/Seoul"),
+            "disk_check", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
+            self._run_db_maintenance,
+            CronTrigger(day_of_week="sun", hour=3, minute=40, timezone="Asia/Seoul"),
+            "db_maintenance", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_dashboard,
             CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
             "dashboard", max_retries=1, retry_delay=30,
@@ -928,7 +983,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 18
+        self.startup_details["job_count"] = 20
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
@@ -956,6 +1011,10 @@ class Bootstrapper(TracedService):
 
         # 기동 백업: 마지막 백업이 24시간보다 오래됐으면 즉시 1회
         self._backup_if_stale()
+
+        # 기동 디스크 검사(여유 부족이면 즉시 알림)
+        _disk_task = asyncio.create_task(self._run_disk_check())
+        self.all_tasks.append(_disk_task)
 
     async def start_supervisor(self) -> None:
         supervisor = SystemSupervisor()

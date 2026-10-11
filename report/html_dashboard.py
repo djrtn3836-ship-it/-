@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Sequence
@@ -70,6 +71,26 @@ async def collect_system_section() -> Dict[str, Any]:
         out["csv_age_days"] = get_csv_age_days()
     except Exception as e:
         logger.debug(f"유니버스 정보 수집 실패(무시): {e}")
+
+    # 2026-10-10: 운영 관측(디스크 여유 · 미전송 알림 보관함)
+    try:
+        from core.disk_guard import disk_status
+
+        out["disk"] = disk_status()
+    except Exception as e:
+        logger.debug(f"디스크 정보 수집 실패(무시): {e}")
+    try:
+        from pathlib import Path as _Path
+
+        _bp = _Path(os.getenv("ALERT_BACKLOG_PATH", "logs/pending_alerts.jsonl"))
+        if _bp.exists():
+            out["alert_backlog"] = len(
+                [ln for ln in _bp.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            )
+        else:
+            out["alert_backlog"] = 0
+    except Exception as e:
+        logger.debug(f"미전송 알림 확인 실패(무시): {e}")
     return out
 
 
@@ -238,6 +259,17 @@ def render_html(data: Dict[str, Any]) -> str:
     else:
         u_badge = _badge("폴백(위험)", "bad")
 
+    # 디스크/알림 보관함 배지 (2026-10-10)
+    disk = sysd.get("disk") or {}
+    if not disk:
+        d_badge = _badge("알 수 없음", "warn")
+    elif (disk.get("free_gb") or 0) < 3 or (disk.get("free_pct") or 100) < 5:
+        d_badge = _badge(f"{disk.get('free_gb')}GB ({disk.get('free_pct')}%) 부족", "bad")
+    else:
+        d_badge = _badge(f"{disk.get('free_gb')}GB ({disk.get('free_pct')}%)", "ok")
+    backlog = sysd.get("alert_backlog") or 0
+    b_badge = _badge(f"{backlog}건 대기", "warn") if backlog else _badge("없음", "ok")
+
     system_html = f"""
     <div class="card">
       <h2>1. 시스템 상태</h2>
@@ -245,6 +277,8 @@ def render_html(data: Dict[str, Any]) -> str:
         <tr><th>스케줄러 잡</th><td>{_fmt(sysd.get('jobs'))}개</td></tr>
         <tr><th>유니버스 소스</th><td>{u_badge}</td></tr>
         <tr><th>CSV 나이</th><td>{_fmt(age, 1, '일')}</td></tr>
+        <tr><th>디스크 여유</th><td>{d_badge}</td></tr>
+        <tr><th>미전송 알림</th><td>{b_badge}</td></tr>
       </table>
     </div>"""
 

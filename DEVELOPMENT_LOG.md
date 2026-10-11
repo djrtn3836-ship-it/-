@@ -571,3 +571,20 @@
 
 [검증] pytest 1672 passed(+15) / ruff F 0 / check-only 0건
 [신규 테스트] test_holiday_utils.py(10) · test_paper_trader 만료(2)
+
+## 2026-10-10 — Session 105: 디스크 감시 + DB 유지보수 + 대시보드 관측
+약점 연속 보완:
+
+- **① 디스크 여유 감시** (`core/disk_guard.py`): 디스크가 가득 차면 SQLite 쓰기가
+  **조용히** 실패한다(결정 저장 실패 = 학습 데이터 손실). 과거 로그 폭주 3.9GB 사고의
+  재발 방지. 잡 `disk_check`(매시 :07) + 기동 시 검사, 3GB/5% 미만이면 텔레그램 알림
+  (6시간 쿨다운).
+- **② DB 정기 유지보수** (`core/db_maintenance.py`): `PRAGMA optimize`(가벼움) +
+  테이블별 행수·크기·무결성 로그. 잡 `db_maintenance`(일 03:40). VACUUM은 기본 off
+  (수동 `python -m core.db_maintenance --vacuum`).
+- **③ 대시보드 관측**: 1번 섹션에 **디스크 여유**·**미전송 알림 보관 건수** 배지 추가
+  (알림 큐가 막힌 채 발견되지 않던 관측 사각지대 해소).
+
+[검증] pytest 1686 passed(+14) / ruff F 0 / 대시보드 수집 실측(디스크 785.6GB 여유)
+[신규 테스트] test_disk_and_maintenance.py(14)
+[스케줄러] 18 → 20잡
