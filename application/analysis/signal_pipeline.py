@@ -549,6 +549,7 @@ class SignalPipeline(TracedService):
                     signal.ticker,
                     sentiment_pipeline=getattr(self, "sentiment_pipeline", None),
                     dart=getattr(self, "dart_connector", None),
+                    db=getattr(self, "db_manager", None),
                 )
                 tags = list(npf.tags)
                 factors = npf.to_dict()

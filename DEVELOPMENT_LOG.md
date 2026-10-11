@@ -588,3 +588,18 @@
 [검증] pytest 1686 passed(+14) / ruff F 0 / 대시보드 수집 실측(디스크 785.6GB 여유)
 [신규 테스트] test_disk_and_maintenance.py(14)
 [스케줄러] 18 → 20잡
+
+## 2026-10-10 — Session 106: 수급(외국인/기관) 수집 파이프라인 — 최대 정보 공백 해소
+질문("정보수집 고도화가 다 됐나?")에 대한 감사에서 최대 공백을 발견·착수:
+
+- **발견**: 수급 API는 커넥터에 있었지만 **주간 PDF·온디맨드 명령에서만** 쓰였고
+  판단에는 0 상수(`regime_manager`의 `foreigner_futures=0.0`)로 들어갔다.
+  P5/P6(가격 파생 팩터 무엣지) 이후 남은 유일한 미개척 정보원이 수급이었다.
+- **구현**: `collector/supply_demand_collector.py`(방어적 파싱 — 구조 미상이면
+  **추정하지 않고 건너뜀**) + `supply_demand` 테이블 + 잡 `supply_demand`(평일 16:35)
+  + 비가격 팩터 태그(`flow_f_buy/sell`, `flow_i_buy/sell`, `flow_both_buy`=쌍끌이).
+- **원칙 준수**: 수집·기록만 한다. 점수/행동 변경 없음 — 태그별 승률이 검증되면
+  그때 반영(검증 없는 보정 금지). 모의매매 태그 승률로 자연 검증된다.
+- [검증] pytest 1704 passed(+18) / ruff F 0 / 신규 test_supply_demand.py(18)
+- [부수] PG 격차 문서 8→11건 갱신(parity 테스트 연동)
+- ⚠️ 실 API 응답 구조는 월요일 16:35 첫 수집에서 확인 필요(미확인 시 무음 skip)

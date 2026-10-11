@@ -26,7 +26,10 @@ KNOWN_GAPS = {
     "get_momentum_paper_pending",
     "get_momentum_paper_stats",
     "get_ohlcv_range",
+    "get_supply_demand",
+    "get_supply_demand_latest",
     "save_momentum_picks",
+    "save_supply_demand",
     "update_momentum_paper_result",
 }
 

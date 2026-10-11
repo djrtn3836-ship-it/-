@@ -421,6 +421,23 @@ class Bootstrapper(TracedService):
         self._alert_last_at[key] = _now
         return True
 
+    async def _run_supply_demand(self) -> None:
+        """일별 수급(외국인/기관) 수집 — 판단에는 아직 미반영(측정용 태그만)."""
+        if not is_trading_day() or not self.kiwoom or not self.db or not self.monitor:
+            return
+        try:
+            from collector.supply_demand_collector import collect_supply_demand
+
+            saved = await collect_supply_demand(
+                self.kiwoom,
+                self.db,
+                self.monitor.tickers,
+                date_str=datetime.now().strftime("%Y-%m-%d"),
+            )
+            debug_tower.log("SYSTEM", "SUPPLY_DEMAND_COLLECTED", {"saved": saved})
+        except Exception as e:
+            logger.warning(f"수급 수집 실패(무시): {e}")
+
     async def _run_disk_check(self) -> None:
         """디스크 여유 확인. 부족하면 쿨다운 내 1회 알림(성공은 조용히)."""
         try:
@@ -963,6 +980,11 @@ class Bootstrapper(TracedService):
             "db_maintenance", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            self._run_supply_demand,
+            CronTrigger(day_of_week="mon-fri", hour=16, minute=35, timezone="Asia/Seoul"),
+            "supply_demand", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_dashboard,
             CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
             "dashboard", max_retries=1, retry_delay=30,
@@ -983,7 +1005,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 20
+        self.startup_details["job_count"] = 21
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "

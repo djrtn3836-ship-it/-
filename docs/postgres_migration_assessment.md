@@ -84,3 +84,14 @@ PostgreSQL이 필요한 수준(다중 writer, GB 단위, 동시 대시보드 질
 3. 데이터 이행 스크립트 + 행수/최신일자 대조 검증
 4. **읽기 전용 이중 운영**(SQLite 쓰기 + PG 읽기 검증) 1~2주
 5. 쓰기 전환 → 롤백 리허설(`DATABASE_URL` 제거로 즉시 SQLite 복귀 확인)
+
+---
+
+## 갱신 (2026-10-10 Session 106)
+
+수급 파이프라인 도입으로 SQLite에 3개 메서드가 추가됐다(전환 시 이 메서드들도
+Postgres에 필요 — `test_db_interface_parity.py`의 KNOWN_GAPS에 등록됨):
+
+- `save_supply_demand`, `get_supply_demand`, `get_supply_demand_latest`
+
+→ 미구현 격차: 8건 → **11건**.

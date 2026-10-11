@@ -124,7 +124,7 @@ class TestSchedulerRegistration:
         src = self._src()
         assert '"disk_check"' in src, "디스크 감시 잡 미등록"
         assert '"db_maintenance"' in src, "DB 유지보수 잡 미등록"
-        assert 'self.startup_details["job_count"] = 20' in src
+        assert 'self.startup_details["job_count"] = 21' in src
 
     def test_disk_check_runs_hourly_and_startup(self):
         src = self._src()

@@ -236,6 +236,14 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(pick_date, ticker)
             );
+            CREATE TABLE IF NOT EXISTS supply_demand (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                foreign_net REAL,
+                institution_net REAL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (ticker, date)
+            );
         """)
 
         for col, dtype in [
@@ -321,6 +329,54 @@ class DatabaseManager:
                WHERE ticker = ? AND date >= ? AND date <= ?
                ORDER BY date ASC""",
             (ticker, start_date, end_date),
+        )
+
+    # ── 수급(외국인/기관) — 2026-10-10 Session 106 ──────────────
+    async def save_supply_demand(self, records: list[dict[str, Any]]) -> int:
+        """수급 레코드 저장(같은 ticker/date는 덮어씀). 저장 건수 반환."""
+        saved = 0
+        for r in records or []:
+            ticker = str(r.get("ticker") or "")
+            date_str = str(r.get("date") or "")
+            if not ticker or not date_str:
+                continue
+            f = r.get("foreign_net")
+            i = r.get("institution_net")
+            await self._execute_batched(
+                """INSERT OR REPLACE INTO supply_demand
+                   (ticker, date, foreign_net, institution_net, updated_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (
+                    ticker,
+                    date_str,
+                    float(f) if f is not None else None,
+                    float(i) if i is not None else None,
+                ),
+            )
+            saved += 1
+        return saved
+
+    async def get_supply_demand(self, ticker: str, days: int = 20) -> list[dict[str, Any]]:
+        """최근 N일 수급(최신순)."""
+        return await self._execute_read(
+            """SELECT ticker, date, foreign_net, institution_net
+               FROM supply_demand WHERE ticker = ? ORDER BY date DESC LIMIT ?""",
+            (ticker, max(1, int(days))),
+        )
+
+    async def get_supply_demand_latest(self, date_str: str | None = None) -> list[dict[str, Any]]:
+        """특정일(미지정 시 최근일) 전 종목 수급."""
+        if not date_str:
+            rows = await self._execute_read(
+                "SELECT MAX(date) AS d FROM supply_demand", ()
+            )
+            date_str = (rows[0].get("d") if rows else None) or ""
+        if not date_str:
+            return []
+        return await self._execute_read(
+            """SELECT ticker, date, foreign_net, institution_net
+               FROM supply_demand WHERE date = ? ORDER BY ticker""",
+            (date_str,),
         )
 
     # ── 모멘텀 모의(페이퍼) 추적 — P2-13 옵션 B ──────────────────

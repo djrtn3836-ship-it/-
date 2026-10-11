@@ -209,7 +209,7 @@ OOS에서는 **저변동성이 유일하게 양의 알파**(α +10.4%/년, β 0.
 4. 🔴 `secure_config`의 대화형 `input()` — 무인 실행 정지 위험
 5. 섀도우 콜러블 **async 계약** 위반 시 오류 흡수 확인(설계 검증)
 
-**스케줄러: 14 → 20잡** (18번째 `db_backup` 평일 07:30 · `disk_check` 매시 :07 · `db_maintenance` 일 03:40 · `paper_settle` 17:05 · `calibration_settle` 17:15 — 일봉 16:30 뒤로 이동)
+**스케줄러: 14 → 21잡** (18번째 `db_backup` 평일 07:30 · `disk_check` 매시 :07 · `db_maintenance` 일 03:40 · `supply_demand` 평일 16:35 · `paper_settle` 17:05 · `calibration_settle` 17:15 — 일봉 16:30 뒤로 이동)
 
 ### 🏗️ P6 고도화 4건 완료 (2026-10-01)
 | 항목 | 결과 | 핵심 |

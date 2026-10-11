@@ -60,6 +60,8 @@ class NonPriceFactors:
 
     ticker: str
     sentiment_score: Optional[float] = None      # -1.0 ~ +1.0
+    flow_foreign_5d: Optional[float] = None      # 외국인 5거래일 순매수 합계(주)
+    flow_inst_5d: Optional[float] = None         # 기관 5거래일 순매수 합계(주)
     sentiment_impact: Optional[float] = None     # 0.0 ~ 1.0
     sentiment_label: str = "unknown"
     news_count: int = 0
@@ -101,6 +103,13 @@ def build_tags(f: NonPriceFactors) -> List[str]:
         tags.append("disc_yes")
     else:
         tags.append("disc_no")
+    # 수급 태그(2026-10-10): 데이터가 있을 때만. 없으면 태그 없음(추정 금지).
+    if f.flow_foreign_5d is not None:
+        tags.append("flow_f_buy" if f.flow_foreign_5d > 0 else "flow_f_sell")
+    if f.flow_inst_5d is not None:
+        tags.append("flow_i_buy" if f.flow_inst_5d > 0 else "flow_i_sell")
+    if (f.flow_foreign_5d or 0) > 0 and (f.flow_inst_5d or 0) > 0:
+        tags.append("flow_both_buy")  # 쌍끌이(외국인+기관 동반 순매수)
     return tags
 
 
@@ -135,6 +144,32 @@ async def _sentiment_part(ticker: str, pipeline: Any) -> Dict[str, Any]:
         "sentiment_label": str(getattr(getattr(result, "label", None), "value", "unknown")),
         "news_count": int(getattr(result, "news_count", 0) or 0),
     }
+
+
+async def _flow_part(ticker: str, db: Any) -> Dict[str, Any]:
+    """최근 5거래일 수급 합계(외국인/기관). 데이터 없으면 {}.
+
+    판단 점수는 건드리지 않는다 — 태그 기록(승률 측정) 전용.
+    """
+    if db is None:
+        return {}
+    try:
+        rows = await asyncio.wait_for(
+            db.get_supply_demand(ticker, 5), timeout=FETCH_TIMEOUT_SEC
+        )
+    except Exception as e:
+        logger.debug(f"[{ticker}] 수급 조회 실패(무시): {e}")
+        return {}
+    if not rows:
+        return {}
+    out: Dict[str, Any] = {}
+    f_vals = [float(r["foreign_net"]) for r in rows if r.get("foreign_net") is not None]
+    i_vals = [float(r["institution_net"]) for r in rows if r.get("institution_net") is not None]
+    if f_vals:
+        out["flow_foreign_5d"] = round(sum(f_vals), 1)
+    if i_vals:
+        out["flow_inst_5d"] = round(sum(i_vals), 1)
+    return out
 
 
 async def _disclosure_part(ticker: str, dart: Any) -> Dict[str, Any]:
@@ -184,6 +219,7 @@ async def compute(
     *,
     sentiment_pipeline: Any = None,
     dart: Any = None,
+    db: Any = None,
 ) -> NonPriceFactors:
     """비가격 팩터 계산(실패해도 예외를 던지지 않는다).
 
@@ -202,6 +238,7 @@ async def compute(
         parts: Dict[str, Any] = {}
         parts.update(await _sentiment_part(ticker, sentiment_pipeline))
         parts.update(await _disclosure_part(ticker, dart))
+        parts.update(await _flow_part(ticker, db))
         for key, value in parts.items():
             setattr(f, key, value)
     except Exception as e:                       # 방어적: 본류 보호
