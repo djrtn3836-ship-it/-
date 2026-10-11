@@ -27,7 +27,7 @@ import math
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -122,6 +122,29 @@ class PaperTrader:
         pending = self._load_jsonl(self.signals_path)
         if not pending:
             return 0
+
+        # 🔴 2026-10-10 만료 정책: 진입일이 OHLCV 창(최근 60일)보다 과거인 기록은
+        #   영원히 채점되지 않고 파일만 무한히 커진다 → 오래된 미확정은 정리한다.
+        try:
+            max_age_days = max(1, int(os.getenv("PAPER_PENDING_MAX_DAYS", "45")))
+        except ValueError:
+            max_age_days = 45
+        cutoff = (datetime.now() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+
+        def _expired(rec: Dict[str, Any]) -> bool:
+            d = str(rec.get("date") or "")[:10]
+            return bool(d) and d < cutoff
+
+        expired = [r for r in pending if _expired(r)]
+        if expired:
+            pending = [r for r in pending if not _expired(r)]
+            logger.info(
+                f"모의매매 미확정 {len(expired)}건 만료 제거(진입일 < {cutoff})"
+                f" — 남은 미확정 {len(pending)}건"
+            )
+            if not pending:
+                self._write_all(self.signals_path, [])
+                return 0
 
         # 🔴 2026-10-10 수정: 처리 대상(최근 max_rows)만 다루면서 파일 전체를
         #   그 결과로 덮어쓰면, 200건을 넘는 오래된 미확정 기록이 **삭제**된다.

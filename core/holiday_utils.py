@@ -50,27 +50,39 @@ _holiday_cache: dict[int, set[date]] = {}
 
 
 def _get_holidays(year: int) -> set[date]:
+    """해당 연도의 공휴일 집합(holidays 패키지 + constants 합집합).
+
+    🔴 2026-10-10 수정(실버그): `country_holidays("KR")` 무인자 인스턴스는
+    지연 확장이라 가져온 시점에 2026년만 확장돼 있었고, `keys()` 반복은
+    확장된 연도만 돌려준다. 그 결과 **2027년 이후 공휴일이 통째로 누락**되어
+    신정(1/1)·삼일절(3/1)을 거래일로 오판했다(2027-01-01 → True).
+    → 연도별 인스턴스(`years=year`)로 조회하고, 명시 목록과 **합집합**으로
+    보강한다(선거일·임시공휴일 등 패키지 누락 대비).
+    """
     if year in _holiday_cache:
         return _holiday_cache[year]
 
     holidays_set: set[date] = set()
 
-    # 1) holidays 패키지 사용
-    if HAS_HOLIDAYS and _holidays_instance is not None:
+    # 1) holidays 패키지: 연도별 온디맨드(확장 문제 없음)
+    if HAS_HOLIDAYS:
         try:
-            for dt, name in _holidays_instance.items():
+            import holidays as _holidays_pkg
+
+            for dt in _holidays_pkg.country_holidays("KR", years=year).keys():
                 if dt.year == year:
                     holidays_set.add(dt)
         except Exception as e:
-            logger.debug(f"holidays 조회 실패: {e}")
+            logger.debug(f"holidays 조회 실패({year}): {e}")
 
-    # 2) Fallback: constants.py (holidays가 없거나 실패할 때)
-    if not holidays_set:
-        for h_str in HOLIDAYS:
-            try:
-                holidays_set.add(date.fromisoformat(h_str))
-            except ValueError:
-                pass
+    # 2) 명시 목록(constants) 합집합 — 패키지가 놓친 날 보강
+    for h_str in HOLIDAYS:
+        try:
+            d = date.fromisoformat(str(h_str).strip())
+            if d.year == year:
+                holidays_set.add(d)
+        except ValueError:
+            pass
 
     _holiday_cache[year] = holidays_set
     return holidays_set

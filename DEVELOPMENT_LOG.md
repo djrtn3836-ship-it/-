@@ -554,3 +554,20 @@
 [검증] pytest 1657 passed(+18) / ruff F 0 / 실DB 백업 실증(28.3MB, 무결성 ok, 233,611행)
 [신규 테스트] test_db_backup.py(10: 백업·회전·손상·무결성·정산순서) · test_alert_pipeline.py RAW(3)
 [부수] tests/run_all.py 검사기: sqlite3.connect 동기 호출 오탐 제거
+
+## 2026-10-10 — Session 104: 거래일 달력 실버그 + 모의매매 만료 정책
+연속 약점 보완(사용자 무승인 진행 허용):
+
+- **① 거래일 달력 실버그(2027년 전면 오판)**: `holidays.country_holidays("KR")`는
+  지연 확장이라 가져온 시점에 **2026년만 확장**돼 있었다 → `_get_holidays(2027+)`가
+  빈 집합 + constants도 2026만 → **2027년 모든 공휴일을 거래일로 오판**
+  (실측: `is_trading_day("2027-01-01") → True`, 삼일절도 True).
+  영향: 2027-01-01부터 휴장일에 앱이 가동(재연결·분석·알림 낭비).
+  → 연도별 인스턴스(`years=year`) 조회 + constants **합집합**으로 수정.
+  [검증] 2027-01-01/03-01/12-25 전부 False, 2027-01-04 True, 2028-03-01 False.
+- **② 모의매매 미확정 무한 누적**: 진입일이 OHLCV 창(60일) 밖인 기록은 영원히
+  채점 불가인데 파일에 계속 남아 무한 성장(매 채점마다 전체 읽기/쓰기).
+  → `PAPER_PENDING_MAX_DAYS`(기본 45일) 초과분 자동 정리 + 로그.
+
+[검증] pytest 1672 passed(+15) / ruff F 0 / check-only 0건
+[신규 테스트] test_holiday_utils.py(10) · test_paper_trader 만료(2)

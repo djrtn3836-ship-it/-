@@ -109,6 +109,23 @@ class TestSettle:
         after = t._load_jsonl(t.signals_path)
         assert len(after) == before, f"미확정 {before}건이 {len(after)}건으로 삭제됨"
 
+    def test_old_pending_expires(self, tmp_path):
+        """진입일이 너무 오래된 미확정은 영구 누적되지 않고 정리된다."""
+        from datetime import datetime as _dt
+        t = _trader(tmp_path, [100.0])
+        old_ts = _dt(2020, 1, 1, 10, 0, 0).timestamp()
+        t.record_signal("005930", "BUY", 100.0, ts=old_ts)
+        settled = asyncio.run(t.settle_pending())
+        assert settled == 0
+        assert t._load_jsonl(t.signals_path) == [], "만료 미확정이 정리되지 않음"
+
+    def test_recent_pending_not_expired(self, tmp_path):
+        """창 안의 미확정은 보존되어야 한다(만료 정책 과적용 방지)."""
+        t = _trader(tmp_path, [100.0])
+        t.record_signal("005930", "BUY", 100.0, ts=_TS)
+        asyncio.run(t.settle_pending())  # 데이터 부족 → 보류
+        assert len(t._load_jsonl(t.signals_path)) == 1
+
     def test_settlement_is_reproducible(self, tmp_path):
         first = _trader(tmp_path, [100.0, 103.0] * 8)
         first.record_signal("005930", "BUY", 100.0, ts=_TS)
