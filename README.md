@@ -157,9 +157,10 @@ scanner/ core/ data/ (기존 공존 — Strangler Fig 진행 중)
 평일 17:05 텔레그램 리포트 / 대시보드 11번 섹션. **실제 주문은 발생하지 않는다.**
 (17:05·17:15는 일봉 수집 16:30 이후 — 신선한 종가로 채점하기 위한 순서)
 
-**스케줄러 21잡**: daily_report · weekly_pdf · momentum_report(08:30) · db_backup(07:30) ·
+**스케줄러 23잡**: daily_report · weekly_pdf · momentum_report(08:30) · db_backup(07:30) ·
 disk_check(매시 :07) · db_maintenance(일 03:40) ·
 supply_demand(16:35) ·
+morning_briefing(08:35) · evening_briefing(17:25) ·
 macro_update · market_risk_check(16:45) · daily_ohlcv(16:30) · paper_settle(17:05) ·
 calibration_settle(17:15) · correlation_check(17:00) · dashboard(17:30) ·
 data_readiness(일) · universe_refresh(토) · phase_transition_check · alert_verifier ·

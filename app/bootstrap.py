@@ -421,6 +421,23 @@ class Bootstrapper(TracedService):
         self._alert_last_at[key] = _now
         return True
 
+    async def _send_briefing(self, kind: str) -> None:
+        """종합 브리핑 발송(아침/저녁). 실패해도 조용히 넘어간다."""
+        try:
+            from report.briefing import build_briefing
+
+            text = await build_briefing(self.db, kind=kind, paper_trader=self.paper_trader)
+            self._enqueue_admin_message(text)
+            debug_tower.log("SYSTEM", "BRIEFING_SENT", {"kind": kind})
+        except Exception as e:
+            logger.warning(f"브리핑 생성 실패(무시): {e}")
+
+    async def _run_morning_briefing(self) -> None:
+        await self._send_briefing("morning")
+
+    async def _run_evening_briefing(self) -> None:
+        await self._send_briefing("evening")
+
     async def _run_supply_demand(self) -> None:
         """일별 수급(외국인/기관) 수집 — 판단에는 아직 미반영(측정용 태그만)."""
         if not is_trading_day() or not self.kiwoom or not self.db or not self.monitor:
@@ -985,6 +1002,16 @@ class Bootstrapper(TracedService):
             "supply_demand", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            self._run_morning_briefing,
+            CronTrigger(day_of_week="mon-fri", hour=8, minute=35, timezone="Asia/Seoul"),
+            "morning_briefing", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
+            self._run_evening_briefing,
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=25, timezone="Asia/Seoul"),
+            "evening_briefing", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_dashboard,
             CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
             "dashboard", max_retries=1, retry_delay=30,
@@ -1005,7 +1032,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 21
+        self.startup_details["job_count"] = 23
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
