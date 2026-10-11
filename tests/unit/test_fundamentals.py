@@ -64,10 +64,14 @@ class TestProvider:
         return asyncio.run(get_fundamentals("005930", _FakeDart(fin)))
 
     def test_partial_data_keeps_none_out(self, tmp_path, monkeypatch):
-        f = self._get(tmp_path, {"매출액": 333.6e12, "영업이익": 43.6e12, "부채총계": 1e11, "자본총계": 3.4e11}, monkeypatch)
-        assert "revenue" in f and "operating_profit" in f
+        # 부채비율은 커넥터(dart_connector)가 계산해 넘긴다 — 여기선 계산 결과를 흉내낸다
+        f = self._get(
+            tmp_path,
+            {"매출액": 333.6e12, "영업이익": 43.6e12, "부채비율": 29.9},
+            monkeypatch,
+        )
+        assert "revenue" in f and "operating_profit" in f and f["debt_ratio"] == 29.9
         assert "net_profit" not in f and "roe" not in f  # 결측은 키 자체가 없다
-        assert f["debt_ratio"] > 0
 
     def test_empty_financials_returns_empty(self, tmp_path, monkeypatch):
         assert self._get(tmp_path, {}, monkeypatch) == {}
