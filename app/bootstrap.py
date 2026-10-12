@@ -277,7 +277,14 @@ class Bootstrapper(TracedService):
             return False
 
     def manage_pid(self) -> None:
-        """단일 인스턴스 보장: 살아있는 인스턴스가 있으면 중복 실행을 차단한다."""
+        """단일 인스턴스 보장: 살아있는 인스턴스가 있으면 중복 실행을 차단한다.
+
+        🔴 2026-10-12 사고: PID 파일 가드가 뚫려 4개 인스턴스가 동시 실행
+           (같은 봇 폴링 Conflict + SQLite lock → 오류 텔레그램 폭주).
+           → 포트 소켓 락을 1차 방어로 추가. CWD·PID 재사용·권한 문제에
+             영향받지 않아 가장 확실하다(포트는 시스템 전역 자원).
+        """
+        # 인스턴스 락(포트 47653)은 app/main.py 최상단에서 획득한다(더 이른 방어).
         my_pid = os.getpid()
         if PID_FILE.exists():
             try:
@@ -1397,7 +1404,12 @@ class Bootstrapper(TracedService):
 
                     if safety_result.get("action") == "BLOCK_ALL":
                         triggered = safety_result.get("triggered", [])
-                        logger.critical(f"SafetyGuard triggered: {triggered}")
+                        if safety_result.get("should_alert"):
+                            # 🔴 2026-10-12: 차단 중 10초마다 CRITICAL 도배(로그 폭주)
+                            #    → 알림 쿨다운(30분)에 맞춰 기록도 함께 억제
+                            logger.critical(f"SafetyGuard triggered: {triggered}")
+                        else:
+                            logger.debug(f"SafetyGuard 차단 유지 중: {[t.get('condition') for t in triggered if isinstance(t, dict)]}")
                         if safety_result.get("should_alert"):
                             conds = [t.get("condition") for t in triggered if isinstance(t, dict)]
                             await self._send_error_alert(
@@ -1473,6 +1485,33 @@ class Bootstrapper(TracedService):
         debug_tower.log("SYSTEM", "RECONNECT_SUCCESS", {})
 
     async def _send_error_alert(self, msg: str, detail: str = "") -> None:
+        """오류 알림 발송.
+
+        🔴 2026-10-12 사고: SQLite lock 반복 → 같은 오류가 매번 발송돼 폭주.
+           → ① 동일 오류(제목+상세) 15분 쿨다운 ② 전체 10분 내 10건 상한.
+        """
+        import time as _t
+
+        now = _t.monotonic()
+        seen = getattr(self, "_error_alert_last", None)
+        if seen is None:
+            seen = {}
+            self._error_alert_last = seen
+        key = f"{msg}|{detail[:80]}"
+        last = seen.get(key)
+        if last is not None and now - last < 900:
+            logger.info(f"오류 알림 억제(동일 오류 15분 쿨다운): {msg}")
+            return
+        stamps = getattr(self, "_error_alert_stamps", None)
+        if stamps is None:
+            stamps = []
+            self._error_alert_stamps = stamps
+        stamps[:] = [t for t in stamps if now - t < 600]
+        if len(stamps) >= 10:
+            logger.warning(f"오류 알림 억제(10분 10건 상한 초과): {msg}")
+            return
+        seen[key] = now
+        stamps.append(now)
         try:
             text = (
                 f"🚨 <b>시스템 오류</b>\n"

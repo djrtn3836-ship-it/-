@@ -46,6 +46,33 @@ from core.holiday_utils import is_trading_day
 trace = get_tracer(__name__)
 
 _shutdown_event: asyncio.Event | None = None
+_INSTANCE_SOCK = None  # 단일 인스턴스 락(프로세스 생존 동안 유지)
+
+
+def acquire_instance_lock() -> None:
+    """중복 실행 1차 방어(포트 소켓 락) — 부트스트랩 '이전'에 즉시 실행.
+
+    🔴 2026-10-12 사고: 예약작업이 매시간 새 인스턴스를 띄웠는데 기존 PID 가드
+       (bootstrap 마지막 줄)가 너무 늦어 4개가 동시 실행 → 같은 봇 폴링 Conflict
+       + SQLite lock → 오류 텔레그램 폭주. 포트 락은 시스템 전역이라
+       CWD·PID 재사용과 무관하게 즉시 중복을 차단한다.
+    """
+    global _INSTANCE_SOCK
+    import os as _os
+    import socket
+
+    port = int(_os.getenv("INSTANCE_LOCK_PORT", "47653") or "47653")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", port))  # SO_REUSEADDR 미설정 = 배타 락
+        s.listen(1)
+        _INSTANCE_SOCK = s
+    except OSError:
+        from core.logger import setup_logger
+
+        setup_logger("main").critical("이미 실행 중인 인스턴스 감지(인스턴스 락 점유) — 중복 실행 중단")
+        print("[SKIP] 이미 실행 중인 인스턴스가 있습니다. 중복 실행을 중단합니다.")
+        sys.exit(0)
 
 
 def _signal_handler(sig: int, frame: Any) -> None:
@@ -60,6 +87,7 @@ async def main() -> None:
     """V10 시스템 메인 코루틴."""
     global _shutdown_event
     _shutdown_event = asyncio.Event()
+    acquire_instance_lock()
 
     token = bind_trace_id(f"SYS-{new_trace_id()}")
     try:
