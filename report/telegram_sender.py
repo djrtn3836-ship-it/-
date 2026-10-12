@@ -80,6 +80,16 @@ class TelegramSender:
         ticker = report.get("ticker", "UNKNOWN")
         debug_tower.log(ticker, "TELEGRAM_SEND_START", {"action": action})
 
+        # 🔴 2026-10-12 피드백: 숫자 코드만으로는 종목 식별이 어렵다
+        #   → 모든 알림에 종목명을 주입(삼성전자(005930)). 실패해도 무해.
+        if isinstance(report, dict) and report.get("ticker") and not report.get("name"):
+            try:
+                from core.stock_names import stock_name
+
+                report["name"] = stock_name(str(report["ticker"]))
+            except Exception:
+                pass
+
         if action in ("ERROR", "IGNORE"):
             debug_tower.log(ticker, "TELEGRAM_SKIP", {"action": action})
             return None

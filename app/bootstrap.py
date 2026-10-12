@@ -414,6 +414,16 @@ class Bootstrapper(TracedService):
         except Exception as e:
             logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
 
+    @staticmethod
+    def _alert_hours_ok() -> bool:
+        """신호 알림 허용 시간 = 거래일 09:00~15:29 (KST). 기록·모의매매와 무관."""
+        try:
+            from core.holiday_utils import is_market_open
+
+            return bool(is_market_open())
+        except Exception:
+            return True  # 확인 불가 시 알림 허용(가용성 우선)
+
     def _should_send_alert(self, ticker: str, action: str, now: Optional[float] = None) -> bool:
         """같은 종목·행동의 반복 알림을 억제한다 (기본 30분).
 
@@ -1316,9 +1326,13 @@ class Bootstrapper(TracedService):
                         "EVENT_EXIT",
                         "EVENT_LIFECYCLE_ADVICE",
                     ):
+                        # 🔴 2026-10-12: 장외(시간외단일가 ~18:00) 틱으로 만든 신호는
+                        #   체결 불가한 가격이라 오해를 부른다 → 거래시간에만 알림.
+                        #   (기록·모의매매는 계속 — 측정 데이터는 유지)
                         # 🔴 2026-10-10 알림 정밀도: 같은 종목·행동 반복 알림 억제
-                        #   (5분 스로틀로도 같은 종목이 계속 신호를 내면 알림이 반복됐다)
-                        _suppressed = not self._should_send_alert(ticker, action)
+                        _suppressed = (not self._alert_hours_ok()) or (
+                            not self._should_send_alert(ticker, action)
+                        )
                         if _suppressed:
                             debug_tower.log(ticker, "ALERT_SUPPRESSED", {"action": action})
                             success = False
@@ -1409,7 +1423,17 @@ class Bootstrapper(TracedService):
                             #    → 알림 쿨다운(30분)에 맞춰 기록도 함께 억제
                             logger.critical(f"SafetyGuard triggered: {triggered}")
                         else:
-                            logger.debug(f"SafetyGuard 차단 유지 중: {[t.get('condition') for t in triggered if isinstance(t, dict)]}")
+                            # 유지 중 로그도 조건이 바뀌거나 30분마다만(디버그 로그 폭주 방지)
+                            _conds = sorted(
+                                t.get("condition") for t in triggered if isinstance(t, dict)
+                            )
+                            _now_sg = time.time()
+                            if _conds != getattr(self, "_sg_last_conds", None) or (
+                                _now_sg - getattr(self, "_sg_last_log_ts", 0.0) >= 1800
+                            ):
+                                logger.debug(f"SafetyGuard 차단 유지 중: {_conds}")
+                                self._sg_last_conds = _conds
+                                self._sg_last_log_ts = _now_sg
                         if safety_result.get("should_alert"):
                             conds = [t.get("condition") for t in triggered if isinstance(t, dict)]
                             await self._send_error_alert(
