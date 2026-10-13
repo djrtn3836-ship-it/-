@@ -449,6 +449,16 @@ class KiwoomConnectorV512:
                                 if len(_raw_date) == 8 and _raw_date.isdigit()
                                 else ""
                             )
+                            def _signed_int(v: Any) -> Optional[int]:
+                                """수급 순매수는 부호가 의미 있다(음수=순매도). 결측은 None."""
+                                try:
+                                    t = str(v).strip().replace(",", "")
+                                    if t in ("", "-", "+", "None"):
+                                        return None
+                                    return int(float(t))
+                                except (TypeError, ValueError):
+                                    return None
+
                             result: Dict[str, Any] = {
                                 "symbol": ticker,
                                 "date": _bar_date,
@@ -457,6 +467,11 @@ class KiwoomConnectorV512:
                                 "low": _abs_price(record.get("low")) or _close,
                                 "close": _close,
                                 "volume": int(str(record.get("vol") or 0) or 0),
+                                # 🔴 2026-10-13: ka10060 레코드에 수급이 들어 있다(실측).
+                                #   외국인수급(ka10008)·기관수급(ka10009)은 URI 미지원 API ID였다.
+                                "foreign_net": _signed_int(record.get("frgnr_invsr")),
+                                "inst_net": _signed_int(record.get("orgn")),
+                                "personal_net": _signed_int(record.get("ind_invsr")),
                                 "raw": data,
                             }
                             if callback:
@@ -485,14 +500,17 @@ class KiwoomConnectorV512:
                 async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        if "return_msg" in data or "return_code" in data:
+                            # API 오류 응답 — 0으로 위장하지 않는다(2026-10-13)
+                            return {"error": f"api_error: {str(data.get('return_msg'))[:80]}"}
                         net_buy: Any = data.get("net_buy")
                         if net_buy is None:
                             output = data.get("output", [])
                             if output and isinstance(output, list) and len(output) > 0:
-                                net_buy = output[0].get("net_buy", 0)
+                                net_buy = output[0].get("net_buy")
                             else:
-                                net_buy = 0
                                 logger.warning(f"⚠️ 외국인 수급 응답 구조 예상과 다름: {list(data.keys())}")
+                                return {"error": "unexpected_structure"}
                         result = {"symbol": ticker, "net_buy": net_buy, "raw": data}
                         if callback:
                             callback(result)

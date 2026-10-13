@@ -156,11 +156,33 @@ class DartConnector:
             resp.raise_for_status()
 
             content_type = resp.headers.get("Content-Type", "")
-            if "xml" not in content_type and not resp.text.strip().startswith("<?xml"):
+            content = resp.content
+
+            # 🔴 2026-10-13 실측: corpCode.xml은 ZIP(application/x-msdownload)으로
+            #   내려온다. 이 경로(실운영 nonprice 재무 팩터)에는 ZIP 처리가 없어
+            #   매핑이 계속 실패했다(data/dart_connector.py에만 수정돼 있었음).
+            if (
+                content[:2] == b"PK"
+                or "zip" in content_type.lower()
+                or "msdownload" in content_type.lower()
+            ):
+                try:
+                    import io
+                    import zipfile
+
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        names = zf.namelist()
+                        content = zf.read(names[0]) if names else b""
+                    content_type = "application/xml"
+                except Exception as ze:
+                    logger.warning(f"⚠️ DART ZIP 해제 실패: {ze}")
+                    return {}
+
+            if "xml" not in content_type.lower() and not content.strip().startswith(b"<?xml"):
                 logger.warning(f"⚠️ DART 응답이 XML 아님 (Content-Type: {content_type})")
                 return {}
 
-            root = ET.fromstring(resp.content)
+            root = ET.fromstring(content)
             mapping: Dict[str, str] = {}
             for corp in root.findall("list"):
                 corp_code = corp.findtext("corp_code")
@@ -408,7 +430,10 @@ class DartConnector:
         if not self.api_key:
             return {}
 
-        years_to_try: List[str] = [year] if year else ["2024", "2023", "2022"]
+        # 2026-10-13: 하드코딩 연도(2024~2022) → 동적 FY (작년 → 재작년)
+        years_to_try: List[str] = (
+            [year] if year else [str(datetime.now().year - 1), str(datetime.now().year - 2)]
+        )
 
         for try_year in years_to_try:
             try:
@@ -429,29 +454,40 @@ class DartConnector:
                 if data.get("status") == "000":
                     result: Dict[str, float] = {}
                     target = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"]
+                    # 🔴 2026-10-13 실측 이식(data/dart_connector.py와 동일 원칙):
+                    #   ① sj_div(BS/IS)로 연결(CFS)을 거르면 전 항목이 버려진다
+                    #      → 연결/별도 구분은 fs_div(CFS/OFS)
+                    #   ② 결측을 0.0으로 위장하지 않는다(가짜 적자/리스크 방지)
                     for item in data.get("list", []):
-                        if item.get("sj_div") != "CFS":
+                        if item.get("fs_div") not in (None, "", "CFS"):
                             continue
-                        acc = item.get("account_nm")
-                        if acc in target:
-                            raw = str(item.get("thstrm_amount", "0"))
+                        acc = str(item.get("account_nm") or "").replace("(손실)", "").strip()
+                        if acc in target and acc not in result:
+                            raw = str(item.get("thstrm_amount") or "").strip().replace(",", "")
+                            if raw in ("", "-", "None"):
+                                continue  # 결측은 결측대로
                             try:
-                                result[acc] = float(raw.replace(",", ""))
-                            except Exception:
-                                result[acc] = 0.0
+                                result[acc] = float(raw)
+                            except (TypeError, ValueError):
+                                continue
 
-                    revenue = result.get("매출액", 0.0)
-                    op = result.get("영업이익", 0.0)
-                    net = result.get("당기순이익", 0.0)
-                    eq = result.get("자본총계", 0.0)
-                    debt = result.get("부채총계", 0.0)
+                    op = result.get("영업이익")
+                    net = result.get("당기순이익")
+                    eq = result.get("자본총계")
+                    debt = result.get("부채총계")
+                    revenue = result.get("매출액")
 
-                    if revenue > 0:
-                        result["영업이익률"] = (op / revenue) * 100 if op else 0.0
-                    if eq > 0:
-                        result["ROE"] = (net / eq) * 100 if net else 0.0
-                        result["부채비율"] = (debt / eq) * 100 if debt else 0.0
+                    if revenue and revenue > 0 and op is not None:
+                        result["영업이익률"] = (op / revenue) * 100
+                    if eq and eq > 0:
+                        if net is not None:
+                            result["ROE"] = (net / eq) * 100
+                        if debt is not None:
+                            result["부채비율"] = (debt / eq) * 100
 
+                    if not result:
+                        logger.debug(f"ℹ️ {corp_code} {try_year}년 항목 매칭 없음, 다음 연도 시도")
+                        continue
                     logger.debug(f"✅ {corp_code} 재무제표 정규화 완료 ({try_year})")
                     collector_status.record_success("dart_connector", {"year": try_year})
                     return result

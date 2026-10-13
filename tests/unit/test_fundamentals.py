@@ -116,3 +116,30 @@ class TestRegressionGuards:
         assert "_fundamental_part" in src and "fund_tags" in src
         boot = (root / "app" / "bootstrap.py").read_text(encoding="utf-8")
         assert 'analysis["tags"]' in boot, "워커가 태그를 결정/모의매매로 전달하지 않음"
+
+
+class TestProductionDartClient:
+    """🔴 2026-10-13: 실운영 경로(infrastructure/dart/client.py)에 S107 수정이
+    누락돼 있던 사고 — 재무 팩터가 통째로 죽어 있었다. 재발 방지 가드."""
+
+    def _src(self) -> str:
+        root = Path(__file__).resolve().parents[2]
+        return (root / "infrastructure" / "dart" / "client.py").read_text(encoding="utf-8")
+
+    def test_zip_handling_in_production_client(self):
+        src = self._src()
+        assert "zipfile" in src, "운영 DART 클라이언트에 ZIP 해제가 없음(매핑 영구 실패)"
+
+    def test_fs_div_not_sj_div(self):
+        src = self._src()
+        assert 'sj_div") != "CFS"' not in src, "잘못된 sj_div 필터가 부활함(전 항목 폐기)"
+        assert 'fs_div") not in (None, "", "CFS")' in src
+
+    def test_no_zero_fabrication_in_client(self):
+        src = self._src()
+        assert 'thstrm_amount", "0"' not in src, "결측 0.0 위장이 부활함(가짜 적자)"
+        assert "0.0 위장하지 않는다" in src
+
+    def test_dynamic_fiscal_year(self):
+        src = self._src()
+        assert 'datetime.now().year - 1' in src, "회계연도가 하드코딩으로 회귀함"

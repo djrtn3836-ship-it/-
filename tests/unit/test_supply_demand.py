@@ -42,13 +42,19 @@ class _FakeKiwoom:
         self.ok = ok
         self.calls = []
 
-    async def request_tr(self, ticker, tr_type):
+    async def request_tr(self, ticker, tr_type, **kw):
         self.calls.append((ticker, tr_type))
         if not self.ok:
             return {"error": "no_server"}
-        if tr_type == "외국인수급":
-            return {"net_buy": 100}
-        return {"output": [{"net_buy": -50}]}
+        # 2026-10-13: 수급 소스가 일봉(ka10060) 레코드로 바뀜(외국인수급/기관수급 API는 미지원 ID)
+        dt = str(kw.get("dt") or "20261013")
+        return {
+            "symbol": ticker,
+            "date": f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}",
+            "foreign_net": 100,
+            "inst_net": -50,
+            "close": 1000.0,
+        }
 
 
 class _FakeDB:
@@ -68,10 +74,25 @@ class TestCollector:
             collect_supply_demand(k, db, ["005930", "000660"], date_str="2026-10-12", delay=0)
         )
         assert saved == 2
-        assert ("005930", "외국인수급") in k.calls and ("005930", "기관수급") in k.calls
+        assert ("005930", "일봉") in k.calls
         assert db.rows[0]["foreign_net"] == 100.0
         assert db.rows[0]["institution_net"] == -50.0
         assert db.rows[0]["date"] == "2026-10-12"
+
+    def test_bar_date_mismatch_is_skipped(self):
+        """응답 봉 날짜가 요청 날짜와 다르면 저장하지 않는다(오라벨 방지)."""
+
+        class _OldBar(_FakeKiwoom):
+            async def request_tr(self, ticker, tr_type, **kw):
+                r = await super().request_tr(ticker, tr_type, **kw)
+                r["date"] = "2026-10-08"
+                return r
+
+        k, db = _OldBar(), _FakeDB()
+        saved = asyncio.run(
+            collect_supply_demand(k, db, ["005930"], date_str="2026-10-12", delay=0)
+        )
+        assert saved == 0 and db.rows == []
 
     def test_failure_is_silent(self):
         k, db = _FakeKiwoom(ok=False), _FakeDB()

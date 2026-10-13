@@ -81,17 +81,32 @@ async def collect_supply_demand(
 
     saved = 0
     targets = list(tickers)[:max_tickers]
+    dt8 = date_str.replace("-", "")
     for ticker in targets:
         try:
-            f_res = await kiwoom.request_tr(ticker, "외국인수급")
+            # 🔴 2026-10-13 실측: 외국인수급(ka10008)/기관수급(ka10009)은 해당 URI에서
+            #   지원하지 않는 API ID였다(return_code=1). 반면 일봉 차트(ka10060) 레코드에
+            #   frgnr_invsr(외국인)·orgn(기관) 순매수가 들어 있다 → 일봉을 소스로 사용.
+            res = await kiwoom.request_tr(ticker, "일봉", dt=dt8)
             await asyncio.sleep(delay)
-            i_res = await kiwoom.request_tr(ticker, "기관수급")
-            await asyncio.sleep(delay)
+        except TypeError:
+            # dt 미지원 커넥터(구버전) 호환
+            try:
+                res = await kiwoom.request_tr(ticker, "일봉")
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logger.debug(f"[{ticker}] 수급 요청 실패(무시): {e}")
+                continue
         except Exception as e:
             logger.debug(f"[{ticker}] 수급 요청 실패(무시): {e}")
             continue
-        f_net = extract_net(f_res)
-        i_net = extract_net(i_res)
+        if not res or res.get("error"):
+            continue
+        # 응답 봉의 날짜가 요청 날짜와 일치할 때만 저장(오라벨 방지)
+        if str(res.get("date") or "")[:10] != date_str:
+            continue
+        f_net = res.get("foreign_net")
+        i_net = res.get("inst_net")
         if f_net is None and i_net is None:
             continue
         try:
@@ -108,4 +123,8 @@ async def collect_supply_demand(
             logger.debug(f"[{ticker}] 수급 저장 실패(무시): {e}")
 
     logger.info(f"수급 수집 완료: {saved}건 저장(대상 {len(targets)}종목, {date_str})")
+    if saved == 0 and targets:
+        logger.warning(
+            f"⚠️ 수급 저장 0건(대상 {len(targets)}종목) — API 구조/응답 확인 필요(무음 금지)"
+        )
     return saved
