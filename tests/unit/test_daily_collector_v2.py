@@ -48,7 +48,8 @@ class TestCollectorV2:
     def test_kiwoom_is_fallback_with_fixed_date(self):
         src = (_ROOT / "scheduler" / "daily_collector.py").read_text(encoding="utf-8")
         assert "fb.get(\"date\")" in src, "폴백 저장 시 응답 날짜를 쓰지 않음(오라벨 재발)"
-        assert '"비거래일"' not in src, "빈 응답을 휴장으로 단정하는 문구가 남아 있음"
+        # 옛 코드의 오판 문구가 '코드로' 남아 있지 않아야 한다(주석 인용은 허용)
+        assert 'OHLCV 데이터 없음 (비거래일)' not in src, "빈 응답을 휴장으로 단정하는 문구가 남아 있음"
 
     def test_loud_failure_on_trading_day(self):
         src = (_ROOT / "scheduler" / "daily_collector.py").read_text(encoding="utf-8")
