@@ -138,7 +138,7 @@ class TestProductionDartClient:
     def test_no_zero_fabrication_in_client(self):
         src = self._src()
         assert 'thstrm_amount", "0"' not in src, "결측 0.0 위장이 부활함(가짜 적자)"
-        assert "0.0 위장하지 않는다" in src
+        assert "0.0으로 위장하지 않는다" in src
 
     def test_dynamic_fiscal_year(self):
         src = self._src()
