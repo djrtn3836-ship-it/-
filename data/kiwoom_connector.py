@@ -403,7 +403,11 @@ class KiwoomConnectorV512:
             self._reconnecting = False
 
     async def request_tr(
-        self, ticker: str, tr_type: str, callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self,
+        ticker: str,
+        tr_type: str,
+        callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        dt: Optional[str] = None,
     ) -> Dict[str, Any]:
         debug_tower.log(ticker, "TR_REQUEST", {"tr_type": tr_type})
         if self._session is None:
@@ -420,8 +424,8 @@ class KiwoomConnectorV512:
                 "Content-Type": "application/json;charset=UTF-8",
                 "api-id": api_id,
             }
-            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-            body: Dict[str, Any] = {"dt": yesterday, "stk_cd": ticker, "amt_qty_tp": "1", "trde_tp": "0", "unit_tp": "1"}
+            _dt = dt or (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            body: Dict[str, Any] = {"dt": _dt, "stk_cd": ticker, "amt_qty_tp": "1", "trde_tp": "0", "unit_tp": "1"}
             try:
                 async with self._session.post(url, headers=headers, json=body, timeout=_POST_TIMEOUT_10) as resp:
                     if resp.status == 200:
@@ -429,13 +433,30 @@ class KiwoomConnectorV512:
                         chart_list = data.get("stk_invsr_orgn_chart", [])
                         if chart_list:
                             record = chart_list[0]
+                            # 🔴 2026-10-12 사고: ka10060 cur_prc는 부호 접두("-251000")가
+                            #   붙는다 → 하락 종목이 close<=0 → "비거래일"로 대량 오판·누락.
+                            #   또 이 응답에는 open/high/low/vol이 없다(수급 차트) → 0 저장 방지.
+                            def _abs_price(v: Any) -> float:
+                                try:
+                                    return abs(float(str(v).replace("+", "")))
+                                except (TypeError, ValueError):
+                                    return 0.0
+
+                            _close = _abs_price(record.get("cur_prc", 0))
+                            _raw_date = str(record.get("dt") or "")
+                            _bar_date = (
+                                f"{_raw_date[:4]}-{_raw_date[4:6]}-{_raw_date[6:8]}"
+                                if len(_raw_date) == 8 and _raw_date.isdigit()
+                                else ""
+                            )
                             result: Dict[str, Any] = {
                                 "symbol": ticker,
-                                "open": float(record.get("open", 0)),
-                                "high": float(record.get("high", 0)),
-                                "low": float(record.get("low", 0)),
-                                "close": float(record.get("cur_prc", 0)),
-                                "volume": int(record.get("vol", 0)),
+                                "date": _bar_date,
+                                "open": _abs_price(record.get("open")) or _close,
+                                "high": _abs_price(record.get("high")) or _close,
+                                "low": _abs_price(record.get("low")) or _close,
+                                "close": _close,
+                                "volume": int(str(record.get("vol") or 0) or 0),
                                 "raw": data,
                             }
                             if callback:
