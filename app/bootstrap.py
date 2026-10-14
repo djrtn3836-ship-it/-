@@ -415,6 +415,26 @@ class Bootstrapper(TracedService):
             logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
 
     @staticmethod
+    def _in_signal_window(now_dt: Optional[datetime] = None) -> bool:
+        """정규장 신호 창 = 거래일 09:00~15:35 (KST).
+
+        🔴 2026-10-14 장외소음: 시간외단일가(~18:00) 틱이 워커에서 계속 분석돼
+           포지션 재평가/신호 이벤트가 장 마감 후에도 쌓였다(실측 16:32~18:31).
+           → 정규장 외 틱은 분석·기록·모의매매 전부 제외(알림 차단은 별도 유지).
+        15:35 유예: 15:30 동시호가 종료 직후 확정 틱 1회는 허용.
+        """
+        now = now_dt or datetime.now()
+        try:
+            from core.holiday_utils import is_trading_day
+
+            if not is_trading_day(now):
+                return False
+        except Exception:
+            return True  # 판단 불가 시 가용성 우선
+        minutes = now.hour * 60 + now.minute
+        return 9 * 60 <= minutes <= 15 * 60 + 35
+
+    @staticmethod
     def _alert_hours_ok() -> bool:
         """신호 알림 허용 시간 = 거래일 09:00~15:29 (KST). 기록·모의매매와 무관."""
         try:
@@ -1267,6 +1287,17 @@ class Bootstrapper(TracedService):
                     continue
 
                 self._last_data_time = time.time()
+
+                # 🔴 2026-10-14 장외소음 차단: 정규장(09:00~15:35) 외 틱은 분석하지 않는다.
+                #   (시간외단일가 틱 → 장 마감 후에도 이벤트·기록이 계속 쌓이던 문제)
+                if not self._in_signal_window():
+                    _dropped = getattr(self, "_offhours_dropped", 0) + 1
+                    self._offhours_dropped = _dropped
+                    if _dropped == 1 or _dropped % 200 == 0:
+                        logger.info(f"장외 틱 무시 누적 {_dropped}건 (정규장 09:00~15:35만 분석)")
+                    self.message_queue.task_done()
+                    continue
+
                 price = stock_data.get("price")
                 if price is None or float(price) <= 0:
                     self.message_queue.task_done()
