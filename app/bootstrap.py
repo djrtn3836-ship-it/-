@@ -475,6 +475,71 @@ class Bootstrapper(TracedService):
     async def _run_evening_briefing(self) -> None:
         await self._send_briefing("evening")
 
+    async def _catchup_daily_jobs(self) -> None:
+        """기동 시 놓친 일일 잡 자가 복구 (2026-10-15 재부팅/늦은 기동 사고).
+
+        - 정상 08:40 기동 시: 아무 것도 하지 않음(임계 이전)
+        - 16:40 이후 기동 + 오늘 일봉 부재 → 수집
+        - 16:45 이후 기동 → 수급 재수집(멱등 upsert)
+        - 17:10 이후 기동 + 오늘 채점 기록 부재 → 정산+리포트 1회(중복 발송 방지)
+        """
+        try:
+            await asyncio.sleep(45)  # 기동 안정화 후
+            try:
+                if not is_trading_day():
+                    return
+            except Exception:
+                pass
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            mins = now.hour * 60 + now.minute
+
+            if mins >= 16 * 60 + 40:
+                has_today = False
+                try:
+                    rows = await self.db.get_ohlcv("005930", 5)
+                    has_today = any(str(r.get("date", ""))[:10] == today for r in (rows or []))
+                except Exception:
+                    has_today = True  # 확인 불가 시 스킵(오버런 방지)
+                if not has_today:
+                    logger.info("⏪ 놓친 일봉 수집 감지 → 자가 복구 실행")
+                    try:
+                        await self._run_daily_ohlcv()
+                        await self.db._flush_pending()
+                    except Exception as e:
+                        logger.warning(f"일봉 자가 복구 실패(무시): {e}")
+
+            if mins >= 16 * 60 + 45:
+                try:
+                    logger.info("⏪ 수급 자가 복구(멱등) 실행")
+                    await self._run_supply_demand()
+                except Exception as e:
+                    logger.warning(f"수급 자가 복구 실패(무시): {e}")
+
+            if mins >= 17 * 60 + 10:
+                settled_today = False
+                try:
+                    from analytics.paper_trader import SETTLED_PATH
+
+                    if SETTLED_PATH.exists():
+                        lines = [l for l in SETTLED_PATH.read_text(encoding="utf-8").splitlines() if l.strip()]
+                        if lines:
+                            import json as _json
+
+                            settled_today = str(
+                                _json.loads(lines[-1]).get("settled_at", "")
+                            ).startswith(today)
+                except Exception:
+                    settled_today = True  # 확인 불가 시 스킵(중복 리포트 방지)
+                if not settled_today:
+                    logger.info("⏪ 놓친 모의매매 정산 감지 → 자가 복구 실행")
+                    try:
+                        await self._run_paper_settle()
+                    except Exception as e:
+                        logger.warning(f"정산 자가 복구 실패(무시): {e}")
+        except Exception as e:
+            logger.debug(f"자가 복구 스킵: {e}")
+
     async def _run_supply_demand(self) -> None:
         """일별 수급(외국인/기관) 수집 — 판단에는 아직 미반영(측정용 태그만)."""
         if not is_trading_day() or not self.kiwoom or not self.db or not self.monitor:
@@ -1097,6 +1162,9 @@ class Bootstrapper(TracedService):
 
         # 기동 백업: 마지막 백업이 24시간보다 오래됐으면 즉시 1회
         self._backup_if_stale()
+        # ⏪ 2026-10-15 재부팅 사고: 늦게 기동하면 16:30~17:15 잡을 통째로 놓친다
+        #   → 오늘 데이터가 비어 있으면 백그라운드에서 1회 자가 복구한다.
+        self._catchup_task = asyncio.create_task(self._catchup_daily_jobs())
 
         # 기동 디스크 검사(여유 부족이면 즉시 알림)
         _disk_task = asyncio.create_task(self._run_disk_check())
