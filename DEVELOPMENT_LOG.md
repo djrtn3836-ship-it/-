@@ -771,3 +771,10 @@
 미실행 — '주말 유지보수 모드' 기동 옵션 검토 필요. (금요일부터 살아있던 인스턴스는
 주말 잡을 정상 실행했음 — 내 재시작 킬로 이번 주만 보정 발생, 정직 기록)
 [검증] pytest 1813 passed(+2) / test_universe_refresh_fix.py(2)
+
+### Session 121b (2026-10-17 00:5x) — 테스트 계약 정정 + CSV 동기화
+- `test_universe_stability.py::TestScheduledRefresh` 3건 실패 원인: 테스트가 **버그에
+  맞춰 작성**되어 있었다(RuntimeMode.is_safe를 staticmethod로 주입 = 구버그 호출 계약).
+  → get_runtime_mode() 페이크 주입 방식으로 정정(수정된 계약 검증). 18 passed.
+- 유니버스 CSV(659종목) 실행폴더→레포 동기화(3자 대조 0).
+[검증] pytest 1813 passed 전체 재통과

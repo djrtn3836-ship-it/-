@@ -94,10 +94,21 @@ class TestMarketPreservation:
 
 
 class TestScheduledRefresh:
-    def test_skips_in_safe_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @staticmethod
+    def _patch_mode(monkeypatch: pytest.MonkeyPatch, safe: bool) -> None:
+        """🔴 2026-10-17 수정: is_safe는 property — 테스트가 버그(is_safe() 호출)에
+        맞춰 staticmethod를 주입하고 있었다. 수정된 계약(인스턴스 property)에 맞게
+        get_runtime_mode()를 페이크로 교체한다."""
         import core.runtime_mode as rm
 
-        monkeypatch.setattr(rm.RuntimeMode, "is_safe", staticmethod(lambda: True))
+        class _FakeMode:
+            is_safe = safe
+            mock_data = False
+
+        monkeypatch.setattr(rm, "get_runtime_mode", lambda: _FakeMode())
+
+    def test_skips_in_safe_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_mode(monkeypatch, True)
         calls: list = []
         monkeypatch.setattr(uf, "UniverseFetcher", lambda *a, **k: calls.append(1))
 
@@ -107,10 +118,7 @@ class TestScheduledRefresh:
         assert calls == []
 
     def test_rejects_shrunken_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import core.runtime_mode as rm
-
-        monkeypatch.setattr(rm.RuntimeMode, "is_safe", staticmethod(lambda: False))
-        monkeypatch.setattr(rm.RuntimeMode, "mock_data", False)
+        self._patch_mode(monkeypatch, False)
         monkeypatch.setattr(uf, "_count_existing", lambda p: 500)
 
         class _Fetcher:
@@ -131,11 +139,9 @@ class TestScheduledRefresh:
         assert saved == []
 
     def test_saves_when_healthy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import core.runtime_mode as rm
         from scheduler.universe_fetcher import FetchResult, UniverseEntry
 
-        monkeypatch.setattr(rm.RuntimeMode, "is_safe", staticmethod(lambda: False))
-        monkeypatch.setattr(rm.RuntimeMode, "mock_data", False)
+        self._patch_mode(monkeypatch, False)
         monkeypatch.setattr(uf, "_count_existing", lambda p: 100)
 
         class _Fetcher:
@@ -153,10 +159,7 @@ class TestScheduledRefresh:
         assert result["new"] == 120
 
     def test_empty_fetch_keeps_existing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import core.runtime_mode as rm
-
-        monkeypatch.setattr(rm.RuntimeMode, "is_safe", staticmethod(lambda: False))
-        monkeypatch.setattr(rm.RuntimeMode, "mock_data", False)
+        self._patch_mode(monkeypatch, False)
 
         class _Fetcher:
             def fetch(self, pages: int = 4):
