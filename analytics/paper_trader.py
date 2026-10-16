@@ -51,6 +51,10 @@ BASELINE_UP_PROB = float(os.getenv("PAPER_BASELINE_UP_PROB", "44.3"))
 TRADEABLE_ACTIONS: Set[str] = {"SIGNAL_ENTRY", "BUY", "SELL"}
 
 
+def _avg(vals: List[float]) -> float:
+    return sum(vals) / len(vals) if vals else 0.0
+
+
 def _wilson_ci(wins: int, n: int, z: float = 1.96) -> Tuple[float, float]:
     """승률의 Wilson 95% 신뢰구간(%). 소표본에서 정규근사보다 정확하다."""
     if n <= 0:
@@ -270,6 +274,9 @@ class PaperTrader:
             "avg_return": round(sum(rets) / n, 4),
             "median_return": round(mid, 4),
             "beats_baseline": bool(lo > BASELINE_UP_PROB),   # 신뢰구간 하한이 기준선을 넘어야 유의
+            # 2026-10-16: 기대값 운영(Top 트레이더 방식) — 승/패 평균과 손익분기 승률.
+            "avg_win": round(_avg([float(r.get("return_pct") or 0.0) for r in rows if r.get("win")]), 4),
+            "avg_loss": round(_avg([float(r.get("return_pct") or 0.0) for r in rows if not r.get("win")]), 4),
         }
 
     def format_report(self, days: int = 90) -> str:
@@ -292,6 +299,12 @@ class PaperTrader:
                 f"(95% {st['ci_low']:.0f}~{st['ci_high']:.0f}%) "
                 f"평균 {st['avg_return']:+.2f}% n={st['n']} {mark}"
             )
+            aw, al = st.get("avg_win") or 0.0, st.get("avg_loss") or 0.0
+            if aw > 0 and al < 0:
+                be = abs(al) / (aw + abs(al)) * 100.0
+                lines.append(
+                    f"  ↳ 승 +{aw:.1f}% / 패 {al:.1f}% → 손익분기 승률 <b>{be:.0f}%</b>"
+                )
         if s["by_tag"]:
             lines.append("━━━ 조건 태그별(5일) ━━━")
             for tag, st in s["by_tag"].items():
