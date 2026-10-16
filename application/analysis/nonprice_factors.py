@@ -63,6 +63,9 @@ class NonPriceFactors:
     sentiment_score: Optional[float] = None      # -1.0 ~ +1.0
     flow_foreign_5d: Optional[float] = None      # 외국인 5거래일 순매수 합계(주)
     flow_inst_5d: Optional[float] = None         # 기관 5거래일 순매수 합계(주)
+    flow_foreign_streak: Optional[int] = None    # 외국인 연속 순매수(+)/순매도(-) 일수
+    flow_inst_streak: Optional[int] = None       # 기관 연속 일수
+    flow_price_5d: Optional[float] = None        # 같은 창의 주가 5일 수익률(%)
     fund_tags: List[str] = field(default_factory=list)   # 재무 태그(fund_risky 등)
     fund_risk: Optional[bool] = None                     # 재무 리스크 플래그
     sentiment_impact: Optional[float] = None     # 0.0 ~ 1.0
@@ -113,6 +116,29 @@ def build_tags(f: NonPriceFactors) -> List[str]:
         tags.append("flow_i_buy" if f.flow_inst_5d > 0 else "flow_i_sell")
     if (f.flow_foreign_5d or 0) > 0 and (f.flow_inst_5d or 0) > 0:
         tags.append("flow_both_buy")  # 쌍끌이(외국인+기관 동반 순매수)
+    # 🔴 2026-10-16(사용자 제안 — 기관 수급 추적 강화, 측정 전용):
+    #   연속성(3일+)과 다이버전스(가격↓+외국인 매수=매집 의심)는 기관의
+    #   분할 집행 패턴을 사후 추적하는 신호. 점수 불변 — 태그 승률로 검증 후 반영.
+    fs = f.flow_foreign_streak
+    if fs is not None and fs >= 3:
+        tags.append("flow_f_streak3")
+    elif fs is not None and fs <= -3:
+        tags.append("flow_f_dnest3")
+    isr = f.flow_inst_streak
+    if isr is not None and isr >= 3:
+        tags.append("flow_i_streak3")
+    if fs is not None and isr is not None and fs >= 2 and isr >= 2:
+        tags.append("flow_both_streak")
+    try:
+        p5 = f.flow_price_5d
+        f5 = f.flow_foreign_5d
+        if p5 is not None and f5 is not None:
+            if p5 <= -2.0 and f5 > 0:
+                tags.append("flow_div_bull")   # 가격 하락 + 외국인 순매수 = 매집 의심
+            elif p5 >= 2.0 and f5 < 0:
+                tags.append("flow_div_bear")   # 상승 + 순매도 = 분산 의심
+    except Exception:
+        pass
     # 재무 태그(2026-10-10): 데이터가 있을 때만(없으면 태그 없음 — 추정 금지)
     if f.fund_tags:
         tags.extend(f.fund_tags)
@@ -204,6 +230,7 @@ async def _flow_part(ticker: str, db: Any) -> Dict[str, Any]:
         return {}
     if not rows:
         return {}
+    rows = sorted(rows, key=lambda r: str(r.get("date", "")))
     out: Dict[str, Any] = {}
     f_vals = [float(r["foreign_net"]) for r in rows if r.get("foreign_net") is not None]
     i_vals = [float(r["institution_net"]) for r in rows if r.get("institution_net") is not None]
@@ -211,6 +238,38 @@ async def _flow_part(ticker: str, db: Any) -> Dict[str, Any]:
         out["flow_foreign_5d"] = round(sum(f_vals), 1)
     if i_vals:
         out["flow_inst_5d"] = round(sum(i_vals), 1)
+
+    def _streak(key: str) -> int:
+        st = 0
+        for r in reversed(rows):
+            v = r.get(key)
+            if v is None:
+                break
+            v = float(v)
+            if v == 0:
+                break
+            sgn = 1 if v > 0 else -1
+            if st == 0:
+                st = sgn
+            elif (st > 0) == (sgn > 0):
+                st += sgn
+            else:
+                break
+        return st
+
+    if f_vals:
+        out["flow_foreign_streak"] = _streak("foreign_net")
+    if i_vals:
+        out["flow_inst_streak"] = _streak("institution_net")
+    try:
+        ol = await asyncio.wait_for(db.get_ohlcv(ticker, 7), timeout=FETCH_TIMEOUT_SEC)
+        ol = sorted(ol or [], key=lambda r: str(r.get("date", "")))
+        closes = [float(r.get("close") or 0) for r in ol if float(r.get("close") or 0) > 0]
+        if len(closes) >= 2:
+            base = closes[-6] if len(closes) >= 6 else closes[0]
+            out["flow_price_5d"] = round((closes[-1] - base) / base * 100.0, 2)
+    except Exception:
+        pass
     return out
 
 
