@@ -154,9 +154,14 @@ async def scheduled_universe_refresh() -> Dict[str, Any]:
     except (AttributeError, ValueError):
         pass
 
-    from core.runtime_mode import RuntimeMode
+    # 🔴 2026-10-17 실버그 수정: is_safe는 property인데 메서드로 호출(is_safe())해
+    #   TypeError → 토 09:00 자동 갱신이 **한 번도 성공한 적 없었다**(예외 흡수되어
+    #   "실패(기존 CSV 유지)" 로그만 반복). 또 클래스에서 직접 접근(RuntimeMode.is_safe)은
+    #   property 객체(항상 참)를 돌려주므로 반드시 인스턴스(get_runtime_mode())로 읽는다.
+    #   (is_safe는 mock_data를 포함하므로 별도 mock_data 검사 불필요)
+    from core.runtime_mode import get_runtime_mode
 
-    if RuntimeMode.is_safe() or RuntimeMode.mock_data:
+    if get_runtime_mode().is_safe:
         logger.info("[universe] 안전모드 → 자동 갱신 건너뜀")
         return {"status": "skipped", "reason": "safe_mode"}
 

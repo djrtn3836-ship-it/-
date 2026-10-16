@@ -757,3 +757,17 @@
   ohlcv 테이블(티커 ^KS11 등)에 저장 → 유니버스 동일가중(생존편향) 대신 정확한
   벤치마크. 1행 시리즈 저장 생략 가드(^KS200 사고 재발 방지).
 [검증] pytest 1811 passed(+9) / test_hour_analysis.py(6) test_index_backfill.py(3)
+
+## 2026-10-17 — Session 121: 유니버스 자동 갱신 실버그 수정 + 주말 잡 보정
+발견: scheduler/universe_fetcher.py가 `RuntimeMode.is_safe()`(property를 메서드 호출)
+→ TypeError → 토 09:00 유니버스 자동 갱신이 **P6-1(10-01) 이후 한 번도 성공한 적 없음**
+(예외 흡수로 "실패(기존 CSV 유지)" 로그만 반복). CSV가 10-09 이후 방치(515종목).
+수정: get_runtime_mode().is_safe 인스턴스 접근 + 회귀 테스트 2건.
+실행: 수동 갱신 성공 — **515 → 659종목** (KOSPI 262 / KOSDAQ 397).
+주말 보정(앱은 비거래일 기동 불가 — 설계): universe_refresh·data_readiness 수동 실행.
+- data_readiness: **ml_ready=True 도달** (decisions 42,672 / outcomes 25,386) → 알림 발송
+- db_maintenance(일 03:40)는 수급 백필 쓰기 중 VACUUM 위험 → 생략(다음 주 정상)
+구조 이슈(다음 승인 안건): 재부팅으로 금요일 인스턴스가 죽으면 주말 잡(토/일) 전부
+미실행 — '주말 유지보수 모드' 기동 옵션 검토 필요. (금요일부터 살아있던 인스턴스는
+주말 잡을 정상 실행했음 — 내 재시작 킬로 이번 주만 보정 발생, 정직 기록)
+[검증] pytest 1813 passed(+2) / test_universe_refresh_fix.py(2)
