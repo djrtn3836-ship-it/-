@@ -415,6 +415,46 @@ class Bootstrapper(TracedService):
             logger.warning(f"OpsMonitor 알림 전송 실패: {e}")
 
     @staticmethod
+    def _sig_min_conf() -> float:
+        """신호 알림 최소 신뢰도(잠정 0.60 — 채점 데이터로 추후 조정)."""
+        import os as _os
+
+        try:
+            return float(_os.getenv("SIGNAL_MIN_CONFIDENCE", "0.60") or "0.60")
+        except ValueError:
+            return 0.60
+
+    @staticmethod
+    def _classify_trade_type(analysis: Dict[str, Any]) -> str:
+        """신호 유형 잠정 라벨: Reversal 우세=단타, Trend/Breakout 우세=스윙.
+
+        🔴 2026-10-16 사용자 질문("단타/스윙/장기 구분이 없냐")에서 도입.
+        - 검증 전 라벨(기록·표시 전용 — 점수·행동 불변). 지평(1/3/5/10일)
+          승률이 쌓이면 유형 판정 규칙을 데이터로 교체한다.
+        - '장기' 신호는 현재 전략에 없음(장기 전략 신설 시 추가).
+        """
+        try:
+            ss = analysis.get("strategy_scores") or {}
+            inner = ss.get("scores") if isinstance(ss.get("scores"), dict) else ss
+            details = list(inner.get("details") or [])
+        except Exception:
+            details = []
+        side = str(analysis.get("action") or "")
+        best_name, best_pct = "", -1.0
+        for d in details:
+            try:
+                name, rest = str(d).split(":", 1)
+                act = rest.strip().split(" ")[0]
+                pct = float(rest.split("(")[1].split("%")[0])
+            except (ValueError, IndexError):
+                continue
+            if act == side and pct > best_pct:
+                best_name, best_pct = name.strip(), pct
+        mapping = {"Trend": "스윙", "Breakout": "스윙", "Reversal": "단타"}
+        label = mapping.get(best_name, "")
+        return f"{label}(추정)" if label else ""
+
+    @staticmethod
     def _in_signal_window(now_dt: Optional[datetime] = None) -> bool:
         """정규장 신호 창 = 거래일 09:00~15:35 (KST).
 
@@ -1417,6 +1457,8 @@ class Bootstrapper(TracedService):
                         await db.save_decision(analysis)
 
                     action = str(analysis.get("action", ""))
+                    if action in ("SIGNAL_ENTRY", "BUY", "SELL"):
+                        analysis["trade_type"] = self._classify_trade_type(analysis)
                     if action in (
                         "SIGNAL_ENTRY",
                         "EVENT_SL_TRAIL",
@@ -1429,11 +1471,22 @@ class Bootstrapper(TracedService):
                         #   체결 불가한 가격이라 오해를 부른다 → 거래시간에만 알림.
                         #   (기록·모의매매는 계속 — 측정 데이터는 유지)
                         # 🔴 2026-10-10 알림 정밀도: 같은 종목·행동 반복 알림 억제
-                        _suppressed = (not self._alert_hours_ok()) or (
-                            not self._should_send_alert(ticker, action)
+                        # 🔴 2026-10-16 추가(데이터 근거): ① 하위 신뢰도 신호 알림 제외
+                        #   (상위50% 승률 34.5% vs 하위50% 21.6% 실측) ② 안전가드 차단 중
+                        #   진입 알림 보류(차단 중 신호는 시장보다도 나쁨). 기록·측정은 유지.
+                        _is_entry = action in ("SIGNAL_ENTRY", "BUY", "SELL")
+                        _low_conf = _is_entry and float(analysis.get("confidence") or 0.0) < self._sig_min_conf()
+                        _blocked = _is_entry and bool(getattr(self, "_safety_blocked", False))
+                        _suppressed = (
+                            (not self._alert_hours_ok())
+                            or _low_conf
+                            or _blocked
+                            or (not self._should_send_alert(ticker, action))
                         )
                         if _suppressed:
-                            debug_tower.log(ticker, "ALERT_SUPPRESSED", {"action": action})
+                            debug_tower.log(ticker, "ALERT_SUPPRESSED", {
+                                "action": action, "low_conf": _low_conf, "safety_blocked": _blocked,
+                            })
                             success = False
                         else:
                             # 🔴 2026-10-10: 전송을 백그라운드 큐로 위임(워커 비블로킹).
@@ -1456,6 +1509,7 @@ class Bootstrapper(TracedService):
                                     or 0.0
                                 ),
                                 confidence=float(analysis.get("confidence") or 0.0),
+                                trade_type=str(analysis.get("trade_type") or ""),
                                 regime=str(analysis.get("regime") or ""),
                                 tags=analysis.get("tags"),
                                 factors=analysis.get("factors"),
@@ -1515,6 +1569,7 @@ class Bootstrapper(TracedService):
                             "이전 위기 조건이 더 이상 감지되지 않습니다.",
                         )
 
+                    self._safety_blocked = safety_result.get("action") == "BLOCK_ALL"
                     if safety_result.get("action") == "BLOCK_ALL":
                         triggered = safety_result.get("triggered", [])
                         if safety_result.get("should_alert"):

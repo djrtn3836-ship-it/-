@@ -100,6 +100,7 @@ class TestOffHoursGate:
             Path(__file__).resolve().parents[2] / "app" / "bootstrap.py"
         ).read_text(encoding="utf-8")
         assert "_alert_hours_ok()" in src
-        i = src.index("_suppressed = (not self._alert_hours_ok())")
+        i = src.index("_suppressed = (")
+        assert "_alert_hours_ok()" in src[i : i + 400], "장외 게이트가 억제 식에서 빠짐"
         j = src.index("self.paper_trader.record_signal", i)
         assert j > i, "장외 차단이 모의매매 기록보다 앞에 있어야 한다(기록 유지)"

@@ -366,6 +366,9 @@ class TelegramSender:
         lines.append(f"💰 <b>진입가</b>: <code>{entry_price:,.0f} 원</code>")
         lines.append(f"📊 <b>신뢰도</b>: {confidence:.0%}  |  <b>점수</b>: {score:.0%}")
         lines.append(f"⏰ <b>예상 최대 보유 시간</b>: <code>{max_hold_hours}시간</code>")
+        ttype = str(data.get("trade_type") or "")
+        if ttype:
+            lines.append(f"🧭 <b>신호 유형</b>: {ttype} <i>(잠정 — 승률 검증 후 확정)</i>")
         lines.append("")
         thesis = "• " + " / ".join(positives[:3]) if positives else "• 다중 팩터 우위"
         if side == "BUY":

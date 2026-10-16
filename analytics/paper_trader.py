@@ -85,6 +85,7 @@ class PaperTrader:
         regime: str = "",
         tags: Optional[List[str]] = None,
         factors: Optional[Dict[str, Any]] = None,
+        trade_type: str = "",
         ts: Optional[float] = None,
     ) -> bool:
         """매매 신호를 기록한다(가격이 없거나 대상 액션이 아니면 무시)."""
@@ -102,6 +103,7 @@ class PaperTrader:
                 "price": float(price),
                 "confidence": round(float(confidence or 0.0), 4),
                 "regime": str(regime or ""),
+                "trade_type": str(trade_type or ""),
                 "settled_horizons": [],
             }
             if tags:
