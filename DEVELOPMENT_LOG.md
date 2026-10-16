@@ -747,3 +747,13 @@
   요청별 체크포인트(재부팅 재개·멱등), 연속실패 재로그인→중단, 장중 자동 일시정지
 - run_backfill_hidden.vbs + run_backfill_auto.bat (창 숨김, 콘솔 로그 보존)
 [검증] pytest 1803 passed(+7) / test_supply_backfill.py(7) / 실발사 확인
+
+## 2026-10-16 — Session 120: 병행 과제 2건 (수급 백필과 동시 진행)
+냉철 평가의 "다음 과제"를 백필과 병행 실행(사용자 질문: 동시 진행 가능? → 가능).
+- ① **진입 시간대별 측정 장치**: `_hour_bucket`(09:00~09:04 개장 몰림 분리) +
+  /성과 리포트 "진입 시간대별(5일, n≥10)" 섹션 — 개장 몰림이 실제로 나쁜지
+  데이터로 판정. 기존 신호(ts 보유) 소급 분석 가능(마이그레이션 불필요).
+- ② **지수 시계열 DB화**: scheduler/index_backfill.py — KOSPI/KOSDAQ/KOSPI200을
+  ohlcv 테이블(티커 ^KS11 등)에 저장 → 유니버스 동일가중(생존편향) 대신 정확한
+  벤치마크. 1행 시리즈 저장 생략 가드(^KS200 사고 재발 방지).
+[검증] pytest 1811 passed(+9) / test_hour_analysis.py(6) test_index_backfill.py(3)

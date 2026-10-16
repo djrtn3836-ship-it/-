@@ -51,6 +51,33 @@ BASELINE_UP_PROB = float(os.getenv("PAPER_BASELINE_UP_PROB", "44.3"))
 TRADEABLE_ACTIONS: Set[str] = {"SIGNAL_ENTRY", "BUY", "SELL"}
 
 
+_HOUR_ORDER = ["09:00~09:04", "09:05~09:59", "10:00~11:59", "12:00~13:59", "14:00~15:35", "장전"]
+
+
+def _hour_bucket(ts: Any) -> str:
+    """신호 시각 → 진입 시간대 라벨. 09:00~09:04(개장 몰림)를 분리 측정.
+
+    (2026-10-16 냉철 평가: SIGNAL_ENTRY가 개장 직후 3분에 몰림 — 변동성 최대 구간.
+     개장 몰림이 실제로 성과가 나쁜지 데이터로 판정하기 위한 측정 장치.)
+    """
+    try:
+        d = datetime.fromisoformat(str(ts)[:19])
+    except (ValueError, TypeError):
+        return ""
+    hm = d.hour * 60 + d.minute
+    if d.hour < 9:
+        return "장전"
+    if hm < 9 * 60 + 5:
+        return "09:00~09:04"
+    if hm < 10 * 60:
+        return "09:05~09:59"
+    if hm < 12 * 60:
+        return "10:00~11:59"
+    if hm < 14 * 60:
+        return "12:00~13:59"
+    return "14:00~15:35"
+
+
 def _avg(vals: List[float]) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
@@ -253,6 +280,15 @@ class PaperTrader:
             for t in (r.get("tags") or []):
                 tag_map.setdefault(str(t), []).append(r)
         out["by_tag"] = {t: self._stats(v) for t, v in sorted(tag_map.items())}
+
+        hour_map: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            if int(r.get("horizon") or 0) != 5:
+                continue
+            b = _hour_bucket(r.get("ts"))
+            if b:
+                hour_map.setdefault(b, []).append(r)
+        out["by_hour"] = {b: self._stats(v) for b, v in hour_map.items()}
         return out
 
     def _stats(self, rows: List[Dict[str, Any]], horizon: Optional[int] = None) -> Dict[str, Any]:
@@ -310,6 +346,16 @@ class PaperTrader:
             for tag, st in s["by_tag"].items():
                 if st["n"] >= 5:
                     lines.append(f"• {tag}: 승률 {st['win_rate']:.1f}% (n={st['n']})")
+        if s.get("by_hour"):
+            shown = [(b, st) for b, st in s["by_hour"].items() if st["n"] >= 10]
+            shown.sort(key=lambda kv: _HOUR_ORDER.index(kv[0]) if kv[0] in _HOUR_ORDER else 99)
+            if shown:
+                lines.append("━━━ 진입 시간대별(5일, n≥10) ━━━")
+                for b, st in shown:
+                    lines.append(
+                        f"• {b}: 승률 {st['win_rate']:.1f}% "
+                        f"평균 {st['avg_return']:+.2f}% (n={st['n']})"
+                    )
         if s["settled"] < 30:
             lines.append("<i>⚠️ 표본 부족 — 승률을 신뢰하지 마세요(최소 30건)</i>")
         lines.append("<i>✅=신뢰구간 하한이 기준선 초과(통계적 우위)</i>")
