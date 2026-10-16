@@ -91,15 +91,30 @@ async def main() -> None:
 
     token = bind_trace_id(f"SYS-{new_trace_id()}")
     try:
-        # ─── 비거래일 조기 종료 ───────────────────────────────────
+        # ─── 비거래일: 1회성 주말 유지보수 후 종료 ────────────────
+        # 🔴 2026-10-17 (사용자 승인): 재부팅으로 금요일 인스턴스가 죽으면
+        #   주말 잡(토 유니버스 갱신·일 DB 유지보수/데이터 점검)이 전부 미실행
+        #   되는 구조적 공백 → 비거래일 기동 시 1회성 유지보수를 실행한다.
+        #   (인스턴스 락은 위에서 이미 획득 — 살아있는 인스턴스가 있으면 여기 도달 안 함)
         if not is_trading_day():
             from core.blackbox_logger import log_event
             from core.debug_tower import debug_tower
             import datetime
             log_event("NON_TRADING_DAY", {"date": datetime.date.today().isoformat()})
             debug_tower.log("SYSTEM", "NON_TRADING_DAY", {})
-            print("📅 오늘은 비거래일입니다. 시스템을 종료합니다.")
-            trace.info("Non-trading day → exit")
+            print("📅 오늘은 비거래일입니다.")
+            import os as _os
+            if _os.getenv("WEEKEND_MAINTENANCE", "1") != "0":
+                print("🔧 주말 유지보수 모드 실행 (유니버스/DB점검/데이터준비도)...")
+                try:
+                    from scheduler.weekend_maintenance import run_maintenance
+
+                    res = await run_maintenance()
+                    print(f"🔧 유지보수 결과: {res.get('jobs', res)}")
+                except Exception as e:
+                    print(f"⚠️ 유지보수 실행 오류(무시): {str(e)[:160]}")
+            print("시스템을 종료합니다.")
+            trace.info("Non-trading day → maintenance + exit")
             return
 
         trace.info("Starting V10 system (app/main.py → app/bootstrap.py)")
