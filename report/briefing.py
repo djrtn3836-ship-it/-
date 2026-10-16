@@ -206,6 +206,7 @@ async def build_briefing(
     *,
     kind: str = "morning",
     paper_trader: Any = None,
+    exit_soon: Optional[List[str]] = None,
 ) -> str:
     """종합 브리핑 텍스트(HTML). 각 섹션 실패는 무시하고 부분 브리핑을 낸다."""
     now = datetime.now()
@@ -228,6 +229,10 @@ async def build_briefing(
     lines += await _market_section()
     lines += _regime_section()
     lines += await _signal_section(db, day_for_signals)
+    if exit_soon:
+        lines.append("⏳ <b>오늘 청산 예정</b> (유형별 시간 만료)")
+        for s_line in exit_soon[:8]:
+            lines.append(f"  • {s_line}")
     lines += _paper_section(paper_trader)
     try:
         tag_rows = await db.get_tag_win_rates()

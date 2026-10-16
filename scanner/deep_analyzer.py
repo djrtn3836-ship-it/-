@@ -19,7 +19,7 @@ v7.7.0 -> v7.7.1 변경 사항:
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -71,6 +71,10 @@ class DeepAnalyzer:
 
         self.trailing_stops: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        # 🔴 2026-10-16(승인): 유형별 라이프사이클 — 청산 후 N거래일 재진입 금지
+        self._reentry_block: Dict[str, str] = {}  # ticker -> 재진입 허용 시작일(YYYY-MM-DD)
+        self.swing_hold_days: int = int(config.get_float("trading_swing_hold_days", 5.0))
+        self.reentry_block_days: int = int(config.get_float("trading_reentry_block_days", 2.0))
         self._last_atr_alert: Dict[str, float] = {}
         self._atr_cooldown_seconds: int = 600
 
@@ -1014,7 +1018,7 @@ class DeepAnalyzer:
 
             if result["action"] in ["BUY", "SELL"]:
                 async with self._lock:
-                    if ticker not in self.trailing_stops:
+                    if ticker not in self.trailing_stops and not self._is_reentry_blocked(ticker):
                         entry_price_f: float = self._to_float(result.get("entry_price", entry_price), 0.0)
                         atr_f: float = self._to_float(atr, 0.0)
                         if atr_f <= 0:
@@ -1107,10 +1111,111 @@ class DeepAnalyzer:
                 "ml_score": 0.5, "risk_adjustment_factor": 1.0, "error": str(e),
             }
 
+    @staticmethod
+    def _add_trading_days(base: datetime, days: int) -> datetime:
+        """거래일 기준 N일 뒤(주말·공휴일 제외). 실패 시 달력일 폴백."""
+        try:
+            from core.holiday_utils import get_next_trading_day
+
+            d = base
+            for _ in range(max(0, int(days))):
+                nd = get_next_trading_day(d)
+                d = nd if isinstance(nd, datetime) else datetime.combine(nd, base.timetz())
+            return d
+        except Exception:
+            return base + timedelta(days=int(days))
+
+    def _compute_exit_deadline(self, entry_dt: datetime, trade_type: str) -> datetime:
+        """유형별 청산 기한: 단타=당일 15:15, 스윙=N거래일 뒤 15:15 (최소 20분 보유)."""
+        ttype = str(trade_type or "")
+        if "단타" in ttype:
+            dl = entry_dt.replace(hour=15, minute=15, second=0, microsecond=0)
+        else:
+            dl = self._add_trading_days(entry_dt, self.swing_hold_days)
+            dl = dl.replace(hour=15, minute=15, second=0, microsecond=0)
+        return max(dl, entry_dt + timedelta(minutes=20))
+
+    async def set_position_policy(self, ticker: str, trade_type: str) -> None:
+        """진입 직후 호출 — 유형 라벨에 따라 청산 기한을 설정한다."""
+        async with self._lock:
+            st = self.trailing_stops.get(ticker)
+            if not st:
+                return
+            try:
+                entry_dt = datetime.fromisoformat(str(st.get("entry_time")))
+            except (TypeError, ValueError):
+                entry_dt = datetime.now()
+            st["trade_type"] = str(trade_type or "")
+            st["exit_deadline"] = self._compute_exit_deadline(entry_dt, trade_type).isoformat()
+
+    def _is_reentry_blocked(self, ticker: str) -> bool:
+        """청산 후 N거래일 재진입 금지(같은 종목 반복 신호 방지)."""
+        until = self._reentry_block.get(ticker)
+        if not until:
+            return False
+        if datetime.now().strftime("%Y-%m-%d") >= str(until):
+            self._reentry_block.pop(ticker, None)
+            return False
+        return True
+
+    def expired_positions(self, now_dt: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """청산 기한이 지난 포지션 목록(스위퍼가 청산 처리)."""
+        now = now_dt or datetime.now()
+        out: List[Dict[str, Any]] = []
+        for ticker, st in list(self.trailing_stops.items()):
+            dl = st.get("exit_deadline")
+            if not dl:
+                continue
+            try:
+                if now < datetime.fromisoformat(str(dl)):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            entry_price = self._to_float(st.get("entry_price"), 0.0)
+            cur = self._to_float(st.get("last_price"), 0.0) or entry_price
+            pnl = ((cur - entry_price) / entry_price * 100.0) if entry_price else 0.0
+            if str(st.get("action")) == "SELL":
+                pnl = -pnl
+            out.append({
+                "ticker": ticker,
+                "action": "EVENT_EXIT",
+                "side": st.get("action"),
+                "reason": "시간 만료 청산 (" + str(st.get("trade_type") or "정책 미지정") + ")",
+                "price": cur,
+                "entry_price": entry_price,
+                "stop_price": st.get("current_stop"),
+                "pnl": pnl,
+                "entry_time": st.get("entry_time"),
+                "tp_hit_level": int(st.get("tp_hit_level", 0) or 0),
+                "timestamp": now.isoformat(),
+            })
+        return out
+
+    def due_today(self, now_dt: Optional[datetime] = None) -> List[Dict[str, str]]:
+        """오늘 청산 예정(아침 브리핑용)."""
+        now = now_dt or datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        out: List[Dict[str, str]] = []
+        for ticker, st in list(self.trailing_stops.items()):
+            dl = str(st.get("exit_deadline") or "")
+            if dl[:10] == today and st.get("trade_type"):
+                out.append({
+                    "ticker": ticker,
+                    "trade_type": str(st.get("trade_type")),
+                    "deadline": dl[11:16],
+                })
+        return out
+
     async def clear_trailing_stop(self, ticker: str) -> None:
         async with self._lock:
             if ticker in self.trailing_stops:
                 del self.trailing_stops[ticker]
+                try:
+                    self._reentry_block[ticker] = self._add_trading_days(
+                        datetime.now(), self.reentry_block_days
+                    ).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
                 try:
                     await self.portfolio_manager.update_position(ticker=ticker, price=0, qty=0, action="EXIT")
                     logger.info(f"🗑️ {ticker} 트레일링 스탑 및 포트폴리오 제거")

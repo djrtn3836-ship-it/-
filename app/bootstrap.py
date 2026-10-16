@@ -503,7 +503,23 @@ class Bootstrapper(TracedService):
         try:
             from report.briefing import build_briefing
 
-            text = await build_briefing(self.db, kind=kind, paper_trader=self.paper_trader)
+            exit_soon = []
+            try:
+                analyzer = getattr(self, "analyzer", None)
+                if analyzer is not None and kind == "morning":
+                    from core.stock_names import stock_name
+
+                    exit_soon = [
+                        "{} ({}) {} — {} 청산 예정".format(
+                            stock_name(d["ticker"]), d["ticker"], d["trade_type"], d["deadline"]
+                        )
+                        for d in analyzer.due_today()
+                    ]
+            except Exception:
+                exit_soon = []
+            text = await build_briefing(
+                self.db, kind=kind, paper_trader=self.paper_trader, exit_soon=exit_soon
+            )
             self._enqueue_admin_message(text)
             debug_tower.log("SYSTEM", "BRIEFING_SENT", {"kind": kind})
         except Exception as e:
@@ -514,6 +530,36 @@ class Bootstrapper(TracedService):
 
     async def _run_evening_briefing(self) -> None:
         await self._send_briefing("evening")
+
+    async def _exit_sweeper_loop(self) -> None:
+        """시간 만료 포지션 청산 감시(매분). 알림+기록+해제까지 수행."""
+        try:
+            while not self._shutdown_requested:
+                await asyncio.sleep(60)
+                analyzer = getattr(self, "analyzer", None)
+                if analyzer is None or self.db is None:
+                    continue
+                try:
+                    expired = analyzer.expired_positions()
+                except Exception:
+                    continue
+                for ev in expired:
+                    try:
+                        if self._alert_hours_ok():
+                            sender = self._error_sender or TelegramSender()
+                            _msg = sender.format(ev)
+                            if _msg:
+                                self._enqueue_alert(_msg, ev)
+                        await self.db.save_decision(ev)
+                        await analyzer.clear_trailing_stop(ev["ticker"])
+                        logger.info(f"시간 만료 청산: {ev['ticker']} — {ev['reason']}")
+                        debug_tower.log(ev["ticker"], "EXIT_DEADLINE_HIT", {"reason": ev["reason"]})
+                    except Exception as e:
+                        logger.warning(f"만료 청산 처리 실패(무시): {e}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"exit sweeper 종료: {e}")
 
     async def _catchup_daily_jobs(self) -> None:
         """기동 시 놓친 일일 잡 자가 복구 (2026-10-15 재부팅/늦은 기동 사고).
@@ -1205,6 +1251,8 @@ class Bootstrapper(TracedService):
         # ⏪ 2026-10-15 재부팅 사고: 늦게 기동하면 16:30~17:15 잡을 통째로 놓친다
         #   → 오늘 데이터가 비어 있으면 백그라운드에서 1회 자가 복구한다.
         self._catchup_task = asyncio.create_task(self._catchup_daily_jobs())
+        # 유형별 시간 만료 청산 스위퍼(단타=당일/스윙=N거래일, 2026-10-16 승인)
+        self._exit_sweeper_task = asyncio.create_task(self._exit_sweeper_loop())
 
         # 기동 디스크 검사(여유 부족이면 즉시 알림)
         _disk_task = asyncio.create_task(self._run_disk_check())
@@ -1521,6 +1569,10 @@ class Bootstrapper(TracedService):
                         elif not _suppressed:
                             debug_tower.log(ticker, "TELEGRAM_SEND_FAILED", {"action": action})
 
+                        if action == "SIGNAL_ENTRY":
+                            await analyzer.set_position_policy(
+                                ticker, str(analysis.get("trade_type") or "")
+                            )
                         if action == "EVENT_EXIT":
                             await analyzer.clear_trailing_stop(ticker)
 
