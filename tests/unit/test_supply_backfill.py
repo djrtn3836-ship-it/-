@@ -166,6 +166,29 @@ class TestBackfill:
         assert res["errors"] == 3
         assert k.reconnects == 1, "임계 전 재로그인 1회 시도"
 
+    def test_no_data_is_skip_not_error(self, tmp_path):
+        """상장 전 날짜의 no_data가 오류 30연속으로 오판돼 중단되던 사고의 회귀 테스트."""
+        from datetime import date as _date
+
+        class _NoDataK:
+            async def request_tr(self, ticker, tr_type, dt=None):
+                if dt < "20240617":
+                    return {"error": "no_data"}  # 상장 전(시맨틱)
+                d = _date.fromisoformat(f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}")
+                return {"date": d.isoformat(), "foreign_net": 1.0, "inst_net": 1.0}
+
+        db = FakeDB()
+        res = asyncio.run(backfill(
+            _NoDataK(), db, ["062040"],
+            start_date=date(2024, 1, 1), end_date=date(2024, 7, 1),
+            delay=0, checkpoint_path=tmp_path / "s.json",
+            market_pause=False, sleep=_fast_sleep,
+        ))
+        assert res["aborted"] is False, "no_data는 중단 사유가 아님"
+        assert res["errors"] == 0
+        assert res["saved"] == 11, "2024-06-17~07-01 평일 11일만 저장"
+        assert res["skipped"] > 100, "상장 전 날짜는 전부 스킵"
+
     def test_ticker_transition_checkpoint(self, tmp_path):
         cp = tmp_path / "s.json"
         k, db = FakeKiwoom(), FakeDB()

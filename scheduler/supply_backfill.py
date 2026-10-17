@@ -13,6 +13,7 @@
     - 요청 1건마다 체크포인트(종목 인덱스 + 다음 날짜) → 재부팅/중단에도 이어서
       재개(멱등, UNIQUE(ticker,date) INSERT OR REPLACE).
     - 날짜당 1회 재시도(2초 후). 연속 실패 5회 → 재로그인 시도, 30회 → 중단.
+    - no_data(상장 전·거래정지 등 시맨틱 응답)는 오류가 아니라 스킵(재시도 없음).
     - 평일 08:50~15:40(장중)에는 자동 일시정지 — 본 앱의 실시간 감시와 충돌 방지.
     - kiwoom/db/sleep/now 모두 주입 가능(오프라인 테스트).
 
@@ -141,11 +142,20 @@ async def backfill(
                 await sleep(delay)
                 if res and not res.get("error"):
                     break
+                if "no_data" in str((res or {}).get("error", "")).lower():
+                    break  # 결정적 응답(데이터 없음) — 재시도 무의미
                 if attempt == 1:
                     await sleep(2.0)  # 일시 오류 재시도(같은 날짜)
             result["requests"] += 1
 
-            if not res or res.get("error"):
+            # 🔴 2026-10-17 09:41 중단 사고 수정: no_data는 **시맨틱 응답**(상장 전·
+            #   거래정지 등 '그 날짜에 데이터가 없음')이지 장애가 아니다.
+            #   실측: 062040은 2024-07-29부터 데이터 존재 → 그 이전 날짜가 연속
+            #   no_data였는데 오류 30연속으로 오판해 백필이 중단됐다. → 스킵 처리.
+            if "no_data" in str((res or {}).get("error", "")).lower():
+                result["skipped"] += 1
+                consecutive = 0
+            elif not res or res.get("error"):
                 consecutive += 1
                 result["errors"] += 1
                 if consecutive == reconnect_after:
