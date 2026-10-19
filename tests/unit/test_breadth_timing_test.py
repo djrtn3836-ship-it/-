@@ -24,9 +24,12 @@ class TestNoLookahead:
 
     def test_asof_uses_past_only(self):
         dates = _days(40)
-        # 앞 25일 상승 → 이후 급락 15일
+        # 앞 25일 상승 → 이후 급락 15일 (n>=20 요건 위해 25종목 동일 패턴)
         closes = [100.0 + i for i in range(25)] + [124.0 - 6 * i for i in range(15)]
-        series = {"A": S(dates, closes, [c + 1 for c in closes], [c - 1 for c in closes])}
+        series = {
+            f"t{k}": S(dates, list(closes), [c + 1 for c in closes], [c - 1 for c in closes])
+            for k in range(25)
+        }
         p_before = breadth_at(series, dates[24])   # 상승 구간 끝
         p_after = breadth_at(series, dates[-1])    # 급락 후
         assert p_before == 100.0
@@ -34,12 +37,15 @@ class TestNoLookahead:
 
     def test_stale_series_excluded(self):
         dates = _days(40)
-        up = S(dates, [100.0 + i for i in range(40)], [101.0 + i for i in range(40)], [99.0 + i for i in range(40)])
+        up = [100.0 + i for i in range(40)]
+        series = {
+            f"t{k}": S(dates, list(up), [c + 1 for c in up], [c - 1 for c in up])
+            for k in range(25)
+        }
         old_dates = _days(40, end="2026-09-01")  # 7일+ 경과
-        old = S(old_dates, [200.0 - i for i in range(40)], [201.0] * 40, [199.0] * 40)
-        p = breadth_at({"up": up, "old": old}, dates[-1])
-        # old 제외 → up만 → 100 (n부족이면 None) — n=1 < 20 → None
-        assert p is None
+        series["old"] = S(old_dates, [200.0 - i for i in range(40)], [201.0] * 40, [199.0] * 40)
+        p = breadth_at(series, dates[-1])
+        assert p == 100.0, "스테일 종목(하락 중)이 포함되면 96.2가 됨 — 제외 검증"
 
 
 class TestEvents:
