@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-feedback/feedback_learner.py - v7.4.2 (Session 38: mypy strict 적용)
+feedback/feedback_learner.py - v7.4.3 (S134: 캐치업 정산 · 결정일 고정 가격)
 - 모든 메서드 반환 타입/제네릭 타입 명시, 로직 100% 무변경
 """
 
 import asyncio
+import bisect
 import json
 import pickle
 from datetime import datetime, timedelta
@@ -21,6 +22,8 @@ logger = setup_logger("feedback")
 MODEL_PATH = Path(__file__).parent.parent / "config" / "xgb_model.pkl"
 
 FEATURE_COLS: List[str] = ["momentum", "rsi", "volume_ratio", "macro_score", "sector_score", "imbalance"]
+
+CATCHUP_DAYS = 10  # 캘린더 기준 — 앱 미실행일·연속휴장도 자동 복구 (S134)
 
 
 class FeedbackLearner:
@@ -79,23 +82,36 @@ class FeedbackLearner:
             return 0.5
 
     async def run(self) -> None:
-        logger.info("🧠 [v7.4.2] 피드백 학습 시작 (ML 피처 복원, mypy strict)")
-        yesterday = datetime.now() - timedelta(days=1)
-        if not is_trading_day(yesterday):
-            logger.info(f"📭 {yesterday.strftime('%Y-%m-%d')} 비거래일 → 학습 스킵")
-            return
+        """미확정 신호 캐치업 정산 (S134).
 
-        yesterday_str = yesterday.strftime("%Y-%m-%d")
-        decisions = await self.db.get_decisions_by_date(yesterday_str)
+        기존: '어제 하루'만 처리 → 앱이 하루 꺼지면 그날 outcomes 영구 누락(실측:
+        10-14·10-16 배치 누락). 신규: 최근 CATCHUP_DAYS일 내 **미확정 전부**
+        (결과 없음 / return_5d 미성숙 / 성숙 전 저장분)를 매일 재정산 → 자동 복구.
+        """
+        logger.info("🧠 [v7.4.3] 피드백 학습 시작 (캐치업 창 · 결정일 고정 가격)")
+        now = datetime.now()
+        dates: List[str] = []
+        for i in range(1, CATCHUP_DAYS + 1):
+            d = (now - timedelta(days=i)).date()
+            if not is_trading_day(d):
+                continue
+            dates.append(d.strftime("%Y-%m-%d"))
+        if not dates:
+            logger.info("📭 최근 거래일 없음 → 학습 스킵")
+            return
+        start, end = min(dates), max(dates)
+
+        decisions = await self.db.get_unsettled_decisions(start, end)
         if not decisions:
-            logger.info("📭 학습할 데이터 없음")
+            logger.info(f"📭 미확정 신호 없음 ({start}~{end}) → 학습 스킵")
             return
 
-        logger.info(f"📊 {len(decisions)}개 신호 성과 분석 중...")
+        logger.info(f"📊 미확정 {len(decisions)}개 신호 성과 분석 중... ({start}~{end})")
+        closes_cache: Dict[str, List[Dict[str, Any]]] = {}
         outcomes: List[Dict[str, Any]] = []
         for dec in decisions:
-            outcome = await self._fetch_real_outcome(dec)
-            if outcome and float(outcome.get("price_after_1d", 0.0)) > 0:
+            outcome = await self._fetch_real_outcome(dec, closes_cache)
+            if outcome and float(outcome.get("price_after_1d", 0.0) or 0.0) > 0:
                 await self.db.save_outcome(outcome)
                 outcomes.append(outcome)
 
@@ -125,14 +141,57 @@ class FeedbackLearner:
         prev_weights = await self.db.get_weights()
         new_weights = await self._update_weights_advanced(outcomes, stats, prev_weights)
 
-        await self._send_advanced_report(yesterday_str, stats, prev_weights, new_weights)
+        await self._send_advanced_report(f"{start}~{end}", stats, prev_weights, new_weights)
 
-    async def _fetch_real_outcome(self, decision: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _fetch_real_outcome(
+        self, decision: Dict[str, Any], closes_cache: Dict[str, List[Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        """결정일 기준 고정 가격으로 성과 계산 (S134).
+
+        - 1일차 = 결정일 봉 '다음 봉' 종가, 5일차 = 결정일 +5봉 종가 (날짜 고정).
+        - 5일차가 아직 없으면 return_5d=None(미성숙) → 캐치업이 나중에 재정산.
+        기존 버그: ohlcv 최신 종가를 1d·5d 모두에 사용 → 5d가 1d 복제(오염),
+        그리고 캐치업 시점엔 '최신 종가'가 결정일과 무관해짐.
+        """
         ticker = str(decision["ticker"])
         action = str(decision["action"])
-        price_at = float(decision.get("price_at_decision", decision.get("price", 0.0)))
+        price_at = float(decision.get("price_at_decision", decision.get("price", 0.0)) or 0.0)
         if price_at <= 0:
             return None
+
+        ddate = str(decision.get("created_at") or "")[:10]
+        if len(ddate) != 10:
+            return None
+
+        rows = closes_cache.get(ticker)
+        if rows is None:
+            try:
+                rows = await self.db.get_ohlcv(ticker, period=60)
+            except Exception as e:
+                logger.error(f"❌ 가격 조회 실패 ({ticker}): {e}")
+                rows = []
+            closes_cache[ticker] = rows
+        if not rows:
+            return None
+
+        dates = [str(r.get("date")) for r in rows]
+        closes = [float(r.get("close") or 0.0) for r in rows]
+        i = bisect.bisect_right(dates, ddate) - 1  # 결정일(포함) 마지막 봉
+        if i < 0 or i + 1 >= len(closes) or closes[i + 1] <= 0:
+            return None  # 1일차 봉 아직 없음 → 다음 캐치업에서 재시도
+        price_after_1d = closes[i + 1]
+        price_after_5d = closes[i + 5] if i + 5 < len(closes) and closes[i + 5] > 0 else None
+
+        return_1d = (price_after_1d - price_at) / price_at
+        return_5d = (price_after_5d - price_at) / price_at if price_after_5d else None
+
+        is_correct: bool
+        if action == "BUY":
+            is_correct = return_1d > 0
+        elif action == "SELL":
+            is_correct = return_1d < 0
+        else:
+            is_correct = abs(return_1d) < 0.02
 
         features: Dict[str, Any] = {}
         try:
@@ -144,37 +203,6 @@ class FeedbackLearner:
         except Exception:
             pass
 
-        price_after_1d: float = 0.0
-        price_after_5d: float = 0.0
-        try:
-            ohlcv_1d = await self.db.get_ohlcv(ticker, period=2)
-            price_after_1d = float(ohlcv_1d[-1].get("close", 0.0)) if ohlcv_1d and len(ohlcv_1d) >= 2 else 0.0
-            ohlcv_5d = await self.db.get_ohlcv(ticker, period=6)
-            price_after_5d = float(ohlcv_5d[-1].get("close", 0.0)) if ohlcv_5d and len(ohlcv_5d) >= 6 else 0.0
-            if price_after_1d <= 0 or price_after_5d <= 0:
-                if self.connector:
-                    resp = await self.connector.request_tr(ticker, "일봉")
-                    if resp and "close" in resp:
-                        price_after_1d = float(resp.get("close", 0.0))
-                        price_after_5d = float(resp.get("close", 0.0))
-        except Exception as e:
-            logger.error(f"❌ 가격 조회 실패 ({ticker}): {e}")
-            return None
-
-        if price_after_1d <= 0:
-            return None
-
-        return_1d = (price_after_1d - price_at) / price_at
-        return_5d = (price_after_5d - price_at) / price_at if price_after_5d > 0 else return_1d
-
-        is_correct: bool
-        if action == "BUY":
-            is_correct = return_1d > 0
-        elif action == "SELL":
-            is_correct = return_1d < 0
-        else:
-            is_correct = abs(return_1d) < 0.02
-
         return {
             "decision_id": int(decision["id"]),
             "ticker": ticker,
@@ -183,7 +211,7 @@ class FeedbackLearner:
             "price_after_1d": price_after_1d,
             "price_after_5d": price_after_5d,
             "return_1d": return_1d * 100,
-            "return_5d": return_5d * 100,
+            "return_5d": (return_5d * 100) if return_5d is not None else None,
             "is_correct": is_correct,
             "features": features,
         }
@@ -279,10 +307,10 @@ class FeedbackLearner:
         total = len(outcomes)
         correct = sum(1 for o in outcomes if o.get("is_correct"))
         accuracy = correct / total if total > 0 else 0.0
-        returns_1d = [float(o["return_1d"]) for o in outcomes if "return_1d" in o]
-        returns_5d = [float(o.get("return_5d", o.get("return_1d", 0.0))) for o in outcomes]
-        mean_1d = sum(returns_1d) / total if total > 0 else 0.0
-        mean_5d = sum(returns_5d) / total if total > 0 else 0.0
+        returns_1d = [float(o["return_1d"]) for o in outcomes if o.get("return_1d") is not None]
+        returns_5d = [float(o["return_5d"]) for o in outcomes if o.get("return_5d") is not None]
+        mean_1d = sum(returns_1d) / len(returns_1d) if returns_1d else 0.0
+        mean_5d = sum(returns_5d) / len(returns_5d) if returns_5d else mean_1d
         wins = [r for r in returns_1d if r > 0]
         losses = [abs(r) for r in returns_1d if r < 0]
         profit_factor = sum(wins) / sum(losses) if sum(losses) > 0 else (sum(wins) if sum(wins) > 0 else 1.0)
@@ -315,7 +343,7 @@ class FeedbackLearner:
             drift_lines.append(f"• <code>{label:<8}</code>: {old_v:.2f} ➔ <b>{new_v:.2f}</b> ({arrow} {diff:+.2f})")
         ml_status = "✅ 활성화" if self._model_ready else "⚠️ 비활성 (데이터 부족)"
         msg = (
-            f"<b>🧠 [AI 퀀트] 모델 최적화 보고서 (v7.4.2 ML 피처 복원)</b>\n"
+            f"<b>🧠 [AI 퀀트] 모델 최적화 보고서 (v7.4.3 캐치업 정산)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>📈 1. 성과 지표 ({date_str})</b>\n"
             f"• 샘플: <b>{stats['total']}개</b> | 적중률: <b>{stats['accuracy']:.1%}</b>\n"

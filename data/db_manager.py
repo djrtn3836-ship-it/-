@@ -520,6 +520,23 @@ class DatabaseManager:
             (start_date, end_date),
         )
 
+    async def get_unsettled_decisions(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """기간 내 결과 미확정 decisions — 자동학습 캐치업용 (S134).
+
+        '확정' = outcome 존재 + return_5d 있음 + 5일 성숙(+7일) 이후 갱신된 행.
+        5일 미성숙 상태로 저장된 outcome은 재정산 대상으로 남긴다(자동 복구).
+        """
+        return await self._execute_read(
+            """SELECT d.* FROM decisions d
+               LEFT JOIN decision_outcomes o ON o.decision_id = d.id
+               WHERE DATE(d.created_at) >= ? AND DATE(d.created_at) <= ?
+                 AND (o.decision_id IS NULL
+                      OR o.return_5d IS NULL
+                      OR o.updated_at < datetime(d.created_at, '+7 days'))
+               ORDER BY d.created_at ASC""",
+            (start_date, end_date),
+        )
+
     async def save_position(self, ticker: str, entry_price: float, current_price: float, qty: int) -> None:
         await self._execute_batched(
             """INSERT OR REPLACE INTO portfolio_positions (ticker, entry_price, current_price, qty, entry_time, updated_at)

@@ -28,6 +28,7 @@ KNOWN_GAPS = {
     "get_ohlcv_range",
     "get_supply_demand",
     "get_supply_demand_latest",
+    "get_unsettled_decisions",
     "save_momentum_picks",
     "save_supply_demand",
     "update_momentum_paper_result",
@@ -37,6 +38,7 @@ KNOWN_GAPS = {
 PRODUCTION_CRITICAL_GAPS = {
     "get_daily_total_volume",      # risk/market_risk_monitor.py (서킷브레이커 거래량 입력)
     "get_ohlcv_range",             # scheduler/momentum_report.py, validation/backtest_runner.py
+    "get_unsettled_decisions",     # feedback/feedback_learner.py (자동학습 캐치업 — S134)
     "save_momentum_picks",         # scheduler/momentum_report.py (모의 추적 기록)
     "get_momentum_paper_pending",  # scheduler/momentum_report.py (평가 대상 조회)
 }
