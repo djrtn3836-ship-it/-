@@ -1166,6 +1166,13 @@ class Bootstrapper(TracedService):
             CronTrigger(hour=sched.macro_update_hour, minute=sched.macro_update_minute, timezone="Asia/Seoul"),
             "macro_update", max_retries=3, retry_delay=5,
         )
+        # 🔴 2026-10-19: 장중 30분 주기 거시 갱신(09~15시 :05/:35) — SafetyGuard
+        #   신선도. 하루 1회(08:00) 갱신만으로는 장중 판단이 낡는다(실측).
+        self.scheduler.add_job_with_retry(
+            self._run_macro_intraday,
+            CronTrigger(day_of_week="mon-fri", hour="9-15", minute="5,35", timezone="Asia/Seoul"),
+            "macro_intraday", max_retries=1, retry_delay=30,
+        )
         self.scheduler.add_job_with_retry(
             self._run_phase_transition_check,
             CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
@@ -1258,7 +1265,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 23
+        self.startup_details["job_count"] = 24
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
@@ -1418,6 +1425,18 @@ class Bootstrapper(TracedService):
         await collect_daily_ohlcv(self.kiwoom, self.db, self.monitor.tickers)
 
     async def _run_macro_update(self) -> None:
+        await fetch_macro_data(force=True)
+
+    async def _run_macro_intraday(self) -> None:
+        """장중 거시 데이터 주기 갱신 (🔴 2026-10-19 로그 점검에서 발견).
+
+        macro_update 잡은 하루 1회(기본 08:00)뿐이라 **장중 내내 SafetyGuard가
+        기동 시점의 낡은 kospi_trend/vix로 판단**했다(금요일 -11.22%가 월요일
+        장중에도 고정 — 재시작으로만 갱신됨을 실측). 장중 30분 주기로 fresh
+        데이터를 채워 위기 감지가 '오늘'의 시장을 보게 한다.
+        """
+        if not is_trading_day():
+            return
         await fetch_macro_data(force=True)
 
     async def _run_phase_transition_check(self, sender: TelegramSender) -> None:

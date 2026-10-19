@@ -136,3 +136,40 @@ async def _fetch_with(data: mc.MacroData, monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(mc, "_send_alert", _noop)
     await mc.fetch_macro_data(force=True)
+
+
+class TestMacroIntradayRefresh:
+    """🔴 2026-10-19 로그 점검: 장중 거시 갱신 공백 실버그.
+
+    macro_update는 하루 1회(08:00)뿐 → SafetyGuard가 기동 시점 값으로 장중 내내
+    판단(금요일 -11.22%가 월요일 장중에도 고정, 재시작으로만 갱신 — 실측).
+    """
+
+    def _src(self):
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_job_registered_and_guarded(self):
+        src = self._src()
+        assert "async def _run_macro_intraday" in src
+        assert 'day_of_week="mon-fri", hour="9-15", minute="5,35"' in src, "장중 30분 주기"
+        seg = src[src.index("async def _run_macro_intraday"):][:700]
+        assert "is_trading_day()" in seg, "거래일 가드"
+        assert "fetch_macro_data(force=True)" in seg, "캐시 무시 강제 갱신"
+
+    def test_cron_next_fire_is_intraday(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from apscheduler.triggers.cron import CronTrigger
+
+        tz = ZoneInfo("Asia/Seoul")
+        t = CronTrigger(day_of_week="mon-fri", hour="9-15", minute="5,35", timezone=tz)
+        nxt = t.get_next_fire_time(None, datetime(2026, 10, 19, 11, 50, tzinfo=tz))
+        assert nxt is not None and (nxt.hour, nxt.minute) == (12, 5), f"다음 발화 {nxt}"
+        # 장 마감 후에는 다음 평일 09:05
+        nxt2 = t.get_next_fire_time(None, datetime(2026, 10, 19, 16, 0, tzinfo=tz))
+        assert (nxt2.hour, nxt2.minute) == (9, 5) and nxt2.weekday() == 1, f"익일 {nxt2}"
