@@ -826,3 +826,17 @@ ohlcv 거래일 대조로 gap 보충 예정.
 재시작으로 -6.32% 갱신 — 장수 인스턴스에서 지표 갱신 공백. 갱신 주기 조사 필요.
 (kospi_drop=KOSPI 5일 수익률, 임계 -3%, 현재도 차단 유지 — 폭락 후유증은 실제.)
 [검증] pytest 1831 passed(+3) / 실전: 브리핑 지연 발송·감시 체인 재기동 확인
+
+## 2026-10-19 — Session 126: 로그 전수 점검 마무리 — 백업 도구 재구축
+**ZIP 백업 도구 재구축(중요 발견 2건)**:
+- 기존 mkzip.ps1이 %TEMP% 정리로 소실 → scripts/에 레포 편입(mkzip.py + ps1 래퍼).
+- 🔴 .NET CreateEntryFromFile은 FileShare.Read만 허용 → **쓰기 중인 로그/DB가 ZIP에서
+  누락**(실측 73건 실패 — decisions.db 누락 위험까지 확인). PowerShell 함수 경유 시
+  NullReference 재현(원인 미규명) → **파이썬 zipfile로 재구현**(공유 읽기 실증).
+- DB는 sqlite3 online backup **일관 스냅샷**으로 포함(WAL 병합, -wal/-shm 제외).
+- 최종: entries=507 failed=0 · DB 스냅샷 86MB 포함 검증 ✅ (사용: `python scripts/mkzip.py`)
+**백필/감시 최종**: 갭 0건 · 감시 체인 재기동 검증(완료 감지→자동 해제→종료) · 예약작업
+발화는 미검증(다음 등록 시 테스트).
+**다음 조사 과제**: SafetyGuard kospi_drop 갱신 공백(금 -11.22% 고정 → 재시작 후
+-6.32% — 장수 인스턴스에서 지표 리프레시 안 됨. 원인/주기 조사 필요).
+[검증] 3자 대조 0 · 커밋·푸시 완료
