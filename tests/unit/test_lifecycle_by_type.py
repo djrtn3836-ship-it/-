@@ -86,7 +86,7 @@ class TestReentryBlock:
 
     def test_block_and_expire(self):
         a = _fake_analyzer()
-        future = a._add_trading_days(datetime(2026, 10, 16), 2).strftime("%Y-%m-%d")
+        future = a._add_trading_days(datetime.now(), 2).strftime("%Y-%m-%d")
         a._reentry_block["005930"] = future
         assert a._is_reentry_blocked("005930") is True
         a._reentry_block["005930"] = "2020-01-01"  # 과거

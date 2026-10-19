@@ -74,6 +74,7 @@ def fetch_period(
                     "date": str(it.get("rcept_dt") or ""),
                     "title": str(it.get("report_nm") or "").strip(),
                     "type": str(it.get("pblntf_ty") or ""),
+                    "rcept_no": str(it.get("rcept_no") or ""),
                 }
             )
         total_page = int(data.get("total_page") or 1)

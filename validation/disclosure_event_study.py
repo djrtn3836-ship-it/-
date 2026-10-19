@@ -24,7 +24,7 @@ DEDUPE_GAP = 20
 MIN_N = 15
 
 CATEGORY_ORDER = [
-    "자사주매입", "자사주처분", "유상증자", "무상증자", "감자", "주식분할",
+    "자사주매입", "자사주처분", "주식소각", "유상증자", "무상증자", "감자", "주식분할",
     "최대주주변경", "합병", "회사분할", "영업양수도", "타법인주식취득",
     "신규시설투자", "대표이사변경",
     "수주계약", "실적공시", "불성실공시", "CB/BW", "배당",
@@ -35,10 +35,17 @@ CATEGORY_ORDER = [
 def classify_title(title: str) -> Optional[str]:
     """공시 제목 → 연구 대상 유형(없으면 None=기록만)."""
     t = str(title or "").replace(" ", "")
-    if "자사주" in t and ("취득" in t or "매입" in t):
+    # 완료·정정·신고서 등 후속 보고는 신규 정보가 아님(중복·노이즈)
+    if "결과보고서" in t or "증권신고서" in t:
+        return None
+    if "기재정정" in t or "첨부정정" in t:
+        return None
+    if ("자사주" in t or "자기주식" in t) and ("취득" in t or "매입" in t):
         return "자사주매입"
-    if "자사주" in t and "처분" in t:
+    if ("자사주" in t or "자기주식" in t) and "처분" in t:
         return "자사주처분"
+    if "주식소각" in t or ("소각" in t and "주식" in t):
+        return "주식소각"
     if "유상증자" in t:
         return "유상증자"
     if "무상증자" in t:

@@ -104,6 +104,7 @@ def fetch_day(
                     "ticker": code,
                     "title": str(it.get("report_nm") or "").strip(),
                     "type": str(it.get("pblntf_ty") or ""),
+                    "rcept_no": str(it.get("rcept_no") or ""),
                 }
             )
         if page >= int(data.get("total_page") or 1) or not items:
@@ -123,8 +124,12 @@ def load_study_stats(study_path: Path = STUDY_PATH) -> Dict[str, Dict[str, Any]]
     out: Dict[str, Dict[str, Any]] = {}
     for cat, st in (study.get("categories") or {}).items():
         hs = (st.get("horizons") or {}).get("5") or {}
+        hs1 = (st.get("horizons") or {}).get("1") or {}
         out[cat] = {
             "grade": st.get("grade"),
+            "mean1": hs1.get("mean"),
+            "hit1": hs1.get("hit"),
+            "n1": hs1.get("n"),
             "mean5": hs.get("mean"),
             "hit5": hs.get("hit"),
             "n5": hs.get("n"),
@@ -188,6 +193,9 @@ def run_watch(
                 "name": universe.get(r["ticker"], ""),
                 "category": cat,
                 "grade": st.get("grade"),
+                "mean1": st.get("mean1"),
+                "hit1": st.get("hit1"),
+                "n1": st.get("n1"),
                 "mean5": st.get("mean5"),
                 "hit5": st.get("hit5"),
                 "n5": st.get("n5"),
@@ -205,6 +213,20 @@ def run_watch(
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     a_grade = [e for e in new_events if str(e.get("grade") or "").startswith("A")]
+    for e in a_grade:
+        if str(e.get("category")) != "자사주매입" or not e.get("rcept_no"):
+            continue
+        try:
+            from scheduler.disclosure_body import get_buyback
+
+            body = get_buyback(str(e["rcept_no"]))
+            if body.get("ok"):
+                e["buy_amount"] = body.get("buy_amount")
+                e["ratio_pct"] = body.get("ratio_pct")
+                e["cancel_flag"] = bool(body.get("cancel_flag"))
+        except Exception as ex:
+            if logger:
+                logger.debug(f"자사주 본문 보강 실패(무시): {ex}")
     alerted = False
     if a_grade and send_alert:
         try:
@@ -270,9 +292,17 @@ def format_alert(events: List[Dict[str, Any]], entry_stats: Optional[Dict[str, D
         lines.append(f"• <b>{e.get('category')}</b>: {e.get('name')}({e.get('ticker')})")
         if e.get("mean5") is not None:
             lines.append(
-                f"  역사 5일 평균 {float(e['mean5']):+.2f}% · 적중 {float(e.get('hit5') or 0):.0f}% "
-                f"(n={e.get('n5')})"
+                f"  역사 1일 {float(e.get('mean1') or 0):+.2f}% / 5일 {float(e['mean5']):+.2f}% · "
+                f"1일 적중 {float(e.get('hit1') or 0):.0f}% (n={e.get('n1') or e.get('n5')})"
             )
+        if e.get("buy_amount"):
+            amt = float(e["buy_amount"])
+            amt_txt = f"{amt / 1e12:.2f}조" if amt >= 1e12 else f"{amt / 1e8:.0f}억"
+            extra = f"취득금액 {amt_txt}"
+            if e.get("ratio_pct"):
+                extra += f" · 비율 {float(e['ratio_pct']):.2f}%"
+            extra += " · 소각 계획 ✓" if e.get("cancel_flag") else ""
+            lines.append(f"  {extra}")
         es = stats.get(str(e.get("category") or "")) or {}
         if es.get("e2_mean") is not None:
             e2 = float(es["e2_mean"])

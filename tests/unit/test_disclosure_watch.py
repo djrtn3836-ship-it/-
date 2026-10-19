@@ -151,11 +151,22 @@ class TestDisplay:
     def test_format_alert(self):
         text = dw.format_alert([{"category": "무상증자", "name": "삼성전자", "ticker": "005930",
                                  "mean5": 4.94, "hit5": 60.4, "n5": 48}])
-        assert "무상증자" in text and "삼성전자" in text and "+4.94%" in text
+        assert "무상증자" in text and "삼성전자" in text and "+4.94%" in text and "역사 1일" in text
+
+    def test_format_alert_buyback_body(self):
+        ev = [{"category": "자사주매입", "name": "삼성전자", "ticker": "005930",
+               "mean5": 0.77, "hit5": 52.4, "n5": 571,
+               "buy_amount": 2.68e12, "ratio_pct": 0.84, "cancel_flag": True}]
+        text = dw.format_alert(ev, entry_stats={})
+        assert "취득금액 2.68조" in text and "비율 0.84%" in text and "소각" in text
+
+    def test_fetch_day_has_rcept_no(self):
+        rows = dw.fetch_day("20261019", "key", session=_Session(_day_pages()), sleep=0)
+        assert all("rcept_no" in r for r in rows)
 
     def test_format_alert_entry_stats(self):
         ev = [{"category": "무상증자", "name": "삼성전자", "ticker": "005930",
-               "mean5": 4.94, "hit5": 60.4, "n5": 48}]
+               "mean1": 2.32, "hit1": 62.8, "n1": 43, "mean5": 4.94, "hit5": 60.4, "n5": 48}]
         text = dw.format_alert(ev, entry_stats={"무상증자": {"e2_mean": 3.71, "e2_n": 49}})
         assert "다음날 시가 진입 5일 +3.71%" in text
         ev2 = [{"category": "합병", "name": "A", "ticker": "000001", "mean5": 1.13, "hit5": 52.7, "n5": 150}]
