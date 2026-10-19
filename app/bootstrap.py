@@ -143,6 +143,7 @@ _REQUIRED_ENV_KEYS: List[str] = [
     "TELEGRAM_CHAT_ID",
 ]
 PID_FILE: Path = Path(__file__).parent.parent / "scanner.pid"
+LOG_DIR: Path = Path(__file__).parent.parent / "logs"
 
 
 class Bootstrapper(TracedService):
@@ -521,9 +522,36 @@ class Bootstrapper(TracedService):
                 self.db, kind=kind, paper_trader=self.paper_trader, exit_soon=exit_soon
             )
             self._enqueue_admin_message(text)
+            try:
+                flag = self._briefing_flag_path(kind, datetime.now().strftime("%Y-%m-%d"))
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+            except OSError:
+                pass
             debug_tower.log("SYSTEM", "BRIEFING_SENT", {"kind": kind})
         except Exception as e:
             logger.warning(f"브리핑 생성 실패(무시): {e}")
+
+    @staticmethod
+    def _briefing_due(kind: str, now: datetime) -> bool:
+        """브리핑 캐치업 시간창 — 기동이 정시 크론(08:35/17:25)을 놓친 경우 지연 발송 허용.
+
+        (🔴 2026-10-19 로그 점검: 08:40 기동일엔 08:35 아침 브리핑이 항상 누락됐다.)
+        """
+        mins = now.hour * 60 + now.minute
+        if kind == "morning":
+            return 8 * 60 + 35 <= mins < 11 * 60
+        return 17 * 60 + 25 <= mins < 21 * 60
+
+    @staticmethod
+    def _briefing_flag_path(kind: str, day: str) -> Path:
+        return LOG_DIR / f"briefing_{kind}_{day}.flag"
+
+    def _briefing_sent_today(self, kind: str, day: str) -> bool:
+        try:
+            return self._briefing_flag_path(kind, day).exists()
+        except Exception:
+            return False
 
     async def _run_morning_briefing(self) -> None:
         await self._send_briefing("morning")
@@ -579,6 +607,16 @@ class Bootstrapper(TracedService):
             now = datetime.now()
             today = now.strftime("%Y-%m-%d")
             mins = now.hour * 60 + now.minute
+
+            # 🔴 2026-10-19: 정시 크론(08:35/17:25)을 기동이 놓친 경우 지연 발송
+            #   (멱등 플래그 — 이미 보냈으면 건너뜀. 08:40 기동일 아침 누락 사고)
+            for _kind in ("morning", "evening"):
+                try:
+                    if self._briefing_due(_kind, now) and not self._briefing_sent_today(_kind, today):
+                        await self._send_briefing(_kind)
+                        logger.info(f"⏪ {_kind} 브리핑 지연 발송(기동 공백 복구)")
+                except Exception as e:
+                    logger.debug(f"브리핑 캐치업 건너뜀({_kind}): {e}")
 
             if mins >= 16 * 60 + 40:
                 has_today = False

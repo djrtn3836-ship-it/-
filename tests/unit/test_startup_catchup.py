@@ -31,3 +31,32 @@ class TestCatchupWiring:
         assert "is_trading_day()" in seg, "거래일 가드 없음"
         assert "16 * 60 + 40" in seg and "16 * 60 + 45" in seg and "17 * 60 + 10" in seg
         assert "settled_today" in seg, "정산 중복 리포트 방지 가드 없음"
+
+
+class TestBriefingCatchup:
+    """🔴 2026-10-19 로그 점검: 08:40 기동일 08:35 아침 브리핑 누락 → 지연 발송."""
+
+    def _src(self):
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_windows_and_flag_logic(self):
+        src = self._src()
+        assert "8 * 60 + 35 <= mins < 11 * 60" in src, "아침 창(08:35~11:00)"
+        assert "17 * 60 + 25 <= mins < 21 * 60" in src, "저녁 창(17:25~21:00)"
+        assert "_briefing_sent_today" in src, "멱등 플래그 확인 필수"
+
+    def test_flag_written_on_send(self):
+        src = self._src()
+        seg = src[src.index("async def _send_briefing"):]
+        seg = seg[: seg.index("async def _run_morning_briefing")]
+        assert "_briefing_flag_path" in seg and "write_text" in seg, "발송 성공 시 플래그 기록"
+
+    def test_catchup_wired(self):
+        src = self._src()
+        seg = src[src.index("async def _catchup_daily_jobs"):][:4500]
+        assert "_send_briefing(_kind)" in seg, "캐치업에서 지연 발송 호출"
+        assert "for _kind in (\"morning\", \"evening\")" in seg
