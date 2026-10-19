@@ -138,6 +138,17 @@ def compute_context(db_path: Path = DB_PATH) -> Dict[str, Any]:
     return ctx
 
 
+def latest_signals(*, log_path: Path = LOG_PATH, day: Optional[str] = None) -> Dict[str, Any]:
+    """가장 최근(또는 지정일) 기록된 신호 목록. 기록 없으면 {}."""
+    rows = _load_jsonl(log_path)
+    if not rows:
+        return {}
+    target = day or max(str(r.get("date") or "") for r in rows)
+    sel = [r for r in rows if str(r.get("date")) == target]
+    sel.sort(key=lambda r: (str(r.get("grade") or ""), str(r.get("signal") or "")))
+    return {"date": target, "signals": sel}
+
+
 def active_signals(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for key, grade, label, fn in SIGNALS:

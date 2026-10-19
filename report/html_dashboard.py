@@ -197,6 +197,22 @@ def collect_trace_section() -> Dict[str, Any]:
         return {}
 
 
+def collect_signal_registry_section() -> Dict[str, Any]:
+    """시장 신호 기록부(S139) — 최근 기록 A/B/C + 채점 성적."""
+    try:
+        from scheduler.signal_logger import latest_signals, scorecard
+
+        latest = latest_signals()
+        return {
+            "date": latest.get("date", ""),
+            "active": latest.get("signals", []),
+            "scorecard": scorecard(),
+        }
+    except Exception as e:
+        logger.debug(f"신호 기록부 섹션 실패(무시): {e}")
+        return {}
+
+
 def collect_macro_section() -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
@@ -583,6 +599,33 @@ def render_html(data: Dict[str, Any]) -> str:
       <h2>10. 의사결정 경로 (Trace)</h2>{trace_body}
     </div>"""
 
+    sig = data.get("signals") or {}
+    sig_rows = ""
+    for r in (sig.get("active") or []):
+        gl = str(r.get("grade") or "-")
+        lvl = "bad" if gl == "A" else ("warn" if gl == "B" else "ok")
+        sig_rows += (
+            f"<tr><th>{_badge(gl, lvl)} {_esc(str(r.get('label') or ''))}</th><td></td></tr>"
+        )
+    sc_rows = ""
+    for r in (sig.get("scorecard") or []):
+        sc_rows += (
+            f"<tr><th>{_esc(str(r.get('label') or ''))}</th>"
+            f"<td>n={_fmt(r.get('n'))} 평균 {_fmt(r.get('avg'), 2, '%')} 적중 {_fmt(r.get('hit'), 0, '%')}</td></tr>"
+        )
+    sc_block = (
+        f'<div class="note">성적표(5거래일, KOSPI)</div><table>{sc_rows}</table>'
+        if sc_rows else '<div class="note">성적표: 채점 대기(5거래일 경과 후 자동)</div>'
+    )
+    signals_html = f"""
+    <div class="card">
+      <h2>12. 시장 신호 기록부</h2>
+      <div class="note">최근 기록 {_esc(str(sig.get('date') or '—'))} · A=검증 생존 / B=경계 / C=참고(추적)</div>
+      <table style="margin-top:8px">{sig_rows or '<tr><td class="note">기록 없음</td></tr>'}</table>
+      {sc_block}
+      <div class="note">매일 17:20 자동 기록·채점. 실제 주문은 발생하지 않습니다.</div>
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -604,7 +647,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{signals_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
 </body></html>"""
 
 
@@ -636,6 +679,7 @@ async def generate_dashboard(out_path: Path = DEFAULT_OUT) -> Path:
     data["calibration"] = collect_calibration_section()
     data["trace"] = collect_trace_section()
     data["paper_trades"] = collect_paper_trade_section()
+    data["signals"] = collect_signal_registry_section()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(data), encoding="utf-8")

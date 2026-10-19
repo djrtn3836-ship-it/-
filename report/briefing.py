@@ -232,6 +232,36 @@ async def _system_section(db: Any) -> List[str]:
     return out if len(out) > 1 else []
 
 
+async def _signal_registry_section() -> List[str]:
+    """기록된 시장 신호(🔔) — 발굴→기록→표시 고리 (S139). 실패 시 생략."""
+    try:
+        from scheduler.signal_logger import latest_signals, scorecard
+
+        latest = await asyncio.to_thread(latest_signals)
+        rows = await asyncio.to_thread(scorecard)
+    except Exception as e:
+        logger.debug(f"브리핑 신호 섹션 실패(무시): {e}")
+        return []
+    out: List[str] = []
+    if latest.get("signals"):
+        icons = {"A": "🎯", "B": "🟡", "C": "⚪"}
+        items = [
+            f"{icons.get(str(r.get('grade')), '•')}{r.get('label')}"
+            for r in latest["signals"]
+        ]
+        out.append("🔔 <b>시장 신호</b>")
+        out.append(f"  {latest.get('date')}: " + " · ".join(items))
+    if rows:
+        parts = [
+            f"{r.get('label')} n={r['n']} {float(r['avg']):+.2f}%/적중 {float(r['hit']):.0f}%"
+            for r in rows[:3]
+        ]
+        out.append("  성적(5일): " + " · ".join(parts))
+    elif latest.get("signals"):
+        out.append("  성적(5일): 채점 대기(5거래일 경과 후 자동)")
+    return out
+
+
 async def build_briefing(
     db: Any,
     *,
@@ -258,6 +288,7 @@ async def build_briefing(
 
     lines: List[str] = [header, "━━━━━━━━━━━━━━━━━━━━━"]
     lines += await _market_section(db)
+    lines += await _signal_registry_section()
     lines += _regime_section()
     lines += await _signal_section(db, day_for_signals)
     if exit_soon:
