@@ -115,6 +115,8 @@ class FeedbackLearner:
                 await self.db.save_outcome(outcome)
                 outcomes.append(outcome)
 
+        await self.db.flush_pending()  # S137: 대량 쓰기 후 즉시 커밋(잔여 트랜잭션 락 해제)
+
         if not outcomes:
             logger.warning("⚠️ 유효한 결과 없음")
             return

@@ -21,6 +21,7 @@ from data.db_manager import DatabaseManager
 # 2026-10-01 기준 알려진 미구현 목록 (docs/postgres_migration_assessment.md 참조)
 KNOWN_GAPS = {
     "analyze_db",
+    "flush_pending",
     "get_daily_total_volume",
     "get_latest_momentum_paper_return",
     "get_momentum_paper_pending",
@@ -36,6 +37,7 @@ KNOWN_GAPS = {
 
 # 전환 시 즉시 깨지는 프로덕션 경로 (회귀 방지용 명시)
 PRODUCTION_CRITICAL_GAPS = {
+    "flush_pending",               # app/bootstrap.py 메인 루프 (S137 잔여 트랜잭션 커밋)
     "get_daily_total_volume",      # risk/market_risk_monitor.py (서킷브레이커 거래량 입력)
     "get_ohlcv_range",             # scheduler/momentum_report.py, validation/backtest_runner.py
     "get_unsettled_decisions",     # feedback/feedback_learner.py (자동학습 캐치업 — S134)

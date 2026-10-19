@@ -150,6 +150,16 @@ class DatabaseManager:
             self._pending_writes = 0
             logger.debug("배치 커밋 플러시 완료")
 
+    async def flush_pending(self) -> None:
+        """잔여 미커밋 쓰기를 즉시 커밋 (S137 실버그 수정).
+
+        배치 커밋은 '다음 쓰기'에서만 트리거된다 → 대량 쓰기(예: 학습 41,235건) 후
+        쓰기가 멈추면 마지막 배치(<20개)가 **열린 트랜잭션으로 남아 외부 쓰기를
+        무기한 차단**하고 WAL 체크포인트도 막혔다(2026-10-19 18:01 실측).
+        메인 루프가 10초 주기로, 대량 쓰기 도구는 완료 시 호출한다.
+        """
+        await self._flush_pending()
+
     async def init_db(self) -> None:
         conn = await self._get_write_conn()
 

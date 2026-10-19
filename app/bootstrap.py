@@ -1661,6 +1661,16 @@ class Bootstrapper(TracedService):
             and not self._shutdown_event.is_set()
         ):
             try:
+                # S137: 잔여 쓰기 주기적 커밋 — 배치 커밋이 '다음 쓰기'에서만 일어나
+                #   대량 쓰기 후 유휴 시 열린 트랜잭션이 외부 쓰기를 차단하던 실버그.
+                #   (SafetyGuard 차단 경로의 continue보다 앞에 두어 항상 실행)
+                _now_flush = time.time()
+                if _now_flush - getattr(self, "_last_db_flush_ts", 0.0) >= 10.0:
+                    try:
+                        await self.db.flush_pending()
+                    except Exception as _fe:
+                        logger.debug(f"DB 플러시 실패(무시): {_fe}")
+                    self._last_db_flush_ts = _now_flush
                 if self.safety_guard:
                     macro = get_cached_macro()
                     safety_result: Dict[str, Any] = self.safety_guard.check({

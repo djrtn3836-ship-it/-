@@ -45,6 +45,9 @@ class FakeDB:
     async def save_outcome(self, outcome):
         self.saved.append(outcome)
 
+    async def flush_pending(self):
+        pass  # S137: 대량 쓰기 후 커밋 훅
+
     async def get_weights(self):
         return dict(self.weights)
 

@@ -1,28 +1,22 @@
 # -*- coding: utf-8 -*-
-"""validation/condition_sweep_test.py — 상황조건 전수 스캔 (S136, ①).
+"""validation/condition_sweep_test.py — 상황조건 전수 스캔 (S136① → S137 매크로 확장).
 
 목적:
     "지금 어떤 환경인가"라는 상황 조건이 미래 기대값과 연결되는지 체계적으로
-    전수 검증한다. 개별 팩터는 소진(S128~129)됐지만 **시장 레벨 조건**은
-    폭 하나만 검증됐다(S131~132). 조건 → KOSPI 전방 1/5/20일 초과수익.
+    전수 검증한다. S137: 매크로 시계열(VIX·나스닥·달러·금리·구리) 재료 추가 +
+    **신호 빈도·등급 표시**(다중 신호 체계 — 등급 A/B/C).
 
 방법 (기존 검증 관례 그대로):
     - 이벤트 = 조건이 켜지는 첫날만 (연속 중복 제거 — S128 교훈)
     - 성과 = KOSPI 전방수익 − 무조건 평균(기준선), 순열검정 p(무작위 같은 수 날)
-    - 판정(생존 후보): 순열 p≤0.01 + n≥10 + 전·후반기 둘 다 ≥0 + 연도 60%+
+    - 등급: A=생존 후보(p≤0.01·n≥10·반기·연도), B=경계(p≤0.05·n≥10·연도)
+            C=참고(1) n≥20 & p≤0.20 — **자주 뜨는 신호를 기록·추적하기 위한 등급**
+            (빈도 높은 조건도 버리지 않고 모의 기록 대상으로 남긴다)
+    - 발동 빈도(건/년)를 함께 표시 — 연 1회 미만 조건은 실사용 불가로 표시
 
-조건(16종):
-    폭: ≤10 / ≤15 / ≤20 / ≥80 · 5일변화 ≤-25%p · 신저비율 ≥30% · 신저≥신고×3
-    추세: KOSPI 5일 ≤-5% / ≥+5% · 실현변동성 20d 상위10% / 하위10%
-    수급: 외국인 시장 3일 연속 순매도 / 순매수 · 거래량 ≥MA20×1.5
-    조합(구역 후보 검증): 폭≤15 & 5일<0 (진입금지 후보) / 폭≤15 & 5일≥0 (기회 후보)
-
-주의: 다중검정(16조건) — p≤0.01 + 반기 일관성 + 연도 일관성 삼중 통과만 후보로
-      인정하고, 후보조차 OOS 재검증 전에는 표시·알림에 반영하지 않는다.
-
+재료: 폭·신고/신저·KOSPI 추세·실현변동성·수급(외국인)·거래량 + **매크로 5종**
 사용:
-    python -X utf8 -m validation.condition_sweep_test --db data/decisions.db
-    python -X utf8 -m validation.condition_sweep_test --save-json
+    python -X utf8 -m validation.condition_sweep_test --db data/decisions.db [--save-json]
 """
 
 from __future__ import annotations
@@ -45,8 +39,18 @@ DB_PATH = ROOT / "data" / "decisions.db"
 SWEEP_OUT = ROOT / "data" / "condition_sweep.json"
 
 WINDOW_START = "2021-11-01"   # 수급 백필·폭 워밍업 이후 공통 창
-HORIZONS = (1, 5, 20)
+HORIZONS = (1, 5, 20, 60)
 MIN_EVENTS = 10
+TRADING_DAYS_PER_YEAR = 252
+
+# (표시명, ohlcv 특수 티커) — macro_backfill.py가 저장한 것
+MACRO_SERIES: List[Tuple[str, str]] = [
+    ("VIX", "^VIX"),
+    ("나스닥", "^IXIC"),
+    ("달러", "DX-Y.NYB"),
+    ("미10년", "^TNX"),
+    ("구리", "HG=F"),
+]
 
 
 def _flow_market(db_path: Path) -> Tuple[Dict[str, float], Dict[str, float]]:
@@ -144,8 +148,45 @@ def _pct_rank_threshold(vals: Sequence[float], q: float) -> float:
     return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 
+def asof_align(series: Optional[S], target_dates: Sequence[str]) -> Dict[str, float]:
+    """시계열을 기준일 목록에 정렬 — 각 기준일의 '마지막 알려진 값'(미국 휴장일 대응).
+
+    예: KST 종가 시점에 알 수 있는 미국 전일 종가를 쓴다(룩어헤드 없음).
+    """
+    if not series or not series.dates:
+        return {}
+    out: Dict[str, float] = {}
+    j = -1
+    for d in target_dates:
+        while j + 1 < len(series.dates) and series.dates[j + 1] <= d:
+            j += 1
+        if j >= 0:
+            out[d] = series.close[j]
+    return out
+
+
+def pct_change(aligned: Dict[str, float], k: int) -> Dict[str, float]:
+    """정렬된 시계열의 k스텝 퍼센트 변화(%)."""
+    keys = sorted(aligned)
+    out: Dict[str, float] = {}
+    for i in range(k, len(keys)):
+        prev = aligned[keys[i - k]]
+        if prev:
+            out[keys[i]] = (aligned[keys[i]] / prev - 1.0) * 100.0
+    return out
+
+
+def abs_change(aligned: Dict[str, float], k: int) -> Dict[str, float]:
+    """정렬된 시계열의 k스텝 절대 변화(금리처럼 %p 단위)."""
+    keys = sorted(aligned)
+    out: Dict[str, float] = {}
+    for i in range(k, len(keys)):
+        out[keys[i]] = aligned[keys[i]] - aligned[keys[i - k]]
+    return out
+
+
 def build_conditions(db_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, Any], S]:
-    """시리즈 구축 + 16개 조건 이벤트 맵. 반환: (조건→날짜, 시리즈 dict, 트림된 KOSPI)."""
+    """시리즈 구축 + 조건 이벤트 맵. 반환: (조건→날짜, 시리즈 dict, 트림된 KOSPI)."""
     index_full = load_index(db_path)
     universe = load_universe(db_path)
     kospi_dates = [d for d in index_full.dates if d >= WINDOW_START]
@@ -191,10 +232,24 @@ def build_conditions(db_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, Any
     hi_thr = _pct_rank_threshold(kv, 0.90)
     lo_thr = _pct_rank_threshold(kv, 0.10)
 
+    # ── 매크로 정렬(S137) ──────────────────────────────
+    macro: Dict[str, Dict[str, float]] = {}
+    for name, tk in MACRO_SERIES:
+        macro[name] = asof_align(load_index(db_path, tk), kospi.dates)
+    vix = macro.get("VIX", {})
+    nasdaq5 = pct_change(macro.get("나스닥", {}), 5)
+    usd20 = pct_change(macro.get("달러", {}), 20)
+    rate20 = abs_change(macro.get("미10년", {}), 20)
+    copper20 = pct_change(macro.get("구리", {}), 20)
+    gap5: Dict[str, float] = {
+        d: k5[d] - nasdaq5[d] for d in k5 if d in nasdaq5
+    }
+
     series: Dict[str, Any] = {
         "breadth": breadth, "nh": nh, "nl": nl, "kospi5d": k5,
         "kvol": kvol, "vol_ratio": vol_ratio, "fnet": fnet, "inet": inet,
-        "breadth_chg": breadth_chg,
+        "breadth_chg": breadth_chg, "vix": vix, "nasdaq5": nasdaq5,
+        "usd20": usd20, "rate20": rate20, "copper20": copper20, "gap5": gap5,
     }
 
     cond: Dict[str, List[str]] = {}
@@ -220,6 +275,17 @@ def build_conditions(db_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, Any
     cond["폭≤15&반등중"] = [
         d for d in cond["폭≤15"] if k5.get(d) is not None and k5[d] >= 0
     ]
+    # ── 매크로 조건(S137 신규 10종) ─────────────────────
+    cond["VIX≥30"] = _first_days(vix, lambda v: v >= 30.0)
+    cond["VIX≤15"] = _first_days(vix, lambda v: v <= 15.0)
+    cond["VIX5일+50%"] = _first_days(pct_change(vix, 5), lambda v: v >= 50.0)
+    cond["나스닥5일≤-5%"] = _first_days(nasdaq5, lambda v: v <= -5.0)
+    cond["나스닥5일≥+5%"] = _first_days(nasdaq5, lambda v: v >= 5.0)
+    cond["달러20일+3%"] = _first_days(usd20, lambda v: v >= 3.0)
+    cond["미금리20일+30bp"] = _first_days(rate20, lambda v: v >= 0.30)
+    cond["미금리20일-30bp"] = _first_days(rate20, lambda v: v <= -0.30)
+    cond["구리20일≤-10%"] = _first_days(copper20, lambda v: v <= -10.0)
+    cond["KOSPI-나스닥괴리≤-5p"] = _first_days(gap5, lambda v: v <= -5.0)
     return cond, series, kospi
 
 
@@ -250,8 +316,10 @@ def evaluate_condition(kospi: S, dates: Sequence[str], h: int) -> Optional[Dict[
     first_half = statistics.fmean(rets[:half]) if half else 0.0
     second_half = statistics.fmean(rets[half:]) if len(rets) - half else 0.0
     years_pos = sum(1 for v in yearly.values() if statistics.fmean(v) > 0)
+    span_years = max(1e-9, len(kospi.dates) / TRADING_DAYS_PER_YEAR)
     return {
         "n": len(rets),
+        "freq": len(rets) / span_years,
         "excess": statistics.fmean(rets) * 100.0,
         "hit": sum(1 for x in rets if x > 0) / len(rets) * 100.0,
         "t": _tstat(rets),
@@ -263,49 +331,62 @@ def evaluate_condition(kospi: S, dates: Sequence[str], h: int) -> Optional[Dict[
 
 
 def verdict(st: Dict[str, Any], p: float) -> str:
+    """등급 판정 — A(생존)/B(경계)/C(참고: 자주 뜨는 신호를 기록·추적)."""
     if p <= 0.01 and st["n"] >= MIN_EVENTS and st["half1"] >= 0 and st["half2"] >= 0 and st["years_ok"]:
-        return "생존 후보"
+        return "A_생존"
     if p <= 0.05 and st["n"] >= MIN_EVENTS and st["years_ok"]:
-        return "경계"
+        return "B_경계"
+    if st["n"] >= 20 and p <= 0.20:
+        return "C_참고"
     return "-"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="상황조건 전수 스캔")
+    ap = argparse.ArgumentParser(description="상황조건 전수 스캔 (매크로 확장판)")
     ap.add_argument("--db", type=str, default=str(DB_PATH))
     ap.add_argument("--save-json", action="store_true")
     args = ap.parse_args(argv)
 
     db = Path(args.db)
-    print("시리즈 구축 중 (폭·신고/신저·수급·거래량)...")
-    cond, _series, kospi = build_conditions(db)
+    print("시리즈 구축 중 (폭·신고/신저·수급·거래량·매크로)...")
+    cond, series, kospi = build_conditions(db)
     if not kospi.dates:
         print("KOSPI 데이터 없음")
         return 1
+    have_macro = [k for k, v in series.items() if k in ("vix", "nasdaq5") and v]
+    if not have_macro:
+        print("※ 매크로 시리즈 없음 — `python -m scheduler.macro_backfill` 먼저 실행 권장")
 
     results: Dict[str, Any] = {}
-    print(f"■ 상황조건 전수 스캔 — 창 {WINDOW_START}~, 조건 {len(cond)}종 · KOSPI 전방 초과수익(기준선 차감)\n")
+    print(f"■ 상황조건 전수 스캔 — 창 {WINDOW_START}~, 조건 {len(cond)}종 · 빈도·등급 포함\n")
     for h in HORIZONS:
         print(f"── 전방 {h}일 ──")
         for name, dates in cond.items():
             st = evaluate_condition(kospi, dates, h)
             if not st:
-                print(f"  {name:<16} 이벤트 없음")
+                print(f"  {name:<18} 이벤트 없음")
                 continue
             pv = permutation_pvalue(kospi, dates, h, n_iter=1000)
             v = verdict(st, pv["p"]) if h == 5 else ""
             results.setdefault(name, {})[f"h{h}"] = {**st, "perm_p": pv["p"], "verdict": v}
-            flag = f"  ← {v}" if v and v != "-" else ""
+            flag = f"  ← [{v}]" if v and v != "-" else ""
             print(
-                f"  {name:<16} n={st['n']:>3} 초과 {st['excess']:+.2f}%p 적중 {st['hit']:.0f}% "
-                f"t={st['t']:+.2f} p={pv['p']:.3f} 반기 {st['half1']:+.1f}/{st['half2']:+.1f} 연도 {st['years_pos']}{flag}"
+                f"  {name:<18} n={st['n']:>3} 빈도 {st['freq']:>4.1f}/년 초과 {st['excess']:+.2f}%p "
+                f"적중 {st['hit']:.0f}% t={st['t']:+.2f} p={pv['p']:.3f} 반기 {st['half1']:+.1f}/{st['half2']:+.1f} "
+                f"연도 {st['years_pos']}{flag}"
             )
         print()
 
-    surv = [n for n, r in results.items() if r.get("h5", {}).get("verdict") == "생존 후보"]
-    edge = [n for n, r in results.items() if r.get("h5", {}).get("verdict") == "경계"]
-    print(f"생존 후보(전방5일): {surv or '없음'} · 경계: {edge or '없음'}")
-    print("※ 다중검정 16조건 — 후보도 OOS 재검증 전에는 표시·알림 반영 금지.")
+    grades: Dict[str, List[str]] = {"A_생존": [], "B_경계": [], "C_참고": []}
+    for n, r in results.items():
+        v = r.get("h5", {}).get("verdict")
+        if v in grades:
+            grades[v].append(n)
+    print("등급 (전방 5일 기준):")
+    print(f"  A_생존: {grades['A_생존'] or '없음'}")
+    print(f"  B_경계: {grades['B_경계'] or '없음'}")
+    print(f"  C_참고(빈도 높은 약신호 — 기록·추적 대상): {grades['C_참고'] or '없음'}")
+    print("※ A/B만 표시·알림 후보. C는 모의 기록으로 축적 후 승격 판정(사용자 의도: 신호 다양화).")
 
     if args.save_json:
         SWEEP_OUT.write_text(
