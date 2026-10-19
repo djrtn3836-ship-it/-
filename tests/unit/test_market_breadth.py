@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from analytics.market_breadth import (  # noqa: E402
+    PANIC_THRESHOLD,
+    breadth_percentile,
     compute_breadth,
     format_breadth,
+    load_breadth_history,
     load_breadth_series,
 )
 
@@ -88,8 +91,48 @@ class TestLoader:
         assert len(series["005930"]["close"]) == 30
 
 
+class TestHistoryAndPercentile:
+    """S132: 역사 백분위(브리핑 병기) + 패닉권 라인."""
+
+    def test_load_history_roundtrip(self, tmp_path):
+        p = tmp_path / "h.json"
+        p.write_text('{"dates": {"2026-10-18": 11.0, "2026-10-19": 20.0}}', encoding="utf-8")
+        h = load_breadth_history(p)
+        assert h == {"2026-10-18": 11.0, "2026-10-19": 20.0}
+
+    def test_load_history_missing_or_broken(self, tmp_path):
+        assert load_breadth_history(tmp_path / "nope.json") == {}
+        bad = tmp_path / "bad.json"
+        bad.write_text("not json", encoding="utf-8")
+        assert load_breadth_history(bad) == {}
+
+    def test_percentile(self):
+        h = {f"d{i}": float(i) for i in range(101)}  # 0..100
+        assert abs(breadth_percentile(h, 50.0) - 51 / 101 * 100) < 1e-9, "이하 포함 카운트"
+        assert breadth_percentile(h, 0.0) == 1 / 101 * 100
+        assert breadth_percentile({}, 50.0) is None
+        assert breadth_percentile(h, None) is None
+
+    def test_format_with_history_shows_percentile(self):
+        b = compute_breadth({f"t{i}": _series(65) for i in range(25)})
+        line = format_breadth(b, {f"d{i}": float(i) for i in range(101)})
+        assert line and "역사 백분위 100%" in line
+
+    def test_format_without_history_unchanged(self):
+        b = compute_breadth({f"t{i}": _series(65) for i in range(25)})
+        line = format_breadth(b)
+        assert line and "백분위" not in line
+
+    def test_panic_threshold_value(self):
+        assert PANIC_THRESHOLD == 15.0
+
+
 class TestWiring:
 
     def test_briefing_uses_breadth(self):
         src = (Path(__file__).resolve().parents[2] / "report" / "briefing.py").read_text(encoding="utf-8")
         assert "compute_breadth" in src and "format_breadth" in src
+
+    def test_briefing_has_panic_line(self):
+        src = (Path(__file__).resolve().parents[2] / "report" / "briefing.py").read_text(encoding="utf-8")
+        assert "PANIC_NOTE" in src and "PANIC_THRESHOLD" in src and "load_breadth_history" in src

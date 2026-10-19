@@ -59,15 +59,22 @@ async def _market_section(db: Any) -> List[str]:
             out.append("  " + " · ".join(extra))
         try:
             from analytics.market_breadth import (
+                PANIC_NOTE,
+                PANIC_THRESHOLD,
                 compute_breadth,
                 format_breadth,
+                load_breadth_history,
                 load_breadth_series,
             )
 
             b = compute_breadth(await asyncio.to_thread(load_breadth_series))
-            line = format_breadth(b)
+            hist = await asyncio.to_thread(load_breadth_history)
+            line = format_breadth(b, hist)
             if line:
                 out.append("  " + line)
+            p20 = b.get("above_ma20_pct")
+            if p20 is not None and float(p20) <= PANIC_THRESHOLD:
+                out.append(f"  ⚠ 패닉권(≤{PANIC_THRESHOLD:.0f}%) — {PANIC_NOTE}")
         except Exception as e:
             logger.debug(f"브리핑 시장 폭 실패(무시): {e}")
     except Exception as e:

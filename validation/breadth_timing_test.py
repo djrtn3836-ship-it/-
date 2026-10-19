@@ -16,6 +16,7 @@
     - 연도별 일관성 + 적중률 + t값.
 사용:
     python -m validation.breadth_timing_test
+    python -m validation.breadth_timing_test --robust   # 강건성(임계 스윕·순열검정·KOSDAQ)
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import argparse
 import bisect
 import json
 import math
+import random
 import sqlite3
 import statistics
 from collections import defaultdict
@@ -160,6 +162,87 @@ def find_events(breadths: Dict[str, float]) -> Dict[str, List[str]]:
     return events
 
 
+def threshold_events(breadths: Dict[str, float], thr: float) -> List[str]:
+    """폭 <= thr 조건의 '켜지는 첫날' 목록(임계값 스윕 공용)."""
+    out: List[str] = []
+    prev = False
+    for d in sorted(breadths):
+        now = breadths[d] <= thr
+        if now and not prev:
+            out.append(d)
+        prev = now
+    return out
+
+
+def _excess_means(index: S, h: int) -> tuple:
+    """(일별 초과수익 dict position->excess, 기준선 평균) — 순열검정/스윕 공용."""
+    rets = {}
+    for i in range(len(index.close)):
+        r = fwd_return(index.close, i, h)
+        if r is not None:
+            rets[i] = r
+    base = statistics.fmean(rets.values()) if rets else 0.0
+    return {i: r - base for i, r in rets.items()}, base
+
+
+def permutation_pvalue(
+    index: S,
+    event_dates: Sequence[str],
+    h: int,
+    n_iter: int = 2000,
+    seed: int = 42,
+) -> Dict[str, float]:
+    """이벤트 시점 평균 초과수익이 '무작위 같은 수의 날' 대비 얼마나 예외적인가.
+
+    단순 순열(복원 없이 무작위 날짜 n개 추출) — 군집성/자기상관을 보수적으로 반영.
+    p = (obs 이상 횟수 + 1) / (n_iter + 1), 단측.
+    """
+    excess, _ = _excess_means(index, h)
+    if not excess:
+        return {"obs": 0.0, "p": 1.0, "n": 0}
+    pos = {d: i for i, d in enumerate(index.dates)}
+    ev_idx = [pos[d] for d in event_dates if d in pos and pos[d] in excess]
+    if not ev_idx:
+        return {"obs": 0.0, "p": 1.0, "n": 0}
+    obs = statistics.fmean([excess[i] for i in ev_idx])
+    rng = random.Random(seed)
+    pool = list(excess)
+    k = len(ev_idx)
+    cnt = 0
+    for _ in range(n_iter):
+        m = statistics.fmean([excess[i] for i in rng.sample(pool, k)])
+        if m >= obs:
+            cnt += 1
+    return {"obs": obs * 100.0, "p": (cnt + 1) / (n_iter + 1), "n": k}
+
+
+def threshold_sweep(
+    index: S,
+    breadths: Dict[str, float],
+    h: int,
+    thresholds: Sequence[float] = (5, 8, 10, 12, 15, 20, 25),
+) -> Dict[float, dict]:
+    """임계값별 (이벤트 수·초과·적중·t) — 10%만 튀면 우연, 넓게 완만하면 실재."""
+    excess, _ = _excess_means(index, h)
+    out: Dict[float, dict] = {}
+    for thr in thresholds:
+        vals = []
+        for d in threshold_events(breadths, thr):
+            i = _idx_le(index.dates, d)
+            if i >= 0 and index.dates[i] == d and i in excess:
+                vals.append(excess[i])
+        if not vals:
+            out[thr] = {"n": 0}
+            continue
+        out[thr] = {
+            "n": len(vals),
+            "excess": statistics.fmean(vals) * 100.0,
+            "hit": sum(1 for x in vals if x > 0) / len(vals) * 100.0,
+            "t": _tstat(vals),
+        }
+    return out
+
+
 def evaluate(index: S, events: Dict[str, List[str]], h: int) -> Dict[str, dict]:
     pos = {d: i for i, d in enumerate(index.dates)}
     base = [r for i in range(len(index.close)) if (r := fwd_return(index.close, i, h)) is not None]
@@ -195,6 +278,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="시장 폭 레짐 가치 검증")
     ap.add_argument("--db", type=str, default=str(DB_PATH))
     ap.add_argument("--save-history", action="store_true", help="일별 폭 역사 JSON 저장")
+    ap.add_argument("--robust", action="store_true", help="강건성: 임계 스윕·순열검정·KOSDAQ·구간 제거")
     args = ap.parse_args(argv)
 
     db = Path(args.db)
@@ -242,6 +326,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         vals = sorted(breadths.values())
         pct = bisect.bisect_right(vals, cur) / len(vals) * 100.0
         print(f"\n현재(최신) 폭: {cur:.0f}% — 역사 백분위 {pct:.0f}%")
+
+    if args.robust:
+        print("\n■ [강건성 ①] 임계값 스윕 (KOSPI 전방 5일, 첫날 중복제거)")
+        kq = load_index(db, "^KQ11")
+        for thr, st in threshold_sweep(index, breadths, 5).items():
+            if st.get("n", 0) == 0:
+                continue
+            pv = permutation_pvalue(index, threshold_events(breadths, thr), 5)
+            print(f"  ≤{thr:>2.0f}%  n={st['n']:>3} 초과 {st['excess']:+.2f}%p "
+                  f"적중 {st['hit']:.0f}% t={st['t']:+.2f}  순열p={pv['p']:.3f}")
+        print("\n■ [강건성 ②] L2(≤10%) 상세")
+        l2 = events["L2_폭10이하"]
+        pv = permutation_pvalue(index, l2, 5)
+        print(f"  KOSPI 5일: 관측 {pv['obs']:+.2f}%p · 무작위 2,000회 순열p={pv['p']:.3f} (n={pv['n']})")
+        if kq.dates:
+            st_kq = evaluate(kq, {"L2_폭10이하": l2}, 5)["L2_폭10이하"]
+            st_kq20 = evaluate(kq, {"L2_폭10이하": l2}, 20)["L2_폭10이하"]
+            print(f"  KOSDAQ 5일 : n={st_kq['n']}, 초과 {st_kq['excess']:+.2f}%p, "
+                  f"적중 {st_kq['hit']:.0f}%, t={st_kq['t']:+.2f}")
+            print(f"  KOSDAQ 20일: n={st_kq20['n']}, 초과 {st_kq20['excess']:+.2f}%p, "
+                  f"적중 {st_kq20['hit']:.0f}%, t={st_kq20['t']:+.2f}")
+        no_26 = [d for d in l2 if not d.startswith("2026")]
+        st_x = evaluate(index, {"L2_폭10이하": no_26}, 5)["L2_폭10이하"]
+        print(f"  2026년 제외: n={st_x['n']}, 초과 {st_x['excess']:+.2f}%p, t={st_x['t']:+.2f}")
+
     print("\n판정: |t|>2 + 연도 일관성(플러스 연도 3/4+)이면 레짐 신호 후보.")
     return 0
 

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import bisect
+import json
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -26,6 +28,13 @@ logger = setup_logger("market_breadth")
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "decisions.db"
+HISTORY_PATH = ROOT / "data" / "breadth_history.json"
+
+# S132 검증(validation/breadth_timing_test.py --robust): 폭 ≤15% 첫날 18회 →
+# 이후 5일 KOSPI +5.1%p·반등 78%·t=3.46 (순열 p<0.001) — 단 2022 약세장은 무반등.
+# 맥락 표시 전용(판단/점수 불변).
+PANIC_THRESHOLD = 15.0
+PANIC_NOTE = "배경: 과거 18회 유사일 후 5일 +5.1%p(78%) · 2022년엔 무효 — 참고 맥락"
 
 Series = Dict[str, Dict[str, List[float]]]
 
@@ -132,13 +141,37 @@ def compute_breadth(
     }
 
 
-def format_breadth(b: Dict[str, object]) -> Optional[str]:
-    """브리핑용 한 줄. 표본 부족 시 None(추정 금지)."""
+def load_breadth_history(path: Path = HISTORY_PATH) -> Dict[str, float]:
+    """일별 폭 역사 JSON 로드(validation 도구가 생성). 없거나 손상이면 {} (표시 생략)."""
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        dates = raw.get("dates", {})
+        return {str(d): float(v) for d, v in dates.items()}
+    except Exception:
+        return {}
+
+
+def breadth_percentile(history: Dict[str, float], value: Optional[float]) -> Optional[float]:
+    """현재 폭이 역사 분포에서 몇 백분위인가(0~100)."""
+    if not history or value is None:
+        return None
+    vals = sorted(history.values())
+    return bisect.bisect_right(vals, value) / len(vals) * 100.0
+
+
+def format_breadth(
+    b: Dict[str, object], history: Optional[Dict[str, float]] = None
+) -> Optional[str]:
+    """브리핑용 한 줄. 표본 부족 시 None(추정 금지). history 주면 백분위 병기."""
     if not b or int(b.get("n") or 0) < 20:
         return None
     parts = []
     if b.get("above_ma20_pct") is not None:
-        parts.append(f"MA20↑ {b['above_ma20_pct']:.0f}%")
+        pct_txt = f"MA20↑ {b['above_ma20_pct']:.0f}%"
+        b_pct = breadth_percentile(history or {}, float(b["above_ma20_pct"]))
+        if b_pct is not None:
+            pct_txt += f" (역사 백분위 {b_pct:.0f}%)"
+        parts.append(pct_txt)
     if b.get("above_ma60_pct") is not None:
         parts.append(f"MA60↑ {b['above_ma60_pct']:.0f}%")
     parts.append(f"상승/하락 {b.get('advancers', 0)}/{b.get('decliners', 0)}")

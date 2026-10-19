@@ -11,6 +11,9 @@ from validation.breadth_timing_test import (  # noqa: E402
     find_events,
     fwd_return,
     latest_breadth,
+    permutation_pvalue,
+    threshold_events,
+    threshold_sweep,
 )
 
 
@@ -78,3 +81,41 @@ class TestForward:
     def test_fwd(self):
         assert abs(fwd_return([100.0, 110.0, 120.0], 0, 2) - 0.2) < 1e-9
         assert fwd_return([100.0, 110.0], 0, 5) is None
+
+
+class TestRobustness:
+    """S132: 임계 스윕·순열검정."""
+
+    def test_threshold_events_dedupe(self):
+        breadths = {"d1": 25.0, "d2": 12.0, "d3": 12.5, "d4": 20.0, "d5": 12.0}
+        assert threshold_events(breadths, 15) == ["d2", "d5"], "연속 첫날만"
+        assert threshold_events(breadths, 10) == []
+
+    def test_threshold_sweep_n_ordering(self):
+        dates = _days(120)
+        # 0~100 사이 파형
+        vals = [50.0 + 45.0 * ((i % 60) - 30) / 30.0 for i in range(120)]
+        breadths = {d: v for d, v in zip(dates, vals)}
+        closes = [100.0 + i * 0.1 for i in range(120)]
+        index = S(dates, closes, [c + 1 for c in closes], [c - 1 for c in closes])
+        sw = threshold_sweep(index, breadths, 5, thresholds=(10, 50, 90))
+        assert sw[10]["n"] <= sw[50]["n"] <= sw[90]["n"]
+        assert all("excess" in st for st in sw.values() if st["n"])
+
+    def test_permutation_extreme_and_null(self):
+        dates = _days(120)
+        closes = [100.0] * 120
+        closes[55] = 50.0  # 하루 급락 후 원위치 → 전방 5일 +100%
+        index = S(dates, closes, [c + 1 for c in closes], [c - 1 for c in closes])
+        hot = permutation_pvalue(index, [dates[55]], 5, n_iter=500)
+        cold = permutation_pvalue(index, [dates[20]], 5, n_iter=500)
+        assert hot["obs"] > 50 and hot["p"] < 0.05
+        assert cold["p"] > 0.3
+
+    def test_permutation_deterministic_seed(self):
+        dates = _days(120)
+        closes = [100.0 + (i % 7) for i in range(120)]
+        index = S(dates, closes, [c + 1 for c in closes], [c - 1 for c in closes])
+        a = permutation_pvalue(index, [dates[10], dates[40]], 5, n_iter=200, seed=1)
+        b = permutation_pvalue(index, [dates[10], dates[40]], 5, n_iter=200, seed=1)
+        assert a == b
