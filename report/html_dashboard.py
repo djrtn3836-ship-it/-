@@ -198,14 +198,37 @@ def collect_trace_section() -> Dict[str, Any]:
 
 
 def collect_macro_section() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
     try:
         from filters.macro_filter import MacroFilter
 
         result = MacroFilter().check({})
-        return {"score": result.get("score", 0.0), "indicators": result.get("indicators", {})}
+        out = {"score": result.get("score", 0.0), "indicators": result.get("indicators", {})}
     except Exception as e:
         logger.debug(f"매크로 섹션 실패(무시): {e}")
-        return {}
+    try:
+        from analytics.market_breadth import (
+            PANIC_NOTE,
+            PANIC_THRESHOLD,
+            breadth_percentile,
+            compute_breadth,
+            load_breadth_history,
+            load_breadth_series,
+        )
+
+        b = compute_breadth(load_breadth_series())
+        if int(b.get("n") or 0) >= 20:
+            p20 = b.get("above_ma20_pct")
+            panic = p20 is not None and float(p20) <= PANIC_THRESHOLD
+            out["breadth"] = dict(
+                b,
+                percentile=breadth_percentile(load_breadth_history(), p20),
+                panic=panic,
+                note=PANIC_NOTE if panic else "",
+            )
+    except Exception as e:
+        logger.debug(f"시장 폭 섹션 실패(무시): {e}")
+    return out
 
 
 # ============================================================
@@ -355,11 +378,26 @@ def render_html(data: Dict[str, Any]) -> str:
         f"{v.get('score', 0):.2f}</span></td></tr>"
         for k, v in ind.items()
     )
+    bl = macro.get("breadth") or {}
+    breadth_html = ""
+    if bl.get("above_ma20_pct") is not None:
+        p20 = float(bl["above_ma20_pct"])
+        pct = bl.get("percentile")
+        panic = bool(bl.get("panic"))
+        lvl = "bad" if panic else ("warn" if pct is not None and float(pct) <= 20 else "ok")
+        tag = "패닉권" if panic else ("하위 분위" if lvl == "warn" else "정상")
+        pct_txt = f" · 역사 백분위 {float(pct):.0f}%" if pct is not None else ""
+        note = f'<div class="note">{_esc(bl.get("note") or "")}</div>' if panic else ""
+        breadth_html = f"""
+      <table style="margin-top:10px">
+        <tr><th>시장 폭 MA20↑</th><td>{_fmt(p20, 0, '%')} {_badge(tag, lvl)}{pct_txt}</td></tr>
+        <tr><th>MA60↑ / 상승·하락</th><td>{_fmt(bl.get('above_ma60_pct'), 0, '%')} / {_fmt(bl.get('advancers'), 0)}·{_fmt(bl.get('decliners'), 0)}</td></tr>
+      </table>{note}"""
     macro_html = f"""
     <div class="card">
       <h2>5. 매크로 (13지표)</h2>
       <div class="kpi">{_fmt(macro.get('score'), 3)} <small>종합 점수 (0~1)</small></div>
-      <table style="margin-top:10px">{rows}</table>
+      <table style="margin-top:10px">{rows}</table>{breadth_html}
     </div>"""
 
     # --- 집중도 리스크 (P8-1)

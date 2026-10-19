@@ -25,7 +25,15 @@ def _sample(**over: object) -> dict:
                         "hints": ["알림 억제 비율 높음"], "thresholds": {"anomaly_threshold": 0.65}},
             "circuit_breakers": {"is_open": False},
         },
-        "macro": {"score": 0.48, "indicators": {"kospi_trend": {"raw": -1.5, "score": 0.35}}},
+        "macro": {
+            "score": 0.48,
+            "indicators": {"kospi_trend": {"raw": -1.5, "score": 0.35}},
+            "breadth": {
+                "above_ma20_pct": 20.0, "above_ma60_pct": 30.0,
+                "advancers": 138, "decliners": 54, "percentile": 8.0,
+                "panic": False, "note": "", "n": 195,
+            },
+        },
     }
     data.update(over)
     return data
@@ -106,6 +114,24 @@ class TestSafetyAndRobustness:
 
     def test_macro_score_rendered(self) -> None:
         assert "0.480" in hd.render_html(_sample())
+
+    def test_breadth_percentile_rendered(self) -> None:
+        html = hd.render_html(_sample())
+        assert "시장 폭 MA20↑" in html and "역사 백분위 8%" in html
+
+    def test_panic_badge_and_note(self) -> None:
+        data = _sample()
+        data["macro"]["breadth"].update(
+            {"above_ma20_pct": 12.0, "panic": True, "note": "배경: 과거 18회 유사일 후 5일 +5.1%p(78%)"}
+        )
+        html = hd.render_html(data)
+        assert "패닉권" in html
+        assert "18회 유사일" in html
+
+    def test_renders_without_breadth(self) -> None:
+        data = _sample()
+        data["macro"].pop("breadth")
+        assert "<!DOCTYPE html>" in hd.render_html(data)
 
 
 class TestGeneration:

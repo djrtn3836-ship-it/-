@@ -34,6 +34,10 @@ class _Recorder:
         self.calls.append("maintenance")
         return {"status": "ok"}
 
+    def breadth(self):
+        self.calls.append("breadth")
+        return 123
+
 
 def _run(now, rec, csv_path):
     os.environ.pop("TEST_MODE", None)
@@ -44,6 +48,7 @@ def _run(now, rec, csv_path):
             refresh_fn=rec.refresh,
             readiness_fn=rec.readiness,
             maintenance_fn=rec.maintenance,
+            breadth_fn=rec.breadth,
             csv_path=csv_path,
         ))
     finally:
@@ -57,15 +62,16 @@ class TestWeekendMaintenance:
         csv = tmp_path / "u.csv"
         csv.write_text("x", encoding="utf-8")
         res = _run(SAT, rec, csv)
-        assert rec.calls == ["refresh"], "토요일은 유니버스 갱신만"
+        assert rec.calls == ["refresh", "breadth"], "토요일은 유니버스 갱신 + 폭 역사"
         assert res["day"] == 5
+        assert res["jobs"]["breadth_history"] == 123
 
     def test_sunday_maintenance_and_readiness(self, tmp_path):
         rec = _Recorder()
         csv = tmp_path / "u.csv"
         csv.write_text("x", encoding="utf-8")  # 방금 갱신됨 → refresh 생략
         res = _run(SUN, rec, csv)
-        assert sorted(rec.calls) == ["maintenance", "readiness"]
+        assert sorted(rec.calls) == ["breadth", "maintenance", "readiness"]
         assert res["day"] == 6
 
     def test_sunday_stale_csv_triggers_refresh(self, tmp_path):
@@ -89,7 +95,19 @@ class TestWeekendMaintenance:
         os.utime(csv, (old, old))
         res = _run(SUN, rec, csv)
         assert res["jobs"]["universe_refresh"].startswith("error:")
-        assert sorted(rec.calls) == ["maintenance", "readiness"], "실패 격리"
+        assert sorted(rec.calls) == ["breadth", "maintenance", "readiness"], "실패 격리"
+
+    def test_breadth_failure_isolated(self, tmp_path):
+        def broken_breadth():
+            raise RuntimeError("ohlcv 없음")
+
+        rec = _Recorder()
+        rec.breadth = broken_breadth
+        csv = tmp_path / "u.csv"
+        csv.write_text("x", encoding="utf-8")
+        res = _run(SUN, rec, csv)
+        assert res["jobs"]["breadth_history"].startswith("error:")
+        assert sorted(rec.calls) == ["maintenance", "readiness"], "폭 실패가 다른 잡을 막지 않음"
 
     def test_safe_mode_skips(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TEST_MODE", "1")
@@ -101,6 +119,7 @@ class TestWeekendMaintenance:
                 refresh_fn=rec.refresh,
                 readiness_fn=rec.readiness,
                 maintenance_fn=rec.maintenance,
+                breadth_fn=rec.breadth,
                 csv_path=tmp_path / "u.csv",
             ))
             assert res == {"skipped": "safe_mode"}

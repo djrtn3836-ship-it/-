@@ -23,18 +23,25 @@ from __future__ import annotations
 
 import argparse
 import bisect
-import json
 import math
 import random
-import sqlite3
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from core.logger import setup_logger
+
+# 계산 함수는 프로덕션(analytics/market_breadth.py)과 공용 — S133 이관.
+# (이 모듈에서 재수출 유지: 기존 테스트/호출부 호환)
+from analytics.market_breadth import (  # noqa: F401
+    S,
+    _idx_le,
+    breadth_at,
+    load_index,
+    load_universe,
+    save_history,
+)
 
 logger = setup_logger("breadth_timing_test")
 
@@ -48,81 +55,6 @@ CONDITIONS = {
     "H1_폭80이상": lambda p: p is not None and p >= 80.0,
 }
 HORIZONS = (5, 20)
-
-
-@dataclass
-class S:
-    dates: List[str]
-    close: List[float]
-    high: List[float]
-    low: List[float]
-
-
-def load_universe(db_path: Path) -> Dict[str, S]:
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    try:
-        out: Dict[str, S] = {}
-        cur = con.execute(
-            "SELECT ticker, date, close, high, low FROM ohlcv "
-            "WHERE ticker NOT LIKE '^%' ORDER BY ticker, date"
-        )
-        for t, d, c, h, lo in cur:
-            if not c or float(c) <= 0:
-                continue
-            s = out.setdefault(t, S([], [], [], []))
-            s.dates.append(str(d))
-            s.close.append(float(c))
-            s.high.append(float(h or c))
-            s.low.append(float(lo or c))
-        return {k: v for k, v in out.items() if len(v.dates) >= 30}
-    finally:
-        con.close()
-
-
-def load_index(db_path: Path, ticker: str = "^KS11") -> S:
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    try:
-        s = S([], [], [], [])
-        for d, c in con.execute(
-            "SELECT date, close FROM ohlcv WHERE ticker=? ORDER BY date", (ticker,)
-        ):
-            if c and float(c) > 0:
-                s.dates.append(str(d))
-                s.close.append(float(c))
-        return s
-    finally:
-        con.close()
-
-
-def _idx_le(dates: Sequence[str], asof: str) -> int:
-    return bisect.bisect_right(dates, asof) - 1
-
-
-def breadth_at(series: Dict[str, S], asof: str, *, ma_w: int = 20, max_age: int = 7) -> Optional[float]:
-    """asof 시점의 'MA20 상회 비율(%). 데이터 부족 시 None."""
-    n = above = 0
-    try:
-        asof_d = date.fromisoformat(asof)
-    except ValueError:
-        return None
-    for s in series.values():
-        i = _idx_le(s.dates, asof)
-        if i < 0:
-            continue
-        try:
-            if (asof_d - date.fromisoformat(s.dates[i])).days > max_age:
-                continue
-        except ValueError:
-            continue
-        if i + 1 < ma_w:
-            continue
-        n += 1
-        ma = sum(s.close[i + 1 - ma_w: i + 1]) / ma_w
-        if s.close[i] > ma:
-            above += 1
-    if n < 20:
-        return None
-    return above / n * 100.0
 
 
 def fwd_return(closes: Sequence[float], i: int, h: int) -> Optional[float]:
@@ -298,13 +230,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.error(f"폭 역사 부족: {len(breadths)}일")
         return 1
     if args.save_history:
-        HISTORY_OUT.parent.mkdir(parents=True, exist_ok=True)
-        HISTORY_OUT.write_text(
-            json.dumps({"updated_at": date.today().isoformat(), "dates": breadths},
-                       ensure_ascii=True, indent=0),
-            encoding="utf-8",
-        )
-        logger.info(f"폭 역사 저장: {HISTORY_OUT} ({len(breadths)}일)")
+        n = save_history(breadths, HISTORY_OUT)
+        logger.info(f"폭 역사 저장: {HISTORY_OUT} ({n}일)")
 
     events = find_events(breadths)
     print(f"■ 시장 폭 레짐 검증 — 폭 역사 {len(breadths)}일 · 이벤트(첫날 기준)")

@@ -41,8 +41,6 @@ class TestTradeType:
 class TestAlertFilters:
 
     def test_min_conf_default_and_env(self, monkeypatch):
-        import os
-
         monkeypatch.delenv("SIGNAL_MIN_CONFIDENCE", raising=False)
         assert Bootstrapper._sig_min_conf() == 0.60
         monkeypatch.setenv("SIGNAL_MIN_CONFIDENCE", "0.55")

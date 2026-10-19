@@ -15,6 +15,8 @@
       있으면 그 인스턴스가 주말 잡을 담당(중복 실행 없음).
     - 토요일: 유니버스 갱신(주기 잡). CSV가 6일+ 낡았으면 일요일에도 갱신.
     - 일요일: DB 유지보수(PRAGMA optimize — VACUUM 없음) + 데이터 준비도 점검.
+    - S133: 폭 역사 갱신(breadth_history)을 매 유지보수 실행 — 브리핑/대시보드
+      '역사 백분위' 표시의 신선도 유지.
     - 안전모드(TEST_MODE 등)면 전부 건너뜀(프로덕션 DB 보호).
     - 모든 잡 함수 주입 가능(오프라인 테스트).
 """
@@ -49,6 +51,7 @@ async def run_maintenance(
     refresh_fn: Optional[Callable[[], Any]] = None,
     readiness_fn: Optional[Callable[[], Any]] = None,
     maintenance_fn: Optional[Callable[..., Any]] = None,
+    breadth_fn: Optional[Callable[[], Any]] = None,
     csv_path: Path = UNIVERSE_CSV,
 ) -> Dict[str, Any]:
     """비거래일 1회성 유지보수 실행. {"day":요일, "jobs":{이름:결과}} 반환."""
@@ -74,6 +77,10 @@ async def run_maintenance(
         from core.db_maintenance import maintain_sqlite
 
         maintenance_fn = maintain_sqlite
+    if breadth_fn is None:
+        from analytics.market_breadth import refresh_history
+
+        breadth_fn = refresh_history
 
     async def _safe(name: str, fn: Callable[[], Any]) -> None:
         try:
@@ -93,6 +100,8 @@ async def run_maintenance(
     if dow == 6 or _is_holiday_weekday(now):
         await _safe("db_maintenance", lambda: asyncio.to_thread(maintenance_fn))
         await _safe("data_readiness", readiness_fn)
+    # S133: 폭 역사 갱신(브리핑/대시보드 '역사 백분위' 신선도 유지) — 매 유지보수 실행
+    await _safe("breadth_history", lambda: asyncio.to_thread(breadth_fn))
 
     logger.info(f"주말 유지보수 종료: {result}")
     return result

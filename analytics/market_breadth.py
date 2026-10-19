@@ -18,9 +18,10 @@ from __future__ import annotations
 import bisect
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from core.logger import setup_logger
 
@@ -37,6 +38,124 @@ PANIC_THRESHOLD = 15.0
 PANIC_NOTE = "배경: 과거 18회 유사일 후 5일 +5.1%p(78%) · 2022년엔 무효 — 참고 맥락"
 
 Series = Dict[str, Dict[str, List[float]]]
+
+
+@dataclass
+class S:
+    """종목 1개의 전체 일봉 시계열(폭 역사 계산용 — S131 검증도구에서 이관)."""
+
+    dates: List[str]
+    close: List[float]
+    high: List[float]
+    low: List[float]
+
+
+def load_universe(db_path: Path = DB_PATH, min_days: int = 30) -> Dict[str, S]:
+    """전 종목(비지수) 일봉 전체 시계열 — 일별 폭 역사 계산용."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        out: Dict[str, S] = {}
+        cur = con.execute(
+            "SELECT ticker, date, close, high, low FROM ohlcv "
+            "WHERE ticker NOT LIKE '^%' ORDER BY ticker, date"
+        )
+        for t, d, c, h, lo in cur:
+            if not c or float(c) <= 0:
+                continue
+            s = out.setdefault(t, S([], [], [], []))
+            s.dates.append(str(d))
+            s.close.append(float(c))
+            s.high.append(float(h or c))
+            s.low.append(float(lo or c))
+        return {k: v for k, v in out.items() if len(v.dates) >= min_days}
+    finally:
+        con.close()
+
+
+def load_index(db_path: Path = DB_PATH, ticker: str = "^KS11") -> S:
+    """지수 일봉 시계열(기본 KOSPI — 레짐 검증/폭 역사 기준일용)."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        s = S([], [], [], [])
+        for d, c in con.execute(
+            "SELECT date, close FROM ohlcv WHERE ticker=? ORDER BY date", (ticker,)
+        ):
+            if c and float(c) > 0:
+                s.dates.append(str(d))
+                s.close.append(float(c))
+        return s
+    finally:
+        con.close()
+
+
+def _idx_le(dates: Sequence[str], asof: str) -> int:
+    return bisect.bisect_right(dates, asof) - 1
+
+
+def breadth_at(
+    series: Dict[str, S], asof: str, *, ma_w: int = 20, max_age: int = 7
+) -> Optional[float]:
+    """asof 시점의 'MA20 상회 비율(%)' — 그 시점까지의 데이터만 사용(룩어헤드 없음)."""
+    n = above = 0
+    try:
+        asof_d = date.fromisoformat(asof)
+    except ValueError:
+        return None
+    for s in series.values():
+        i = _idx_le(s.dates, asof)
+        if i < 0:
+            continue
+        try:
+            if (asof_d - date.fromisoformat(s.dates[i])).days > max_age:
+                continue
+        except ValueError:
+            continue
+        if i + 1 < ma_w:
+            continue
+        n += 1
+        ma = sum(s.close[i + 1 - ma_w: i + 1]) / ma_w
+        if s.close[i] > ma:
+            above += 1
+    if n < 20:
+        return None
+    return above / n * 100.0
+
+
+def save_history(breadths: Dict[str, float], out_path: Optional[Path] = None) -> int:
+    """일별 폭 역사 JSON 저장(검증도구·주말 잡 공용). 반환: 저장 일수."""
+    out = Path(out_path or HISTORY_PATH)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(
+            {"updated_at": date.today().isoformat(), "dates": breadths},
+            ensure_ascii=True,
+            indent=0,
+        ),
+        encoding="utf-8",
+    )
+    return len(breadths)
+
+
+def refresh_history(db_path: Optional[Path] = None, out_path: Optional[Path] = None) -> int:
+    """일별 폭 역사를 전 종목 일봉으로 재계산·저장(주말 유지보수 잡). 반환: 일수.
+
+    100일 미만이면 오류 — 백분위 표시가 낡은 파일로 남는 것을 방지.
+    """
+    db = Path(db_path or DB_PATH)
+    series = load_universe(db)
+    index = load_index(db)
+    if not series or not index.dates:
+        raise RuntimeError("ohlcv 데이터 없음 — 폭 역사 갱신 불가")
+    breadths: Dict[str, float] = {}
+    for d in index.dates:
+        p = breadth_at(series, d)
+        if p is not None:
+            breadths[d] = round(p, 2)
+    if len(breadths) < 100:
+        raise RuntimeError(f"폭 역사 부족: {len(breadths)}일")
+    n = save_history(breadths, out_path)
+    logger.info(f"폭 역사 갱신 완료: {out_path or HISTORY_PATH} ({n}일)")
+    return n
 
 
 def load_breadth_series(

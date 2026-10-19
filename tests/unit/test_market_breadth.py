@@ -4,6 +4,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from analytics.market_breadth import (  # noqa: E402
@@ -13,6 +15,8 @@ from analytics.market_breadth import (  # noqa: E402
     format_breadth,
     load_breadth_history,
     load_breadth_series,
+    refresh_history,
+    save_history,
 )
 
 
@@ -125,6 +129,49 @@ class TestHistoryAndPercentile:
 
     def test_panic_threshold_value(self):
         assert PANIC_THRESHOLD == 15.0
+
+
+class TestHistoryRefresh:
+    """S133: 폭 역사 갱신(주말 유지보수) + JSON 저장."""
+
+    def _make_db(self, tmp_path, tickers: int = 25, days: int = 130):
+        db = tmp_path / "t.db"
+        con = sqlite3.connect(db)
+        con.execute(
+            "CREATE TABLE ohlcv (ticker TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume INTEGER)"
+        )
+        d0 = date(2026, 6, 1)
+        for k in range(tickers):
+            for i in range(days):
+                d = (d0 + timedelta(days=i)).isoformat()
+                con.execute(
+                    "INSERT INTO ohlcv VALUES (?,?,100,101,99,?,10)",
+                    (f"t{k:03d}", d, 100.0 + i),  # 꾸준 상승 → MA20 상회 100%
+                )
+        for i in range(days):
+            d = (d0 + timedelta(days=i)).isoformat()
+            con.execute("INSERT INTO ohlcv VALUES ('^KS11',?,1,1,1,1,0)", (d,))
+        con.commit()
+        con.close()
+        return db
+
+    def test_save_history_roundtrip(self, tmp_path):
+        n = save_history({"2026-10-18": 11.0}, tmp_path / "h.json")
+        assert n == 1
+        assert load_breadth_history(tmp_path / "h.json") == {"2026-10-18": 11.0}
+
+    def test_refresh_history_happy(self, tmp_path):
+        db = self._make_db(tmp_path)
+        out = tmp_path / "hist.json"
+        n = refresh_history(db, out)
+        h = load_breadth_history(out)
+        assert n == len(h) == 111, "130일 − MA20 워밍업 19일"
+        assert set(h.values()) == {100.0}, "전부 상승 종목 → 폭 100%"
+
+    def test_refresh_history_too_short_raises(self, tmp_path):
+        db = self._make_db(tmp_path, days=40)
+        with pytest.raises(RuntimeError):
+            refresh_history(db, tmp_path / "hist.json")
 
 
 class TestWiring:
