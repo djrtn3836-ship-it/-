@@ -956,3 +956,13 @@ validation 도구에서 analytics/market_breadth.py(프로덕션)로 이관 — 
   장중(15:12) 실행분은 10-19 종가 미확정 상태였으므로 삭제 후 17:00 자동 실행으로
   **마감 종가 기준 재정산**되도록 조치(앱 재시작 PID 17900 — 신버전 로드).
 [검증] run_all 1892 passed(+10 신규 테스트 tests/unit/test_feedback_catchup.py)
+
+## 2026-10-19 — Session 135: 자체 ML/신뢰도 판별력 검증 도구 신설 (결과 대기)
+- validation/ml_discrimination_test.py — 진입 신호(BUY+SIGNAL_ENTRY)의 confidence·
+  ml_score·score 5분위 × 초과수익(같은 날·행동 평균 차감 — flow_factor_test 관례)
+  + Spearman + 상하위 Welch t + 일자별 일관성 + HOLD(조용함) ml 분위 적중.
+  아티팩트 필터(|1d|>70·|5d|>300), ml_score=0.5(ML 미적용) 분리 보고.
+- 실측 전제: 기록된 BUY confidence = 0.610~0.705 — **0.60 알림 필터는 실제로 발동 안 함**
+  (실질 경계 = 분석기 자체 ≥0.61). ml_score는 0.21~0.86이나 절반(6,153건)은 0.5 기본값.
+- S134에서 outcome 정합성 확보 → 17:00 자동 재정산 직후 실행 예약(백그라운드 job).
+[검증] run_all 1901 passed(+9)
