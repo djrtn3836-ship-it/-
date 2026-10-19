@@ -236,7 +236,7 @@ class TestSchedulerRegistration:
         src = p.read_text(encoding="utf-8")
         assert '"supply_demand"' in src
         assert "CronTrigger(day_of_week=\"mon-fri\", hour=16, minute=35" in src
-        assert 'self.startup_details["job_count"] = 27' in src
+        assert 'self.startup_details["job_count"] = 28' in src
 
     def test_trading_day_guard(self):
         p = Path(__file__).resolve().parents[2] / "app" / "bootstrap.py"

@@ -153,6 +153,21 @@ class TestDisplay:
                                  "mean5": 4.94, "hit5": 60.4, "n5": 48}])
         assert "무상증자" in text and "삼성전자" in text and "+4.94%" in text
 
+    def test_format_alert_entry_stats(self):
+        ev = [{"category": "무상증자", "name": "삼성전자", "ticker": "005930",
+               "mean5": 4.94, "hit5": 60.4, "n5": 48}]
+        text = dw.format_alert(ev, entry_stats={"무상증자": {"e2_mean": 3.71, "e2_n": 49}})
+        assert "다음날 시가 진입 5일 +3.71%" in text
+        ev2 = [{"category": "합병", "name": "A", "ticker": "000001", "mean5": 1.13, "hit5": 52.7, "n5": 150}]
+        text2 = dw.format_alert(ev2, entry_stats={"합병": {"e2_mean": 0.58, "e2_n": 150}})
+        assert "당일 소멸" in text2
+
+    def test_load_entry_stats(self, tmp_path):
+        p = tmp_path / "entry.json"
+        p.write_text(json.dumps({"무상증자": {"entries": {"E2_5": {"mean": 3.71, "n": 49}}}}), encoding="utf-8")
+        st = dw.load_entry_stats(p)
+        assert st["무상증자"]["e2_mean"] == 3.71 and st["무상증자"]["e2_n"] == 49
+
     def test_briefing_section(self, monkeypatch):
         monkeypatch.setattr(dw, "events_for_day", lambda *a, **kw: [{
             "ticker": "005930", "name": "삼성전자", "category": "무상증자",
@@ -182,4 +197,4 @@ class TestWiring:
         src = (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(encoding="utf-8")
         assert src.count("scheduled_disclosure_watch") >= 3, "import + 2 jobs"
         assert "disclosure_watch_am" in src and "disclosure_watch_pm" in src
-        assert 'job_count"] = 27' in src
+        assert 'job_count"] = 28' in src

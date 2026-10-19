@@ -25,7 +25,9 @@ MIN_N = 15
 
 CATEGORY_ORDER = [
     "자사주매입", "자사주처분", "유상증자", "무상증자", "감자", "주식분할",
-    "최대주주변경", "수주계약", "실적공시", "불성실공시", "CB/BW", "배당",
+    "최대주주변경", "합병", "회사분할", "영업양수도", "타법인주식취득",
+    "신규시설투자", "대표이사변경",
+    "수주계약", "실적공시", "불성실공시", "CB/BW", "배당",
     "횡령배임", "소송",
 ]
 
@@ -61,7 +63,28 @@ def classify_title(title: str) -> Optional[str]:
         return "횡령배임"
     if "소송" in t:
         return "소송"
+    if "합병" in t and "종료" not in t:
+        return "합병"
+    if "회사분할" in t or "인적분할" in t or "물적분할" in t:
+        return "회사분할"
+    if "영업양수" in t or "영업양도" in t:
+        return "영업양수도"
+    if "타법인주식" in t:
+        return "타법인주식취득"
+    if "신규시설투자" in t or "시설투자" in t:
+        return "신규시설투자"
+    if "대표이사" in t and ("변경" in t or "선임" in t):
+        return "대표이사변경"
     return None
+
+
+def title_flags(title: str) -> Dict[str, bool]:
+    """정정/자율공시 플래그 — 신호 품질 분해용."""
+    t = str(title or "")
+    return {
+        "corrected": "[기재정정]" in t or "정정" in t,
+        "voluntary": "자율공시" in t,
+    }
 
 
 def parse_date(s: str) -> Optional[datetime]:

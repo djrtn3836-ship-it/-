@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WATCH_LOG = ROOT / "data" / "disclosure_watch_log.jsonl"
 STATE_PATH = ROOT / "data" / "disclosure_watch_state.json"
 STUDY_PATH = ROOT / "data" / "disclosure_study.json"
+ENTRY_STUDY_PATH = ROOT / "data" / "disclosure_entry_study.json"
 PAGE_COUNT = 100
 DEFAULT_DAYS = 2
 SCAN_MAX_PAGES = 60
@@ -245,8 +246,26 @@ def run_watch(
     }
 
 
-def format_alert(events: List[Dict[str, Any]]) -> str:
+def load_entry_stats(entry_path: Path = ENTRY_STUDY_PATH) -> Dict[str, Dict[str, Any]]:
+    """진입 실증(S142) → {유형: {e2_mean, e2_n, e1_mean}}."""
+    try:
+        data = json.loads(entry_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for cat, res in (data or {}).items():
+        if not isinstance(res, dict) or "entries" not in res:
+            continue
+        entries = res.get("entries") or {}
+        e2 = entries.get("E2_5") or {}
+        e1 = entries.get("E1_5") or {}
+        out[cat] = {"e2_mean": e2.get("mean"), "e2_n": e2.get("n"), "e1_mean": e1.get("mean")}
+    return out
+
+
+def format_alert(events: List[Dict[str, Any]], entry_stats: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
     lines = ["📢 <b>공시 신호 (A급)</b>"]
+    stats = entry_stats if entry_stats is not None else load_entry_stats()
     for e in events[:6]:
         lines.append(f"• <b>{e.get('category')}</b>: {e.get('name')}({e.get('ticker')})")
         if e.get("mean5") is not None:
@@ -254,7 +273,13 @@ def format_alert(events: List[Dict[str, Any]]) -> str:
                 f"  역사 5일 평균 {float(e['mean5']):+.2f}% · 적중 {float(e.get('hit5') or 0):.0f}% "
                 f"(n={e.get('n5')})"
             )
-    lines.append("※ 공시일 종가 매수 가정 · 실제 주문 없음")
+        es = stats.get(str(e.get("category") or "")) or {}
+        if es.get("e2_mean") is not None:
+            e2 = float(es["e2_mean"])
+            lines.append(f"  다음날 시가 진입 5일 {e2:+.2f}% (n={es.get('e2_n')})")
+            if e2 < 1.0:
+                lines.append("  ※ 효과가 당일 소멸 — 14:50 장중 알림에서만 유효")
+    lines.append("※ 공시일 종가 매수 가정 · 5일 보유 권장(손절 -3%는 역효과 실증) · 실제 주문 없음")
     return "\n".join(lines)
 
 

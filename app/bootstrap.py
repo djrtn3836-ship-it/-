@@ -1267,6 +1267,11 @@ class Bootstrapper(TracedService):
             "disclosure_watch_pm", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
+            scheduled_disclosure_watch,
+            CronTrigger(day_of_week="mon-fri", hour=14, minute=50, timezone="Asia/Seoul"),
+            "disclosure_watch_intraday", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_market_risk_check,
             CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
             "market_risk_check", max_retries=2, retry_delay=5,
@@ -1282,7 +1287,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 27
+        self.startup_details["job_count"] = 28
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
