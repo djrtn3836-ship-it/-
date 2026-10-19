@@ -17,6 +17,7 @@
     - 일요일: DB 유지보수(PRAGMA optimize — VACUUM 없음) + 데이터 준비도 점검.
     - S133: 폭 역사 갱신(breadth_history)을 매 유지보수 실행 — 브리핑/대시보드
       '역사 백분위' 표시의 신선도 유지.
+    - S136: 주간 성적표(weekly_scorecard) — 알림 vs 무작위·ML 판별력 자동 축적.
     - 안전모드(TEST_MODE 등)면 전부 건너뜀(프로덕션 DB 보호).
     - 모든 잡 함수 주입 가능(오프라인 테스트).
 """
@@ -52,6 +53,7 @@ async def run_maintenance(
     readiness_fn: Optional[Callable[[], Any]] = None,
     maintenance_fn: Optional[Callable[..., Any]] = None,
     breadth_fn: Optional[Callable[[], Any]] = None,
+    scorecard_fn: Optional[Callable[[], Any]] = None,
     csv_path: Path = UNIVERSE_CSV,
 ) -> Dict[str, Any]:
     """비거래일 1회성 유지보수 실행. {"day":요일, "jobs":{이름:결과}} 반환."""
@@ -81,6 +83,10 @@ async def run_maintenance(
         from analytics.market_breadth import refresh_history
 
         breadth_fn = refresh_history
+    if scorecard_fn is None:
+        from scheduler.weekly_scorecard import run_scorecard
+
+        scorecard_fn = run_scorecard
 
     async def _safe(name: str, fn: Callable[[], Any]) -> None:
         try:
@@ -102,6 +108,8 @@ async def run_maintenance(
         await _safe("data_readiness", readiness_fn)
     # S133: 폭 역사 갱신(브리핑/대시보드 '역사 백분위' 신선도 유지) — 매 유지보수 실행
     await _safe("breadth_history", lambda: asyncio.to_thread(breadth_fn))
+    # S136: 주간 신호 성적표(알림 vs 무작위 · ML 판별력) — 판정 축적
+    await _safe("weekly_scorecard", lambda: asyncio.to_thread(scorecard_fn))
 
     logger.info(f"주말 유지보수 종료: {result}")
     return result
