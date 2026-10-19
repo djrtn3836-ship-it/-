@@ -18,7 +18,7 @@ from __future__ import annotations
 import bisect
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -42,24 +42,35 @@ Series = Dict[str, Dict[str, List[float]]]
 
 @dataclass
 class S:
-    """종목 1개의 전체 일봉 시계열(폭 역사 계산용 — S131 검증도구에서 이관)."""
+    """종목 1개의 전체 일봉 시계열(폭 역사 계산용 — S131 검증도구에서 이관).
+
+    open/volume은 S136(매도규칙 검증)에서 추가 — 기본값으로 기존 호출과 호환.
+    """
 
     dates: List[str]
     close: List[float]
     high: List[float]
     low: List[float]
+    open: List[float] = field(default_factory=list)
+    volume: List[float] = field(default_factory=list)
 
 
-def load_universe(db_path: Path = DB_PATH, min_days: int = 30) -> Dict[str, S]:
-    """전 종목(비지수) 일봉 전체 시계열 — 일별 폭 역사 계산용."""
+def load_universe(db_path: Path = DB_PATH, min_days: int = 30, with_open_volume: bool = False) -> Dict[str, S]:
+    """전 종목(비지수) 일봉 전체 시계열 — 일별 폭 역사 계산용.
+
+    with_open_volume=True면 시가·거래량도 적재(S136 매도규칙 검증).
+    """
+    cols = "ticker, date, close, high, low"
+    if with_open_volume:
+        cols += ", open, volume"
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         out: Dict[str, S] = {}
         cur = con.execute(
-            "SELECT ticker, date, close, high, low FROM ohlcv "
-            "WHERE ticker NOT LIKE '^%' ORDER BY ticker, date"
+            f"SELECT {cols} FROM ohlcv WHERE ticker NOT LIKE '^%' ORDER BY ticker, date"
         )
-        for t, d, c, h, lo in cur:
+        for row in cur:
+            t, d, c, h, lo = row[0], row[1], row[2], row[3], row[4]
             if not c or float(c) <= 0:
                 continue
             s = out.setdefault(t, S([], [], [], []))
@@ -67,6 +78,9 @@ def load_universe(db_path: Path = DB_PATH, min_days: int = 30) -> Dict[str, S]:
             s.close.append(float(c))
             s.high.append(float(h or c))
             s.low.append(float(lo or c))
+            if with_open_volume:
+                s.open.append(float(row[5] or c))
+                s.volume.append(float(row[6] or 0.0))
         return {k: v for k, v in out.items() if len(v.dates) >= min_days}
     finally:
         con.close()

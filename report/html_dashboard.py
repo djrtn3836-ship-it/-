@@ -226,6 +226,21 @@ def collect_macro_section() -> Dict[str, Any]:
                 panic=panic,
                 note=PANIC_NOTE if panic else "",
             )
+            try:
+                from analytics.market_zones import classify_zone
+
+                k5 = None
+                try:
+                    from scheduler.macro_collector import get_cached_macro
+
+                    m = get_cached_macro()
+                    k5 = float(m.kospi_trend) if m.kospi_trend is not None else None
+                except Exception:
+                    pass
+                z = classify_zone(k5, float(p20) if p20 is not None else None)
+                out["zone"] = {"zone": z.get("zone"), "reasons": z.get("reasons", []), "kospi_5d": k5}
+            except Exception as e:
+                logger.debug(f"구역 섹션 실패(무시): {e}")
     except Exception as e:
         logger.debug(f"시장 폭 섹션 실패(무시): {e}")
     return out
@@ -393,11 +408,20 @@ def render_html(data: Dict[str, Any]) -> str:
         <tr><th>시장 폭 MA20↑</th><td>{_fmt(p20, 0, '%')} {_badge(tag, lvl)}{pct_txt}</td></tr>
         <tr><th>MA60↑ / 상승·하락</th><td>{_fmt(bl.get('above_ma60_pct'), 0, '%')} / {_fmt(bl.get('advancers'), 0)}·{_fmt(bl.get('decliners'), 0)}</td></tr>
       </table>{note}"""
+    z = macro.get("zone") or {}
+    zone_html = ""
+    if z.get("zone"):
+        zlvl = {"진입금지": "bad", "기회": "warn", "관찰": "warn", "정상": "ok"}.get(str(z["zone"]), "ok")
+        reason = (z.get("reasons") or [""])[0]
+        zone_html = (
+            f'<div class="note">🚦 구역: {_badge(str(z["zone"]), zlvl)}'
+            f'{" — " + _esc(reason) if reason else ""} (참고용 — 주문/점수 반영 없음)</div>'
+        )
     macro_html = f"""
     <div class="card">
       <h2>5. 매크로 (13지표)</h2>
       <div class="kpi">{_fmt(macro.get('score'), 3)} <small>종합 점수 (0~1)</small></div>
-      <table style="margin-top:10px">{rows}</table>{breadth_html}
+      <table style="margin-top:10px">{rows}</table>{breadth_html}{zone_html}
     </div>"""
 
     # --- 집중도 리스크 (P8-1)

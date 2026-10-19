@@ -75,6 +75,15 @@ async def _market_section(db: Any) -> List[str]:
             p20 = b.get("above_ma20_pct")
             if p20 is not None and float(p20) <= PANIC_THRESHOLD:
                 out.append(f"  ⚠ 패닉권(≤{PANIC_THRESHOLD:.0f}%) — {PANIC_NOTE}")
+            try:
+                from analytics.market_zones import classify_zone, format_zone_line
+
+                k5 = float(m.kospi_trend) if m.kospi_trend is not None else None
+                b20 = float(p20) if p20 is not None else None
+                z = classify_zone(k5, b20)
+                out.append("  " + format_zone_line(z, k5, b20))
+            except Exception as e:
+                logger.debug(f"브리핑 구역 실패(무시): {e}")
         except Exception as e:
             logger.debug(f"브리핑 시장 폭 실패(무시): {e}")
     except Exception as e:
