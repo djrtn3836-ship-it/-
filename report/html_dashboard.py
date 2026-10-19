@@ -203,10 +203,20 @@ def collect_signal_registry_section() -> Dict[str, Any]:
         from scheduler.signal_logger import latest_signals, scorecard
 
         latest = latest_signals()
+        disc: Dict[str, Any] = {}
+        try:
+            from scheduler.disclosure_watch import events_for_day, latest_event_day
+
+            day = latest_event_day()
+            if day:
+                disc = {"date": day, "rows": events_for_day(day)}
+        except Exception:
+            disc = {}
         return {
             "date": latest.get("date", ""),
             "active": latest.get("signals", []),
             "scorecard": scorecard(),
+            "disclosures": disc,
         }
     except Exception as e:
         logger.debug(f"신호 기록부 섹션 실패(무시): {e}")
@@ -626,6 +636,24 @@ def render_html(data: Dict[str, Any]) -> str:
       <div class="note">매일 17:20 자동 기록·채점. 실제 주문은 발생하지 않습니다.</div>
     </div>"""
 
+    disc = sig.get("disclosures") or {}
+    disc_rows = ""
+    for r in (disc.get("rows") or []):
+        gl = str(r.get("grade") or "-")
+        disc_rows += (
+            f"<tr><th>{_badge('A' if gl.startswith('A') else 'B', 'bad' if gl.startswith('A') else 'warn')} "
+            f"{_esc(str(r.get('name') or ''))}({_esc(str(r.get('ticker') or ''))})</th>"
+            f"<td>{_esc(str(r.get('category') or ''))} · 5d {_fmt(r.get('mean5'), 2, '%')} "
+            f"적중 {_fmt(r.get('hit5'), 0, '%')}</td></tr>"
+        )
+    disclosures_html = f"""
+    <div class="card">
+      <h2>13. 공시 신호 (A/B)</h2>
+      <div class="note">최근 기록 {_esc(str(disc.get('date') or '—'))} · DART 전체 공시 → 유니버스 필터</div>
+      <table style="margin-top:8px">{disc_rows or '<tr><td class="note">기록 없음</td></tr>'}</table>
+      <div class="note">A급(무상증자)은 텔레그램 알림 · 매일 08:10·16:40 스캔 · 실제 주문 없음</div>
+    </div>"""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -647,7 +675,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{signals_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{signals_html}{disclosures_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
 </body></html>"""
 
 

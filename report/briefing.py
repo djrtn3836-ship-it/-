@@ -262,6 +262,26 @@ async def _signal_registry_section() -> List[str]:
     return out
 
 
+def _disclosure_section(day: str) -> List[str]:
+    """전일/당일 공시 신호(📢) — A/B 이벤트만. 실패 시 생략."""
+    try:
+        from scheduler.disclosure_watch import described, events_for_day
+
+        rows = events_for_day(day)
+    except Exception as e:
+        logger.debug(f"브리핑 공시 섹션 실패(무시): {e}")
+        return []
+    if not rows:
+        return []
+    lines = ["📢 <b>공시 신호</b>"]
+    for r in rows[:8]:
+        icon = "🎯" if str(r.get("grade")).startswith("A") else "🟡"
+        lines.append(f"  {icon} {described(r)}")
+    if len(rows) > 8:
+        lines.append(f"  외 {len(rows) - 8}건")
+    return lines
+
+
 async def build_briefing(
     db: Any,
     *,
@@ -289,6 +309,7 @@ async def build_briefing(
     lines: List[str] = [header, "━━━━━━━━━━━━━━━━━━━━━"]
     lines += await _market_section(db)
     lines += await _signal_registry_section()
+    lines += _disclosure_section(day_for_signals)
     lines += _regime_section()
     lines += await _signal_section(db, day_for_signals)
     if exit_soon:

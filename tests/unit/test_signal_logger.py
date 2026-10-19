@@ -133,7 +133,7 @@ class TestWiring:
     def test_bootstrap_job_and_count(self):
         src = (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(encoding="utf-8")
         assert '"signal_log"' in src
-        assert 'self.startup_details["job_count"] = 25' in src
+        assert 'self.startup_details["job_count"] = 27' in src
 
     def test_weekly_includes_registry(self):
         src = (Path(__file__).resolve().parents[2] / "scheduler" / "weekly_scorecard.py").read_text(encoding="utf-8")
