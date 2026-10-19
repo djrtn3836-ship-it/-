@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,7 +40,7 @@ def _num(v: Any, digits: int = 1) -> str:
         return "—"
 
 
-async def _market_section() -> List[str]:
+async def _market_section(db: Any) -> List[str]:
     out: List[str] = []
     try:
         from scheduler.macro_collector import get_cached_macro
@@ -55,6 +57,19 @@ async def _market_section() -> List[str]:
                 extra.append(f"{label} {_num(v, 1)}")
         if extra:
             out.append("  " + " · ".join(extra))
+        try:
+            from analytics.market_breadth import (
+                compute_breadth,
+                format_breadth,
+                load_breadth_series,
+            )
+
+            b = compute_breadth(await asyncio.to_thread(load_breadth_series))
+            line = format_breadth(b)
+            if line:
+                out.append("  " + line)
+        except Exception as e:
+            logger.debug(f"브리핑 시장 폭 실패(무시): {e}")
     except Exception as e:
         logger.debug(f"브리핑 시장 섹션 실패(무시): {e}")
     return out
@@ -226,7 +241,7 @@ async def build_briefing(
         day_for_signals = (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     lines: List[str] = [header, "━━━━━━━━━━━━━━━━━━━━━"]
-    lines += await _market_section()
+    lines += await _market_section(db)
     lines += _regime_section()
     lines += await _signal_section(db, day_for_signals)
     if exit_soon:

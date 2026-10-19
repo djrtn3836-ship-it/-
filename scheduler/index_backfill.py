@@ -26,11 +26,14 @@ from core.logger import setup_logger
 
 logger = setup_logger("index_backfill")
 
-INDICES: Dict[str, str] = {
-    "^KS11": "KOSPI",
-    "^KQ11": "KOSDAQ",
-    "^KS200": "KOSPI200",
-}
+# 지수별 후보(앞에서부터 시도 — 실패/행 부족 시 다음 후보).
+# 🔴 2026-10-19: ^KS200은 yfinance에서 1행만 반환(S106 실측) →
+#   KODEX 200 ETF(069500.KS) 프록시로 대체(가격 스케일 무관 — 수익률 추적).
+INDEX_CANDIDATES: List[Tuple[str, List[str]]] = [
+    ("KOSPI", ["^KS11"]),
+    ("KOSDAQ", ["^KQ11"]),
+    ("KOSPI200", ["^KS200", "069500.KS"]),
+]
 MIN_ROWS = 60  # 3개월 미만 시리즈는 저장하지 않는다(무음 오염 방지)
 
 Fetcher = Callable[[str, str], List[Dict[str, Any]]]
@@ -91,37 +94,42 @@ async def backfill_indices(
     """지수 시계열을 ohlcv에 저장. {지수명: 저장 행수} 반환(실패/부족은 0)."""
     fetch = fetcher or _fetch_index
     out: Dict[str, int] = {}
-    for yf_ticker, name in INDICES.items():
-        try:
-            rows = fetch(yf_ticker, period)
-        except Exception as e:
-            logger.warning(f"{name}({yf_ticker}) 조회 실패: {e}")
-            rows = []
-        if len(rows) < min_rows:
-            logger.warning(
-                f"{name}({yf_ticker}) {len(rows)}행 — 저장 생략(과거 1행 사고 재발 방지)"
-            )
-            out[name] = 0
-            continue
-        recs: List[Tuple[Any, ...]] = [
-            (
-                yf_ticker,
-                r["date"],
-                r.get("open", 0.0),
-                r.get("high", 0.0),
-                r.get("low", 0.0),
-                r.get("close", 0.0),
-                r.get("volume", 0),
-            )
-            for r in rows
-        ]
-        try:
-            n = await db.save_ohlcv_batch(recs)
-            out[name] = int(n or 0)
-            logger.info(f"{name}: {out[name]}행 저장 ({rows[0]['date']} ~ {rows[-1]['date']})")
-        except Exception as e:
-            logger.warning(f"{name} 저장 실패: {e}")
-            out[name] = 0
+    for name, candidates in INDEX_CANDIDATES:
+        saved = 0
+        for yf_ticker in candidates:
+            try:
+                rows = fetch(yf_ticker, period)
+            except Exception as e:
+                logger.warning(f"{name}({yf_ticker}) 조회 실패: {e}")
+                rows = []
+            if len(rows) < min_rows:
+                logger.warning(
+                    f"{name}({yf_ticker}) {len(rows)}행 — 다음 후보/생략"
+                )
+                continue
+            recs: List[Tuple[Any, ...]] = [
+                (
+                    yf_ticker,
+                    r["date"],
+                    r.get("open", 0.0),
+                    r.get("high", 0.0),
+                    r.get("low", 0.0),
+                    r.get("close", 0.0),
+                    r.get("volume", 0),
+                )
+                for r in rows
+            ]
+            try:
+                n = await db.save_ohlcv_batch(recs)
+                saved = int(n or 0)
+                logger.info(
+                    f"{name}: {saved}행 저장 ({rows[0]['date']} ~ {rows[-1]['date']}, "
+                    f"source={yf_ticker})"
+                )
+                break
+            except Exception as e:
+                logger.warning(f"{name}({yf_ticker}) 저장 실패: {e}")
+        out[name] = saved
     return out
 
 

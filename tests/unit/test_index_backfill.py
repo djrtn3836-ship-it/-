@@ -34,14 +34,14 @@ def _fake_fetch(n_rows):
 
 class TestIndexBackfill:
 
-    def test_saves_kospi_kosdaq_skips_short(self):
+    def test_saves_with_kospi200_proxy(self):
         db = FakeDB()
         res = asyncio.run(backfill_indices(db, fetcher=_fake_fetch(70), min_rows=60))
         assert res["KOSPI"] == 70 and res["KOSDAQ"] == 70
-        assert res["KOSPI200"] == 0, "1행 시리즈는 저장 금지(무음 오염 방지)"
+        assert res["KOSPI200"] == 70, "^KS200 1행 → 069500.KS 프록시 폴백"
         tickers = {r[0] for r in db.saved}
-        assert tickers == {"^KS11", "^KQ11"}
-        assert len(db.saved) == 140
+        assert tickers == {"^KS11", "^KQ11", "069500.KS"}
+        assert len(db.saved) == 210
 
     def test_fetch_exception_isolated(self):
         def broken(yf_ticker, period):
