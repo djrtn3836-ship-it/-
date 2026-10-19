@@ -22,7 +22,8 @@ class TestScorecard:
         monkeypatch.setattr(ws, "LOG_DIR", tmp_path)
         _patch_ok(monkeypatch)
         out = ws.run_scorecard()
-        assert out["rc"] == {"signal_vs_random": 0, "ml_discrimination": 1}
+        assert out["rc"]["signal_vs_random"] == 0 and out["rc"]["ml_discrimination"] == 1
+        assert "signal_registry" in out["rc"], "신호 기록부 성적 포함"
         p = Path(out["path"])
         assert p.exists() and "주간 성적표" in p.read_text(encoding="utf-8")
 

@@ -1,0 +1,2 @@
+{"date": "2026-10-19", "signal": "kospi_nasdaq_gap_le-5p", "grade": "A", "label": "KOSPI-나스닥 괴리≤-5%p", "value": null, "breadth": 24.5, "kospi5d": -9.652369681078065, "gap5": -5.171871940618266, "vol_ratio": 1.2113577108513656}
+{"date": "2026-10-19", "signal": "kospi5_le-5", "grade": "C", "label": "KOSPI 5일≤-5%", "value": null, "breadth": 24.5, "kospi5d": -9.652369681078065, "gap5": -5.171871940618266, "vol_ratio": 1.2113577108513656}

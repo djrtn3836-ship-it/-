@@ -44,6 +44,15 @@ def run_scorecard() -> Dict[str, Any]:
     with contextlib.redirect_stdout(buf):
         rc["signal_vs_random"] = _safe(sig_main)
         rc["ml_discrimination"] = _safe(ml_main)
+        try:
+            from scheduler.signal_logger import scorecard_text
+
+            print("")
+            print(scorecard_text())
+            rc["signal_registry"] = 0
+        except Exception as e:
+            logger.error(f"신호 기록부 성적표 실패: {e}")
+            rc["signal_registry"] = -1
     out_path.write_text(f"주간 성적표 {date.today().isoformat()}\n\n{buf.getvalue()}", encoding="utf-8")
     logger.info(f"주간 성적표 저장: {out_path} (rc={rc})")
     return {"path": str(out_path), "rc": rc}
