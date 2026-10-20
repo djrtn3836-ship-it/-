@@ -159,7 +159,7 @@ class TestBacktestVsPaper:
              "cost_roundtrip": 0.003},
             {"start": "2026-10-20", "total_pct": 1.23, "positions": 1, "closed": 2, "win_rate": 50.0},
         )
-        assert "CAGR 30.2" in txt and "모의(실전)" in txt and "+1.23%" in txt
+        assert "CAGR 30.2" in txt and "모의(실전" in txt and "+1.23%" in txt
 
     def test_missing_paper(self):
         from scheduler.weekly_scorecard import format_backtest_vs_paper

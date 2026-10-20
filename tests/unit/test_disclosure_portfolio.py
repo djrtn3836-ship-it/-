@@ -152,3 +152,27 @@ class TestDedupe20Days:
         assert out1["positions"] == 0, "1일 보유 청산"
         out2 = pf.run_portfolio(today="2022-01-07", state_path=state, watch_log=log, db=db)
         assert out2["opened"] == 0, "20거래일 내 동일 유형 재진입 금지"
+
+class TestInverseVolSizing:
+
+    def test_high_vol_gets_smaller(self, tmp_path):
+        ds = make_days()
+        low = [{"date": d, "close": 100.0 * (1.001 ** i)} for i, d in enumerate(ds)]
+        high = [{"date": d, "close": 100.0 * (1.05 if i % 2 else 0.95)} for i, d in enumerate(ds)]
+        db = FakeDB({"LOW": low, "HIGH": high, "L": low, "H": high})
+        log = _log(tmp_path, [
+            {"date": "20220105", "ticker": "L", "category": "주식소각", "grade": "A_생존"},
+            {"date": "20220105", "ticker": "H", "category": "주식소각", "grade": "A_생존"},
+        ])
+        state = tmp_path / "state.json"
+        out = pf.run_portfolio(today="2022-01-05", state_path=state, watch_log=log, db=db,
+                               max_pos=2, sizing="inverse_vol")
+        assert out["positions"] == 2
+        st = json.loads(state.read_text(encoding="utf-8"))
+        by = {p["ticker"]: p for p in st["positions"]}
+        assert by["H"]["scale"] == 0.5 and by["L"]["scale"] == 1.5, "고변동 축소·저변동 확대"
+        assert by["H"]["shares"] * by["H"]["entry_price"] < by["L"]["shares"] * by["L"]["entry_price"]
+
+    def test_scheduler_uses_invvol(self):
+        src = (Path(__file__).resolve().parents[2] / "analytics" / "disclosure_portfolio.py").read_text(encoding="utf-8")
+        assert 'run_portfolio(sizing="inverse_vol"' in src

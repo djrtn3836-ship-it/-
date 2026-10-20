@@ -36,15 +36,21 @@ def _safe(fn: Callable[[Optional[List[str]]], int], argv: Optional[List[str]] = 
 def format_backtest_vs_paper(bt: Dict[str, Any], pf: Dict[str, Any]) -> str:
     """백테스트(S145) vs 모의 실측(S146) 비교 텍스트. 데이터 없으면 빈 문자열."""
     lines = []
-    a = ((bt.get("variants") or {}).get("A_all") or {}).get("portfolio") or {}
+    variants = bt.get("variants") or {}
+    a = (variants.get("A_all") or {}).get("portfolio") or {}
+    ai = (variants.get("A_invvol") or {}).get("portfolio") or {}
     if a:
         lines.append(
             f"■ 백테스트 A_전체: CAGR {a.get('cagr')}% · Sharpe {a.get('sharpe')} · MDD {a.get('mdd')}% "
             f"(비용 {float(bt.get('cost_roundtrip', 0)) * 100:.1f}%)"
         )
+    if ai:
+        lines.append(
+            f"■ 백테스트 A_역변동성: CAGR {ai.get('cagr')}% · Sharpe {ai.get('sharpe')} · MDD {ai.get('mdd')}%"
+        )
     if pf:
         lines.append(
-            f"■ 모의(실전): 시작 {pf.get('start')} · 누적 {float(pf.get('total_pct', 0)):+.2f}% · "
+            f"■ 모의(실전, 역변동성): 시작 {pf.get('start')} · 누적 {float(pf.get('total_pct', 0)):+.2f}% · "
             f"보유 {pf.get('positions')} · 청산 {pf.get('closed')}(승률 {float(pf.get('win_rate', 0)):.0f}%)"
         )
     elif a:

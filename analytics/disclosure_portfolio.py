@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import statistics
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,21 @@ COST = 0.0015
 MAX_POS = 5
 START_CASH = 1.0
 HOLD_DAYS = {"자사주매입": 5, "무상증자": 5, "주식소각": 1, "합병": 1}
+VOL_TARGET = 0.15          # 목표 연변동성(S150 역변동성 실증)
+VOL_LOOKBACK = 20
+VOL_SCALE_MIN, VOL_SCALE_MAX = 0.5, 1.5
+
+
+def _ann_vol(series: Dict[str, Any], ticker: str) -> Optional[float]:
+    entry = series.get(ticker)
+    if not entry:
+        return None
+    closes = entry[2]
+    if len(closes) < VOL_LOOKBACK + 1:
+        return None
+    rets = [closes[i] / closes[i - 1] - 1.0 for i in range(len(closes) - VOL_LOOKBACK, len(closes))]
+    sd = statistics.pstdev(rets)
+    return sd * (252 ** 0.5) if sd > 0 else None
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -82,6 +98,7 @@ def run_portfolio(
     watch_log: Path = WATCH_LOG,
     db: Any = None,
     max_pos: int = MAX_POS,
+    sizing: str = "equal",
     logger: Any = None,
 ) -> Dict[str, Any]:
     """하루치 모의 운영(청산 → 신규 → 평가). 멱등(같은 날 재실행 안전)."""
@@ -204,6 +221,11 @@ def run_portfolio(
             for p in positions
         )
         notional = eq / max_pos
+        vol = _ann_vol(series, t)
+        scale = 1.0
+        if sizing == "inverse_vol" and vol:
+            scale = max(VOL_SCALE_MIN, min(VOL_SCALE_MAX, VOL_TARGET / vol))
+            notional *= scale
         if notional > cash:
             notional = cash
         if notional <= 0:
@@ -223,6 +245,8 @@ def run_portfolio(
                 "entry_price": px,
                 "price_date": price_date,
                 "shares": shares,
+                "vol": round(vol, 4) if vol else None,
+                "scale": round(scale, 2),
                 "hold": HOLD_DAYS[str(r["category"])],
             }
         )
@@ -280,7 +304,7 @@ def load_summary(state_path: Path = STATE_PATH) -> Dict[str, Any]:
 async def scheduled_disclosure_portfolio() -> Dict[str, Any]:
     """스케줄러 진입점 — 실패해도 예외를 밖으로 던지지 않는다."""
     try:
-        return run_portfolio(logger=logger)
+        return run_portfolio(sizing="inverse_vol", logger=logger)
     except Exception as e:
         logger.error(f"모의포트폴리오 실패: {e}")
         return {"status": "error", "error": str(e)}

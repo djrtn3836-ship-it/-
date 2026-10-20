@@ -1205,7 +1205,7 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.add_job_with_retry(
             send_momentum_report,
-            CronTrigger(day_of_week="mon-fri", hour=8, minute=30, timezone="Asia/Seoul"),
+            CronTrigger(day_of_week="mon", hour=8, minute=30, timezone="Asia/Seoul"),
             "momentum_report", max_retries=2, retry_delay=5,
         )
         self.scheduler.add_job_with_retry(
