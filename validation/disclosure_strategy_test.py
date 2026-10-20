@@ -139,6 +139,7 @@ def simulate(
     cost: float = COST,
     start_cash: float = 1.0,
     sizing: str = "equal",
+    cost_fn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """일별 포트폴리오 시뮬레이션(종가 진입/청산, 비용 반영)."""
     by_entry: Dict[str, List[Dict[str, Any]]] = {}
@@ -159,7 +160,8 @@ def simulate(
         for p in positions:
             if day >= p["exit_date"]:
                 px = _close_on(p["ticker"], day, series, p["entry_price"])
-                cash += p["shares"] * px * (1.0 - cost)
+                c = cost_fn(p["ticker"], day, p["shares"] * px, "sell") if cost_fn else cost
+                cash += p["shares"] * px * (1.0 - c)
             else:
                 still.append(p)
         # ② 신규 진입
@@ -188,7 +190,8 @@ def simulate(
                 notional = cash
             if notional <= 0:
                 continue
-            shares = notional / (px * (1.0 + cost))
+            c = cost_fn(s["ticker"], day, notional, "buy") if cost_fn else cost
+            shares = notional / (px * (1.0 + c))
             cash -= notional
             still.append(
                 {
@@ -386,6 +389,24 @@ def run_strategy(
             "exposure": round(sim_p["holding_days"] / max(len(kd), 1) * 100.0, 1),
         }
 
+    # 유동성 비용·수용규모 (S152): 자본 규모별 참여율 → 슬리피지
+    from validation.cost_model import LiquidityCost, capacity_stats
+
+    for name, cap in (
+        ("A_cap1", 1e8), ("A_cap5", 5e8), ("A_cap10", 1e9), ("A_cap30", 3e9),
+    ):
+        lc = LiquidityCost(series, cap)
+        sim_l = simulate(sigs_all, series, k_dates, sizing="inverse_vol", cost_fn=lc.cost)
+        variants[name] = {
+            "signals": len(sigs_all),
+            "trades": trade_stats(sigs_all, series, cost=COST),
+            "portfolio": metrics(sim_l["equity"], k_dates),
+            "exposure": round(sim_l["holding_days"] / max(len(k_dates), 1) * 100.0, 1),
+            "capital_krw": round(cap),
+            "cost": lc.summary(),
+        }
+    capacity = capacity_stats(series, sigs_all)
+
     # 무작위 벤치(동일 거래수·동일 보유기간)
     rng = random.Random(42)
     base_sigs = build_signals(tickers, series, categories=set(HOLD_DAYS), entry="close")
@@ -413,7 +434,12 @@ def run_strategy(
 
     bench = metrics([c / k_closes[0] for c in k_closes], k_dates)
     variants["kospi"] = {"signals": 0, "trades": {"n": 0}, "portfolio": bench, "exposure": 100.0}
-    return {"variants": variants, "period": [k_dates[0], k_dates[-1]], "cost_roundtrip": COST * 2}
+    return {
+        "variants": variants,
+        "period": [k_dates[0], k_dates[-1]],
+        "cost_roundtrip": COST * 2,
+        "capacity": capacity,
+    }
 
 
 def format_result(res: Dict[str, Any]) -> str:
@@ -424,6 +450,7 @@ def format_result(res: Dict[str, Any]) -> str:
         "A_next_open": "A_다음날시가", "A_cost06": "A_비용0.6%",
         "A_cost10": "A_비용1.0%", "A_drop_top5": "A_상위5%제외",
         "A_invvol": "A_역변동성", "A_2022_23": "A_22-23", "A_2024_26": "A_24-26",
+        "A_cap1": "A_자본1억", "A_cap5": "A_자본5억", "A_cap10": "A_자본10억", "A_cap30": "A_자본30억",
         "A_max3": "A_동시3", "A_max10": "A_동시10",
         "random": "무작위", "kospi": "KOSPI",
     }
@@ -433,6 +460,14 @@ def format_result(res: Dict[str, Any]) -> str:
         lines.append(
             f"{labels.get(name, name):<16}{v['signals']:>6}{p['cagr']:>8.1f}%{p['sharpe']:>8.2f}"
             f"{p['mdd']:>6.1f}%{t.get('win', 0):>6.1f}%{t.get('avg_net', 0):>9.2f}%{v['exposure']:>6.1f}%"
+            + (f"  비용 {v['cost']['avg_bp']:.0f}bp·참여 {v['cost']['avg_part_pct']:.1f}%" if v.get("cost") else "")
+        )
+    cap = res.get("capacity") or {}
+    if cap:
+        lines.append("")
+        lines.append(
+            f"수용규모(1% ADV 기준): 1회 중앙 {cap['median_krw']/1e8:.2f}억 · "
+            f"하위10% {cap['p10_krw']/1e8:.2f}억 · 5종목 동시 {cap['portfolio_krw']/1e8:.1f}억"
         )
     yearly = (res["variants"].get("A_all") or {}).get("yearly") or {}
     if yearly:

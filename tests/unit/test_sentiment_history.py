@@ -96,4 +96,4 @@ class TestWiring:
     def test_bootstrap_job(self):
         src = (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(encoding="utf-8")
         assert "scheduled_sentiment_history" in src and "sentiment_history" in src
-        assert 'job_count"] = 27' in src
+        assert 'job_count"] = 28' in src

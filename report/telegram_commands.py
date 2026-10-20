@@ -3,7 +3,9 @@ report/telegram_commands.py - v7.3.1 (mypy strict 완전 적용)
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Tuple, Callable
 
 from telegram import Update
@@ -51,6 +53,8 @@ class TelegramCommandHandler:
 
         self.app = Application.builder().token(self.token).build()
         self.app.add_handler(CommandHandler("status", self._status_command))
+        self.app.add_handler(CommandHandler("stress", self._stress_command))
+        self.app.add_handler(CommandHandler("portfolio", self._portfolio_command))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._natural_language_handler))
 
         await self.app.initialize()
@@ -205,6 +209,65 @@ class TelegramCommandHandler:
     # ============================================================
     # 신호 목록
     # ============================================================
+
+    # ============================================================
+    # 스트레스/수용규모 · 모의 포트폴리오 (S152)
+    # ============================================================
+    def _data_path(self, name: str) -> Path:
+        return Path(__file__).resolve().parents[1] / "data" / name
+
+    async def _stress_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_chat or not update.message:
+            return
+        if str(update.effective_chat.id) != self.chat_id:
+            await update.message.reply_text("⛔ 접근 권한이 없습니다.")
+            return
+        try:
+            d = json.loads(self._data_path("disclosure_strategy.json").read_text(encoding="utf-8"))
+            v = d.get("variants") or {}
+            labels = (("A_all", "기준"), ("A_cost10", "비용 1%"), ("A_invvol", "역변동성"),
+                      ("A_cap10", "자본 10억"), ("A_cap30", "자본 30억"))
+            lines = ["<b>🧪 스트레스 · 수용규모</b>", "━━━━━━━━━━━━━━━━━━━━━"]
+            for key, label in labels:
+                p = (v.get(key) or {}).get("portfolio") or {}
+                if p:
+                    lines.append(f"{label}: CAGR {p.get('cagr')}% · Sharpe {p.get('sharpe')} · MDD {p.get('mdd')}%")
+            cap = d.get("capacity") or {}
+            if cap:
+                lines.append("━━━━━━━━━━━━━━━━━━━━━")
+                lines.append(f"수용(1% ADV): 1회 {cap.get('median_krw', 0)/1e8:.2f}억 · 5종목 {cap.get('portfolio_krw', 0)/1e8:.1f}억")
+            lines.append("<i>※ 왕복비용 1%면 엣지 소멸 — 비용 관리 필수</i>")
+            await update.message.reply_text(chr(10).join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"❌ 스트레스 명령어 오류: {e}")
+            await update.message.reply_text(f"⚠️ 오류 발생: {e}")
+
+    async def _portfolio_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_chat or not update.message:
+            return
+        if str(update.effective_chat.id) != self.chat_id:
+            await update.message.reply_text("⛔ 접근 권한이 없습니다.")
+            return
+        try:
+            st = json.loads(self._data_path("disclosure_portfolio_state.json").read_text(encoding="utf-8"))
+            eq_hist = st.get("equity") or {}
+            equity = float(list(eq_hist.values())[-1]) if eq_hist else 1.0
+            closed = st.get("closed") or []
+            wins = sum(1 for c in closed if float(c.get("exit_price", 0)) > float(c.get("entry_price", 0)))
+            lines = [
+                "<b>📁 모의 포트폴리오 (주문 없음)</b>",
+                "━━━━━━━━━━━━━━━━━━━━━",
+                f"시작: {st.get('start')} · 자산 {equity:.4f} ({(equity-1)*100:+.2f}%)",
+                f"보유 {len(st.get('positions') or [])} · 청산 {len(closed)} (승률 {wins/len(closed)*100:.0f}%)" if closed else f"보유 {len(st.get('positions') or [])} · 청산 0",
+            ]
+            for p in st.get("positions") or []:
+                lines.append(f"· {p.get('name') or p.get('ticker')} {p.get('category')} {p.get('entry_date')} "
+                             f"{float(p.get('entry_price', 0)):,.0f}원 (hold {p.get('hold')})")
+            await update.message.reply_text(chr(10).join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"❌ 포트폴리오 명령어 오류: {e}")
+            await update.message.reply_text(f"⚠️ 오류 발생: {e}")
+
     async def _signal_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_chat or not update.message:
             return

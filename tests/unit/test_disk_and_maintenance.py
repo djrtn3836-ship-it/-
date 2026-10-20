@@ -126,7 +126,7 @@ class TestSchedulerRegistration:
         # S150: 비거래일은 main.py → 주말 유지보수 경로로 실행(스케줄러 잡 제거)
         wm = (Path(__file__).resolve().parents[2] / "scheduler" / "weekend_maintenance.py").read_text(encoding="utf-8")
         assert '"db_maintenance"' in wm, "DB 유지보수가 주말 유지보수에 없음"
-        assert 'self.startup_details["job_count"] = 27' in src
+        assert 'self.startup_details["job_count"] = 28' in src
 
     def test_disk_check_runs_hourly_and_startup(self):
         src = self._src()

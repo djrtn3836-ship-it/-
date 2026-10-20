@@ -239,7 +239,7 @@ class TestSchedulerRegistration:
             "market_risk_check", "disclosure_watch_am", "disclosure_watch_pm",
             "correlation_check", "dashboard", "disclosure_settle",
             "alert_verifier", "phase_transition_check", "feedback_learning",
-            "sentiment_history", "disclosure_portfolio", "signal_log",
+            "sentiment_history", "disclosure_portfolio", "signal_log", "spread_sampler",
         ):
             assert expected in jobs, f"{expected} 잡이 등록되지 않음"
 

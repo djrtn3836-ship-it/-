@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -683,6 +684,40 @@ def render_html(data: Dict[str, Any]) -> str:
       <div class="note">A급은 텔레그램 알림 · 매일 08:10·14:50·16:40 스캔 · 실제 주문 없음</div>
     </div>"""
 
+
+    # --- 스트레스 · 취약점 (S152)
+    stress_html = ""
+    try:
+        sd = json.loads((Path(__file__).resolve().parent.parent / "data" / "disclosure_strategy.json").read_text(encoding="utf-8"))
+        sv = sd.get("variants") or {}
+        srows = []
+        for key, label in (("A_all", "기준"), ("A_cost06", "비용 0.6%"), ("A_cost10", "비용 1.0%"),
+                           ("A_invvol", "역변동성"), ("A_cap10", "자본 10억"), ("A_cap30", "자본 30억")):
+            pp = (sv.get(key) or {}).get("portfolio") or {}
+            if pp:
+                srows.append(
+                    f"<tr><td>{label}</td><td>{pp.get('cagr')}%</td><td>{pp.get('sharpe')}</td><td>{pp.get('mdd')}%</td></tr>"
+                )
+        cap = sd.get("capacity") or {}
+        cap_txt = ""
+        if cap:
+            cap_txt = (
+                f"<div class=\"note\">수용규모(1% ADV): 1회 중앙 <b>{cap.get('median_krw', 0)/1e8:.2f}억</b> · "
+                f"5종목 동시 <b>{cap.get('portfolio_krw', 0)/1e8:.1f}억</b></div>"
+            )
+        stress_html = f"""
+    <div class="card">
+      <h2>14. 취약점 — 비용·수용규모</h2>
+      <table>
+        <tr><th>변형</th><th>CAGR</th><th>Sharpe</th><th>MDD</th></tr>
+        {''.join(srows) or '<tr><td class="note">백테스트 결과 없음</td></tr>'}
+      </table>
+      {cap_txt}
+      <div class="note">🔴 왕복비용 1%면 CAGR 5.3%·Sharpe 0.34 — 비용·슬리피지 관리가 성패의 핵심.</div>
+    </div>"""
+    except Exception:
+        stress_html = ""
+
     # --- 검증 결론
     verdict_html = """
     <div class="card">
@@ -704,7 +739,7 @@ def render_html(data: Dict[str, Any]) -> str:
 <body>
 <h1>stock_analyzer 운영 대시보드</h1>
 <div class="sub">Phase 1 Shadow Mode · 생성 {now} · 자동 생성물(수동 편집 금지)</div>
-<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{signals_html}{disclosures_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
+<div class="grid">{system_html}{data_html}{monitor_html}{paper_html}{macro_html}{signals_html}{disclosures_html}{stress_html}{verdict_html}{risk_html}{shadow_html}{calib_html}{trace_html}{paper_trades_html}</div>
 </body></html>"""
 
 

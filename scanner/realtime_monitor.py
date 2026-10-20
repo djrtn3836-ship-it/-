@@ -375,6 +375,9 @@ class RealtimeMonitor:
         data = self._latest_data.get(ticker)
         return data.get("orderbook") if data else None
 
+    def get_subscribed_tickers(self) -> list[str]:
+        return list(self._subscribed_tickers)
+
     def get_subscribed_count(self) -> int:
         return len(self._subscribed_tickers)
 

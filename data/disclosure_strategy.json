@@ -212,6 +212,110 @@
       },
       "exposure": 81.9
     },
+    "A_cap1": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 1.24,
+        "median_net": 0.53,
+        "win": 55.9
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 11.78,
+        "sharpe": 1.03,
+        "mdd": 16.6,
+        "total": 71.6
+      },
+      "exposure": 78.8,
+      "capital_krw": 100000000,
+      "cost": {
+        "n": 1474,
+        "avg_bp": 25.4,
+        "median_bp": 25.4,
+        "p90_bp": 38.1,
+        "avg_part_pct": 0.36,
+        "p90_part_pct": 0.53
+      }
+    },
+    "A_cap5": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 1.24,
+        "median_net": 0.53,
+        "win": 55.9
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 10.03,
+        "sharpe": 0.89,
+        "mdd": 17.3,
+        "total": 59.0
+      },
+      "exposure": 78.8,
+      "capital_krw": 500000000,
+      "cost": {
+        "n": 1474,
+        "avg_bp": 30.0,
+        "median_bp": 28.8,
+        "p90_bp": 43.6,
+        "avg_part_pct": 1.76,
+        "p90_part_pct": 2.56
+      }
+    },
+    "A_cap10": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 1.24,
+        "median_net": 0.53,
+        "win": 55.9
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 8.79,
+        "sharpe": 0.79,
+        "mdd": 17.8,
+        "total": 50.4
+      },
+      "exposure": 78.8,
+      "capital_krw": 1000000000,
+      "cost": {
+        "n": 1474,
+        "avg_bp": 33.2,
+        "median_bp": 31.3,
+        "p90_bp": 48.5,
+        "avg_part_pct": 3.45,
+        "p90_part_pct": 4.98
+      }
+    },
+    "A_cap30": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 1.24,
+        "median_net": 0.53,
+        "win": 55.9
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 5.88,
+        "sharpe": 0.56,
+        "mdd": 18.9,
+        "total": 31.9
+      },
+      "exposure": 78.8,
+      "capital_krw": 3000000000,
+      "cost": {
+        "n": 1474,
+        "avg_bp": 41.0,
+        "median_bp": 36.5,
+        "p90_bp": 61.5,
+        "avg_part_pct": 9.8,
+        "p90_part_pct": 14.06
+      }
+    },
     "random": {
       "signals": 883,
       "trades": {
@@ -248,5 +352,12 @@
     "2021-10-19",
     "2026-10-20"
   ],
-  "cost_roundtrip": 0.003
+  "cost_roundtrip": 0.003,
+  "capacity": {
+    "n": 907,
+    "median_krw": 216260349,
+    "p10_krw": 25748940,
+    "p90_krw": 1263078474,
+    "portfolio_krw": 1081301746
+  }
 }

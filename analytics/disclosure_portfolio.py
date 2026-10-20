@@ -182,9 +182,16 @@ def run_portfolio(
         i = bisect.bisect_left(dates, str(p["entry_date"]))
         j = bisect.bisect_left(dates, day)
         if j - i >= int(p.get("hold", 5)):
-            px = _price_on(series, str(p["ticker"]), day) or float(p["entry_price"])
+            px = _price_on(series, str(p["ticker"]), day)
+            dates_t = _dates_for(series, str(p["ticker"]))
+            pd = dates_t[bisect.bisect_right(dates_t, day) - 1] if dates_t else ""
+            if not px or px <= 0:
+                logger.warning(f"{p['ticker']} 청산가 없음 — 진입가 대체(평가 왜곡)")
+                px = float(p["entry_price"])
+            elif pd != day:
+                logger.warning(f"{p['ticker']} 청산가가 당일 종가가 아님({pd}) — 평가 왜곡 가능")
             cash += float(p["shares"]) * px * (1.0 - COST)
-            closed.append({**p, "exit_date": day, "exit_price": px})
+            closed.append({**p, "exit_date": day, "exit_price": px, "price_date": pd, "stale": pd != day})
             sold += 1
         else:
             still.append(p)
