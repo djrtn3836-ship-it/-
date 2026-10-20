@@ -70,7 +70,7 @@ def acquire_instance_lock() -> None:
     except OSError:
         from core.logger import setup_logger
 
-        setup_logger("main").critical("이미 실행 중인 인스턴스 감지(인스턴스 락 점유) — 중복 실행 중단")
+        setup_logger("main").info("이미 실행 중인 인스턴스 감지 — 자동시작 스킵")
         print("[SKIP] 이미 실행 중인 인스턴스가 있습니다. 중복 실행을 중단합니다.")
         sys.exit(0)
 

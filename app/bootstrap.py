@@ -105,6 +105,7 @@ from scheduler.momentum_report import send_momentum_report
 from report.html_dashboard import scheduled_dashboard
 from scheduler.signal_logger import scheduled_signal_log
 from scheduler.disclosure_watch import scheduled_disclosure_watch
+from scheduler.disclosure_settle import scheduled_disclosure_settle
 from risk.correlation_monitor import scheduled_correlation_check
 from analytics.calibration_bridge import settle_and_feed_ab
 from report.telegram_sender import TelegramSender
@@ -146,6 +147,17 @@ _REQUIRED_ENV_KEYS: List[str] = [
 ]
 PID_FILE: Path = Path(__file__).parent.parent / "scanner.pid"
 LOG_DIR: Path = Path(__file__).parent.parent / "logs"
+
+MARKET_GUARD_CONDITIONS = {"kospi_drop", "vkospi_spike", "usdkrw_spike"}
+
+
+def is_market_only_guard(conds: Any) -> bool:
+    """차단 조건이 시장 상황(kospi/vkospi/usdkrw)만인가 — 시스템 오류 아님."""
+    try:
+        items = [str(c) for c in conds if c]
+    except TypeError:
+        return False
+    return bool(items) and all(c in MARKET_GUARD_CONDITIONS for c in items)
 
 
 class Bootstrapper(TracedService):
@@ -1252,6 +1264,11 @@ class Bootstrapper(TracedService):
             "dashboard", max_retries=1, retry_delay=30,
         )
         self.scheduler.add_job_with_retry(
+            scheduled_disclosure_settle,
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=10, timezone="Asia/Seoul"),
+            "disclosure_settle", max_retries=1, retry_delay=30,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_signal_log,
             CronTrigger(day_of_week="mon-fri", hour=17, minute=20, timezone="Asia/Seoul"),
             "signal_log", max_retries=1, retry_delay=30,
@@ -1287,7 +1304,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 28
+        self.startup_details["job_count"] = 29
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
@@ -1713,7 +1730,23 @@ class Bootstrapper(TracedService):
                     self._safety_blocked = safety_result.get("action") == "BLOCK_ALL"
                     if safety_result.get("action") == "BLOCK_ALL":
                         triggered = safety_result.get("triggered", [])
-                        if safety_result.get("should_alert"):
+                        _conds_now = [
+                            t.get("condition") for t in triggered if isinstance(t, dict)
+                        ]
+                        _market_only = is_market_only_guard(_conds_now)
+                        if safety_result.get("should_alert") and _market_only:
+                            # 시장 급락은 '시스템 오류'가 아니다 → 경고 + 2시간 스로틀
+                            _now_sg_alert = time.time()
+                            if _now_sg_alert - getattr(self, "_sg_market_alert_ts", 0.0) >= 7200:
+                                logger.warning(f"시장 리스크 차단 활성화: {_conds_now}")
+                                await self._send_error_alert(
+                                    "시장 리스크 차단 활성화",
+                                    str(_conds_now)[:200],
+                                    title="시장 리스크 경고",
+                                    emoji="⚠️",
+                                )
+                                self._sg_market_alert_ts = _now_sg_alert
+                        elif safety_result.get("should_alert"):
                             # 🔴 2026-10-12: 차단 중 10초마다 CRITICAL 도배(로그 폭주)
                             #    → 알림 쿨다운(30분)에 맞춰 기록도 함께 억제
                             logger.critical(f"SafetyGuard triggered: {triggered}")
@@ -1803,7 +1836,8 @@ class Bootstrapper(TracedService):
         logger.info("Reconnected and resubscribed")
         debug_tower.log("SYSTEM", "RECONNECT_SUCCESS", {})
 
-    async def _send_error_alert(self, msg: str, detail: str = "") -> None:
+    async def _send_error_alert(self, msg: str, detail: str = "", *,
+                                title: str = "시스템 오류", emoji: str = "🚨") -> None:
         """오류 알림 발송.
 
         🔴 2026-10-12 사고: SQLite lock 반복 → 같은 오류가 매번 발송돼 폭주.

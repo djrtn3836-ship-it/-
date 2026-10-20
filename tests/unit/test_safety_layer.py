@@ -187,3 +187,24 @@ class TestSupervisor:
         coro = sup.run()
         assert asyncio.iscoroutine(coro)
         coro.close()          # 실행하지 않고 정리
+
+class TestMarketGuardClassification:
+    """S144: 시장 급락은 '시스템 오류'가 아니다."""
+
+    def test_market_only(self):
+        from app.bootstrap import is_market_only_guard
+
+        assert is_market_only_guard(["kospi_drop"]) is True
+        assert is_market_only_guard(["kospi_drop", "usdkrw_spike"]) is True
+
+    def test_system_condition_not_market(self):
+        from app.bootstrap import is_market_only_guard
+
+        assert is_market_only_guard(["kospi_drop", "tr_latency"]) is False
+        assert is_market_only_guard(["feature_expired"]) is False
+
+    def test_empty(self):
+        from app.bootstrap import is_market_only_guard
+
+        assert is_market_only_guard([]) is False
+        assert is_market_only_guard(None) is False

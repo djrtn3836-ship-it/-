@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from core.logger import setup_logger
+
+logger = setup_logger("disclosure_watch")
+
 BASE_URL = os.getenv("DART_API_URL", "https://opendart.fss.or.kr/api")
 ROOT = Path(__file__).resolve().parent.parent
 WATCH_LOG = ROOT / "data" / "disclosure_watch_log.jsonl"
@@ -353,6 +357,7 @@ def described(e: Dict[str, Any]) -> str:
 async def scheduled_disclosure_watch() -> Dict[str, Any]:
     """스케줄러 진입점 — 실패해도 예외를 밖으로 던지지 않는다."""
     try:
-        return run_watch(send_alert=True)
+        return run_watch(send_alert=True, logger=logger)
     except Exception as e:
+        logger.error(f"공시 감시 실패: {e}")
         return {"status": "error", "error": str(e)}

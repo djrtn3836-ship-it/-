@@ -205,11 +205,12 @@ def collect_signal_registry_section() -> Dict[str, Any]:
         latest = latest_signals()
         disc: Dict[str, Any] = {}
         try:
+            from scheduler.disclosure_settle import disclosure_stats
             from scheduler.disclosure_watch import events_for_day, latest_event_day
 
             day = latest_event_day()
             if day:
-                disc = {"date": day, "rows": events_for_day(day)}
+                disc = {"date": day, "rows": events_for_day(day), "settled": disclosure_stats()}
         except Exception:
             disc = {}
         return {
@@ -646,12 +647,24 @@ def render_html(data: Dict[str, Any]) -> str:
             f"<td>{_esc(str(r.get('category') or ''))} · 5d {_fmt(r.get('mean5'), 2, '%')} "
             f"적중 {_fmt(r.get('hit5'), 0, '%')}</td></tr>"
         )
+    srows = ""
+    for r in (disc.get("settled") or []):
+        srows += (
+            f"<tr><th>{_esc(str(r.get('category') or ''))}</th>"
+            f"<td>n={_fmt(r.get('n'))} 평균 {_fmt(r.get('mean5'), 2, '%')} "
+            f"적중 {_fmt(r.get('hit5'), 0, '%')} <span class='note'>({_esc(str(r.get('grade') or ''))})</span></td></tr>"
+        )
+    disc_settled_block = (
+        f'<div class="note">실현 성적(5거래일, KOSPI 대비)</div><table>{srows}</table>'
+        if srows else '<div class="note">실현 성적: 첫 채점 대기(5거래일 경과 후 자동)</div>'
+    )
     disclosures_html = f"""
     <div class="card">
       <h2>13. 공시 신호 (A/B)</h2>
       <div class="note">최근 기록 {_esc(str(disc.get('date') or '—'))} · DART 전체 공시 → 유니버스 필터</div>
       <table style="margin-top:8px">{disc_rows or '<tr><td class="note">기록 없음</td></tr>'}</table>
-      <div class="note">A급(무상증자)은 텔레그램 알림 · 매일 08:10·16:40 스캔 · 실제 주문 없음</div>
+      {disc_settled_block}
+      <div class="note">A급은 텔레그램 알림 · 매일 08:10·14:50·16:40 스캔 · 실제 주문 없음</div>
     </div>"""
 
     # --- 검증 결론

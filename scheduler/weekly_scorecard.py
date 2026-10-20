@@ -45,6 +45,17 @@ def run_scorecard() -> Dict[str, Any]:
         rc["signal_vs_random"] = _safe(sig_main)
         rc["ml_discrimination"] = _safe(ml_main)
         try:
+            from scheduler.disclosure_settle import disclosure_stats, format_stats
+
+            stats = disclosure_stats()
+            if stats:
+                print("")
+                print(format_stats(stats))
+            rc["disclosure_stats"] = 0
+        except Exception as e:
+            logger.error(f"공시 성적표 실패: {e}")
+            rc["disclosure_stats"] = -1
+        try:
             from scheduler.signal_logger import scorecard_text
 
             print("")
