@@ -136,3 +136,19 @@ class TestDisplay:
                             "portfolio": {"total_pct": 1.23, "positions": 2, "closed": 3, "win_rate": 66.7}},
         }})
         assert "공시 전략 모의(가상)" in html and "1.23%" in html
+
+class TestDedupe20Days:
+
+    def test_same_category_within_20d_skipped(self, tmp_path):
+        db, ds = _db()
+        log = _log(tmp_path, [
+            {"date": "20220105", "ticker": "A", "category": "주식소각", "grade": "A_생존"},
+            {"date": "20220107", "ticker": "A", "category": "주식소각", "grade": "A_생존"},
+        ])
+        state = tmp_path / "state.json"
+        pf.run_portfolio(today="2022-01-05", state_path=state, watch_log=log, db=db)
+        # 2일 후 청산되지만 같은 유형 재진입은 20거래일 내 금지
+        out1 = pf.run_portfolio(today="2022-01-06", state_path=state, watch_log=log, db=db)
+        assert out1["positions"] == 0, "1일 보유 청산"
+        out2 = pf.run_portfolio(today="2022-01-07", state_path=state, watch_log=log, db=db)
+        assert out2["opened"] == 0, "20거래일 내 동일 유형 재진입 금지"

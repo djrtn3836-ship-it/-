@@ -102,7 +102,16 @@ def settle(
 
     from data.db_manager import DatabaseManager
 
-    rows = [r for r in _load_jsonl(log_path) if str(r.get("grade")) in ("A_생존", "B_경계")]
+    def _before_close(r: Dict[str, Any]) -> bool:
+        stamp = str(r.get("logged_at") or "")
+        if len(stamp) >= 16 and "T" in stamp:
+            return stamp[11:16] <= "15:00"
+        return True
+
+    rows = [
+        r for r in _load_jsonl(log_path)
+        if str(r.get("grade")) in ("A_생존", "B_경계") and _before_close(r)
+    ]
     settled = _load_jsonl(settled_path)
     done = {(str(r.get("date")), str(r.get("ticker")), str(r.get("category"))) for r in settled}
     todo = [r for r in rows if (str(r.get("date")), str(r.get("ticker")), str(r.get("category"))) not in done]

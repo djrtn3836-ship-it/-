@@ -186,3 +186,16 @@ class TestMarketAlert:
 
         assert format_market_alert(["kospi5_le-5"]) is None
         assert format_market_alert([]) is None
+
+class TestAfterCloseExcluded:
+
+    def test_after_close_not_settled(self, tmp_path):
+        days = make_days()
+        series = {"A": [{"date": d, "close": 100.0 + i} for i, d in enumerate(days)],
+                  "^KS11": [{"date": d, "close": 100.0} for d in days]}
+        log = tmp_path / "w.jsonl"
+        log.write_text(json.dumps({"date": "20220107", "ticker": "A", "grade": "A_생존",
+                                   "logged_at": "2022-01-07T16:40:00"}, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+        out = settle(log_path=log, settled_path=tmp_path / "s.jsonl", db=FakeDB(series))
+        assert out["settled"] == 0, "종가 후 공시는 매매 불가 → 채점 제외"

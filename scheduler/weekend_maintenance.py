@@ -54,6 +54,7 @@ async def run_maintenance(
     maintenance_fn: Optional[Callable[..., Any]] = None,
     breadth_fn: Optional[Callable[[], Any]] = None,
     scorecard_fn: Optional[Callable[[], Any]] = None,
+    check_fn: Optional[Callable[[], Any]] = None,
     csv_path: Path = UNIVERSE_CSV,
 ) -> Dict[str, Any]:
     """비거래일 1회성 유지보수 실행. {"day":요일, "jobs":{이름:결과}} 반환."""
@@ -83,6 +84,23 @@ async def run_maintenance(
         from analytics.market_breadth import refresh_history
 
         breadth_fn = refresh_history
+    if check_fn is None:
+
+        def _default_self_check() -> Dict[str, Any]:
+            import subprocess
+            import sys
+
+            root = Path(__file__).resolve().parents[1]
+            proc = subprocess.run(
+                [sys.executable, "-X", "utf8", "scripts/self_check.py"],
+                cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+            )
+            if proc.returncode != 0:
+                logger.error(f"자체 점검 실패(rc={proc.returncode}): {(proc.stdout or '')[-300:]}")
+            return {"rc": proc.returncode, "out": (proc.stdout or "").strip()[-400:]}
+
+        check_fn = _default_self_check
+
     if scorecard_fn is None:
         from scheduler.weekly_scorecard import run_scorecard
 
@@ -110,6 +128,8 @@ async def run_maintenance(
     await _safe("breadth_history", lambda: asyncio.to_thread(breadth_fn))
     # S136: 주간 신호 성적표(알림 vs 무작위 · ML 판별력) — 판정 축적
     await _safe("weekly_scorecard", lambda: asyncio.to_thread(scorecard_fn))
+    # S149: 데이터·상태 자체 점검(JSONL 무결성·포트폴리오 회계·job_count·BOM)
+    await _safe("self_check", lambda: asyncio.to_thread(check_fn))
 
     logger.info(f"주말 유지보수 종료: {result}")
     return result

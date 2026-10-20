@@ -173,10 +173,16 @@ def run_portfolio(
             still.append(p)
     positions = still
 
-    # ② 신규(종가 매수, 최대 max_pos) — 같은 날 재실행 멱등
+    # ② 신규(종가 매수, 최대 max_pos) — 같은 날 재실행 멱등 + 백테스트와 동일한 20거래일 중복 제한
     held_keys = {(str(p["ticker"]), str(p["entry_date"])) for p in positions} | {
         (str(c["ticker"]), str(c["entry_date"])) for c in closed
     }
+    last_entry: Dict[tuple, str] = {}
+    for p in positions + closed:
+        key = (str(p["ticker"]), str(p.get("category")))
+        d = str(p.get("entry_date"))
+        if d > last_entry.get(key, ""):
+            last_entry[key] = d
     for r in todays:
         if len(positions) >= max_pos:
             break
@@ -185,6 +191,11 @@ def run_portfolio(
             continue
         if any(p["ticker"] == t for p in positions):
             continue
+        prev_day = last_entry.get((t, str(r["category"])))
+        if prev_day:
+            dates = _dates_for(series, t)
+            if dates and bisect.bisect_left(dates, day) - bisect.bisect_left(dates, prev_day) < 20:
+                continue
         px = _price_on(series, t, day)
         if not px or px <= 0:
             continue
@@ -199,6 +210,10 @@ def run_portfolio(
             continue
         shares = notional / (px * (1.0 + COST))
         cash -= notional
+        dates_t = _dates_for(series, t)
+        price_date = dates_t[bisect.bisect_right(dates_t, day) - 1] if dates_t else ""
+        if price_date != day:
+            logger.warning(f"{t} 진입가가 당일 종가가 아님({price_date}) — 평가 왜곡 가능")
         positions.append(
             {
                 "ticker": t,
@@ -206,6 +221,7 @@ def run_portfolio(
                 "category": r["category"],
                 "entry_date": day,
                 "entry_price": px,
+                "price_date": price_date,
                 "shares": shares,
                 "hold": HOLD_DAYS[str(r["category"])],
             }
