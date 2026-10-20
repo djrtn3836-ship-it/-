@@ -28,6 +28,36 @@ from core.sentiment_analyzer import sentiment_analyzer
 logger = setup_logger("news")
 
 
+_FALLBACK_NAMES: Dict[str, str] = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "005380": "현대차",
+    "035420": "NAVER",
+    "051910": "LG화학",
+    "006400": "삼성SDI",
+    "207940": "삼성바이오로직스",
+}
+_UNIVERSE_NAMES: Optional[Dict[str, str]] = None
+
+
+def _stock_names() -> Dict[str, str]:
+    """티커→종목명(유니버스 CSV 우선, 실패 시 하드코딩 폴백)."""
+    global _UNIVERSE_NAMES
+    if _UNIVERSE_NAMES is not None:
+        return _UNIVERSE_NAMES
+    names: Dict[str, str] = dict(_FALLBACK_NAMES)
+    try:
+        from infrastructure.market_data.universe_provider import get_universe
+
+        names.update(get_universe())
+    except Exception:
+        pass
+    _UNIVERSE_NAMES = names
+    return names
+
+
+
+
 class NewsCrawler:
     def __init__(self) -> None:
         load_dotenv()
@@ -66,16 +96,7 @@ class NewsCrawler:
         if self._session is None:
             await self.connect()
 
-        stock_name_map: Dict[str, str] = {
-            "005930": "삼성전자",
-            "000660": "SK하이닉스",
-            "005380": "현대차",
-            "035420": "NAVER",
-            "051910": "LG화학",
-            "006400": "삼성SDI",
-            "207940": "삼성바이오로직스",
-        }
-        query: str = stock_name_map.get(ticker, ticker)
+        query: str = _stock_names().get(ticker, ticker)
 
         url = "https://naverapihub.apigw.ntruss.com/search/v1/news"
         headers: Dict[str, str] = {

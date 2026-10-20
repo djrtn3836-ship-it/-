@@ -99,4 +99,4 @@ class TestSchedulerRegistration:
         src = p.read_text(encoding="utf-8")
         assert '"morning_briefing"' in src and '"evening_briefing"' in src
         assert "hour=8, minute=35" in src and "hour=17, minute=25" in src
-        assert 'self.startup_details["job_count"] = 30' in src
+        assert 'self.startup_details["job_count"] = 31' in src

@@ -208,4 +208,4 @@ class TestWiring:
         src = (Path(__file__).resolve().parents[2] / "app" / "bootstrap.py").read_text(encoding="utf-8")
         assert src.count("scheduled_disclosure_watch") >= 3, "import + 2 jobs"
         assert "disclosure_watch_am" in src and "disclosure_watch_pm" in src
-        assert 'job_count"] = 30' in src
+        assert 'job_count"] = 31' in src

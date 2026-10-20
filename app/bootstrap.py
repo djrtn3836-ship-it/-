@@ -107,6 +107,7 @@ from scheduler.signal_logger import scheduled_signal_log
 from scheduler.disclosure_watch import scheduled_disclosure_watch
 from scheduler.disclosure_settle import scheduled_disclosure_settle
 from analytics.disclosure_portfolio import scheduled_disclosure_portfolio
+from scheduler.sentiment_history import scheduled_sentiment_history
 from risk.correlation_monitor import scheduled_correlation_check
 from analytics.calibration_bridge import settle_and_feed_ab
 from report.telegram_sender import TelegramSender
@@ -1265,6 +1266,11 @@ class Bootstrapper(TracedService):
             "dashboard", max_retries=1, retry_delay=30,
         )
         self.scheduler.add_job_with_retry(
+            scheduled_sentiment_history,
+            CronTrigger(day_of_week="mon-fri", hour=18, minute=20, timezone="Asia/Seoul"),
+            "sentiment_history", max_retries=1, retry_delay=60,
+        )
+        self.scheduler.add_job_with_retry(
             scheduled_disclosure_portfolio,
             CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
             "disclosure_portfolio", max_retries=1, retry_delay=30,
@@ -1310,7 +1316,7 @@ class Bootstrapper(TracedService):
             "universe_refresh", max_retries=2, retry_delay=60,
         )
         self.scheduler.start()
-        self.startup_details["job_count"] = 30
+        self.startup_details["job_count"] = 31
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
