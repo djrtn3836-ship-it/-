@@ -114,3 +114,75 @@ class TestStats:
         assert by["자사주매입"]["hit5"] == 50.0
         assert by["소송"]["mean5"] == -3.0
         assert "자사주매입" in format_stats(stats)
+
+class TestOnDemandPrices:
+    """S147: 유니버스 밖 종목(일봉 미수집) 채점 — 온디맨드 시세."""
+
+    def test_backfill_when_missing(self, monkeypatch, tmp_path):
+        import scheduler.ohlcv_backfill as ob
+
+        ds = make_days()
+        rows = [{"date": d, "close": 100.0 + i} for i, d in enumerate(ds)]
+
+        class FakeBackfiller:
+            def __init__(self, delay=0.0):
+                pass
+
+            def fetch_history(self, ticker, period="3mo"):
+                return (rows, ".KQ")
+
+        monkeypatch.setattr(ob, "OHLCVBackfiller", FakeBackfiller)
+
+        class FDB:
+            async def get_ohlcv_range(self, ticker, start, end):
+                if ticker == "^KS11":
+                    return [{"date": d, "close": 100.0} for d in ds]
+                return []
+
+            async def close(self):
+                pass
+
+        log = tmp_path / "w.jsonl"
+        log.write_text(json.dumps({"date": "20220107", "ticker": "B", "name": "나",
+                                   "category": "자사주매입", "grade": "A_생존"}, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+        out = settle(log_path=log, settled_path=tmp_path / "s.jsonl", db=FDB())
+        assert out["settled"] == 1, "DB에 없어도 온디맨드로 채점"
+
+class TestBacktestVsPaper:
+
+    def test_both(self):
+        from scheduler.weekly_scorecard import format_backtest_vs_paper
+
+        txt = format_backtest_vs_paper(
+            {"variants": {"A_all": {"portfolio": {"cagr": 30.2, "sharpe": 1.3, "mdd": 28.9}}},
+             "cost_roundtrip": 0.003},
+            {"start": "2026-10-20", "total_pct": 1.23, "positions": 1, "closed": 2, "win_rate": 50.0},
+        )
+        assert "CAGR 30.2" in txt and "모의(실전)" in txt and "+1.23%" in txt
+
+    def test_missing_paper(self):
+        from scheduler.weekly_scorecard import format_backtest_vs_paper
+
+        txt = format_backtest_vs_paper({"variants": {"A_all": {"portfolio": {"cagr": 30.2}}}}, {})
+        assert "첫 실행 대기" in txt
+
+    def test_empty(self):
+        from scheduler.weekly_scorecard import format_backtest_vs_paper
+
+        assert format_backtest_vs_paper({}, {}) == ""
+
+
+class TestMarketAlert:
+
+    def test_a_only(self):
+        from scheduler.signal_logger import format_market_alert
+
+        txt = format_market_alert(["breadth_le15", "kospi5_le-5"])
+        assert "🎯" in txt and "폭≤15%" in txt and "KOSPI 5일≤-5%" not in txt
+
+    def test_no_a(self):
+        from scheduler.signal_logger import format_market_alert
+
+        assert format_market_alert(["kospi5_le-5"]) is None
+        assert format_market_alert([]) is None

@@ -122,9 +122,27 @@ def settle(
             for r in todo:
                 by_ticker.setdefault(str(r.get("ticker")), []).append(r)
             for ticker, evs in by_ticker.items():
-                rows_t = await d.get_ohlcv_range(ticker, "2021-10-19", datetime.now().strftime("%Y-%m-%d"))
-                dates = [str(r["date"])[:10] for r in rows_t]
-                closes = [float(r["close"]) for r in rows_t]
+                end = datetime.now().strftime("%Y-%m-%d")
+                rows_t = await d.get_ohlcv_range(ticker, "2021-10-19", end)
+                data = [{"date": str(r["date"])[:10], "close": float(r["close"])} for r in (rows_t or [])]
+                if not data or data[-1]["date"] < end:
+                    # 유니버스 밖 종목(일봉 미수집) → 온디맨드 보충(3개월)
+                    try:
+                        from scheduler.ohlcv_backfill import OHLCVBackfiller
+
+                        fetched, _ = await asyncio.to_thread(
+                            OHLCVBackfiller(delay=0.0).fetch_history, ticker, "3mo"
+                        )
+                        merged = {x["date"]: x for x in data}
+                        for x in fetched:
+                            if x.get("date") and float(x.get("close") or 0) > 0:
+                                merged[x["date"]] = {"date": x["date"], "close": float(x["close"])}
+                        data = [merged[k] for k in sorted(merged) if k <= end]
+                    except Exception as e:
+                        if logger:
+                            logger.debug(f"{ticker} 보충 시세 실패(무시): {e}")
+                dates = [x["date"] for x in data]
+                closes = [x["close"] for x in data]
                 for ev in evs:
                     rec = settle_one(ev, dates, closes, k_dates, k_closes)
                     if rec:

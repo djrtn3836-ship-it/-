@@ -310,13 +310,35 @@ async def refresh_series(
     return out
 
 
-async def run_daily() -> Dict[str, Any]:
-    """스케줄러 진입점: 시세 갱신 → 채점 → 기록. 반환: 요약."""
+def format_market_alert(active: List[str]) -> Optional[str]:
+    """활성 신호 중 A급만 알림 텍스트(없으면 None)."""
+    a = [s for s in SIGNALS if s[0] in active and s[1] == "A"]
+    if not a:
+        return None
+    lines = ["🎯 <b>시장 A신호</b>"]
+    for _, _, label, _ in a:
+        lines.append(f"• {label}")
+    lines.append("※ 역사 검증 신호 · 실제 주문 없음")
+    return "\n".join(lines)
+
+
+async def run_daily(notify: bool = False) -> Dict[str, Any]:
+    """스케줄러 진입점: 시세 갱신 → 채점 → 기록(+A신호 알림). 반환: 요약."""
     refreshed = await refresh_series()
     settled = settle_all()
     logged = log_today()
     result = {"refreshed": sum(1 for v in refreshed.values() if v), "settled": settled["settled"],
               "logged": logged["logged"], "active": logged["active"]}
+    if notify and logged["logged"] > 0:
+        text = format_market_alert(logged["active"])
+        if text:
+            try:
+                from report.telegram_sender import TelegramSender
+
+                await TelegramSender().send_raw(text)
+                result["alerted"] = True
+            except Exception as e:
+                logger.warning(f"시장 A신호 알림 실패(무시): {e}")
     logger.info(f"신호 기록부 완료: {result}")
     return result
 
@@ -324,7 +346,7 @@ async def run_daily() -> Dict[str, Any]:
 async def scheduled_signal_log() -> Dict[str, Any]:
     """스케줄러용 래퍼(예외 흡수 — 다른 잡 보호)."""
     try:
-        return await run_daily()
+        return await run_daily(notify=True)
     except Exception as e:
         logger.error(f"신호 기록부 실패: {e}")
         return {"error": str(e)[:200]}

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -30,6 +31,25 @@ def _safe(fn: Callable[[Optional[List[str]]], int], argv: Optional[List[str]] = 
     except Exception as e:  # 도구 오류가 유지보수를 막지 않게
         logger.error(f"성적표 도구 실패: {e}")
         return -1
+
+
+def format_backtest_vs_paper(bt: Dict[str, Any], pf: Dict[str, Any]) -> str:
+    """백테스트(S145) vs 모의 실측(S146) 비교 텍스트. 데이터 없으면 빈 문자열."""
+    lines = []
+    a = ((bt.get("variants") or {}).get("A_all") or {}).get("portfolio") or {}
+    if a:
+        lines.append(
+            f"■ 백테스트 A_전체: CAGR {a.get('cagr')}% · Sharpe {a.get('sharpe')} · MDD {a.get('mdd')}% "
+            f"(비용 {float(bt.get('cost_roundtrip', 0)) * 100:.1f}%)"
+        )
+    if pf:
+        lines.append(
+            f"■ 모의(실전): 시작 {pf.get('start')} · 누적 {float(pf.get('total_pct', 0)):+.2f}% · "
+            f"보유 {pf.get('positions')} · 청산 {pf.get('closed')}(승률 {float(pf.get('win_rate', 0)):.0f}%)"
+        )
+    elif a:
+        lines.append("■ 모의(실전): 첫 실행 대기(16:45)")
+    return "\n".join(lines)
 
 
 def run_scorecard() -> Dict[str, Any]:
@@ -55,6 +75,19 @@ def run_scorecard() -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"공시 성적표 실패: {e}")
             rc["disclosure_stats"] = -1
+        try:
+            from analytics.disclosure_portfolio import load_summary
+
+            bt_path = ROOT / "data" / "disclosure_strategy.json"
+            bt = json.loads(bt_path.read_text(encoding="utf-8")) if bt_path.exists() else {}
+            txt = format_backtest_vs_paper(bt, load_summary())
+            if txt:
+                print("")
+                print(txt)
+            rc["backtest_vs_paper"] = 0
+        except Exception as e:
+            logger.error(f"백테스트/모의 비교 실패: {e}")
+            rc["backtest_vs_paper"] = -1
         try:
             from scheduler.signal_logger import scorecard_text
 
