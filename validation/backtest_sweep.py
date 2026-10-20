@@ -288,7 +288,7 @@ def slice_series(
     """
     bars: List[Dict[str, Any]] = []
     scores: List[Optional[float]] = []
-    for bar, score in zip(ts.bars, ts.net_scores):
+    for bar, score in zip(ts.bars, ts.net_scores, strict=False):
         d = str(bar.get("date", ""))
         if start_date <= d <= end_date:
             bars.append(bar)
@@ -298,7 +298,7 @@ def slice_series(
     sliced = TickerSeries(ticker=ts.ticker, bars=bars, net_scores=scores)
     if ts.filters:
         sliced.filters = {
-            name: [m for m, keep in zip(mask, (start_date <= str(b.get("date", "")) <= end_date for b in ts.bars)) if keep]
+            name: [m for m, keep in zip(mask, (start_date <= str(b.get("date", "")) <= end_date for b in ts.bars), strict=False) if keep]
             for name, mask in ts.filters.items()
         }
     return sliced

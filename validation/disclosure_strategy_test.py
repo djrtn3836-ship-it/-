@@ -164,19 +164,19 @@ def simulate(
                 cash += p["shares"] * px * (1.0 - c)
             else:
                 still.append(p)
-        # ② 신규 진입
+        # ② 신규 진입 (후보 scale 평균 정규화 → 순서 편향 제거)
+        cands: List[Dict[str, Any]] = []
         for s in by_entry.get(day, []):
-            if len(still) >= max_positions:
+            if len(still) + len(cands) >= max_positions:
                 break
             if any(p["ticker"] == s["ticker"] for p in still):
+                continue
+            if any(c["s"]["ticker"] == s["ticker"] for c in cands):
                 continue
             px = s["entry_price"]
             if px <= 0:
                 continue
-            equity = cash + sum(
-                p["shares"] * _close_on(p["ticker"], day, series, p["entry_price"]) for p in still
-            )
-            notional = equity / max_positions
+            scale = 1.0
             if sizing == "inverse_vol":
                 dates_t, _, closes_t, _ = series.get(s["ticker"], ([], [], [], []))
                 i = bisect.bisect_right(dates_t, day) - 1
@@ -185,13 +185,23 @@ def simulate(
                     sd = statistics.pstdev(rets)
                     if sd > 0:
                         ann = sd * (252 ** 0.5)
-                        notional *= max(0.5, min(1.5, 0.15 / ann))
+                        scale = max(0.5, min(1.5, 0.15 / ann))
+            cands.append({"s": s, "px": px, "scale": scale})
+        mean_scale = (sum(c["scale"] for c in cands) / len(cands)) if cands else 1.0
+        for c in cands:
+            if len(still) >= max_positions:
+                break
+            s, px = c["s"], c["px"]
+            equity = cash + sum(
+                p["shares"] * _close_on(p["ticker"], day, series, p["entry_price"]) for p in still
+            )
+            notional = (equity / max_positions) * (c["scale"] / mean_scale)
             if notional > cash:
                 notional = cash
             if notional <= 0:
                 continue
-            c = cost_fn(s["ticker"], day, notional, "buy") if cost_fn else cost
-            shares = notional / (px * (1.0 + c))
+            cf = cost_fn(s["ticker"], day, notional, "buy") if cost_fn else cost
+            shares = notional / (px * (1.0 + cf))
             cash -= notional
             still.append(
                 {

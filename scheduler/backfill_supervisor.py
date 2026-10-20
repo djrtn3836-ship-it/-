@@ -55,7 +55,7 @@ def acquire_supervisor_lock(port: int = LOCK_PORT) -> socket.socket:
     except OSError:
         s.close()
         logger.info("이미 백필 감시자가 실행 중 — 중복 기동 종료")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
 
 def _read_ticker_idx(checkpoint_path: Path) -> int:

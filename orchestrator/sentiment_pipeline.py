@@ -199,7 +199,7 @@ class SentimentPipeline(TracedService):
 
                 semaphore = asyncio.Semaphore(5)
 
-                async def _refresh_one(t: str) -> None:
+                async def _refresh_one(t: str, semaphore: asyncio.Semaphore = semaphore) -> None:
                     async with semaphore:
                         try:
                             news = await self._fetch_news(t)

@@ -52,7 +52,7 @@ def load_rows(db_path: Path) -> List[Dict[str, Any]]:
                WHERE o.is_correct IS NOT NULL"""
         )
         cols = [c[0] for c in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
         for r in rows:
             r["date"] = str(r.get("created_at") or "")[:10]
         return rows

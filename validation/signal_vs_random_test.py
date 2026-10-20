@@ -83,7 +83,7 @@ def fwd(series: Dict[str, S], idx_map: Dict[str, Dict[str, int]], ticker: str, d
 def cross_section_for_date(series: Dict[str, S], idx_map: Dict[str, Dict[str, int]], date: str, h: int):
     """그 날짜의 (티커 → 전방수익) 맵(전 종목)."""
     out: Dict[str, float] = {}
-    for t, s in series.items():
+    for t, _s in series.items():
         if date not in idx_map.get(t, {}):
             continue
         r = fwd(series, idx_map, t, date, h)

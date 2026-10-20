@@ -50,7 +50,7 @@ def find_events(series: Dict[str, S]) -> List[Tuple[S, int, str]]:
     창 주변 ±31% 초과 일변동(분할류 아티팩트) 제외.
     """
     out: List[Tuple[S, int, str]] = []
-    for t, s in series.items():
+    for _t, s in series.items():
         n = len(s.dates)
         if n < 60 or len(s.volume) != n:
             continue

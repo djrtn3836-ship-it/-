@@ -99,7 +99,7 @@ class StrategyRouter:
                     # Strategy.weight가 읽기 전용 프로퍼티이므로 내부 저장 속성을
                     # setattr로 직접 조정 (원본 v2.1의 동작과 100% 동일, mypy strict
                     # [attr-defined] 회피를 위해 setattr 사용)
-                    setattr(s, "_weight", float(s.weight) / total)
+                    s._weight = float(s.weight) / total
             logger.info("전략 가중치 정규화 완료 (합계 1.0)")
         logger.info(f"{len(self._strategies)}개 전략 등록 완료 (V10 domain/strategies)")
 

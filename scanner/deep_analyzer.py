@@ -229,7 +229,7 @@ class DeepAnalyzer:
             atr = sum(tr_values) / len(tr_values)
             return round(atr, 2)
         except Exception as e:
-            logger.error(f"❌ {ticker} ATR 계산 오류: {e}")
+            logger.error(f"❌ {ticker} ATR 계산 오류: {type(e).__name__}: {e}", exc_info=True)
             debug_tower.capture_snapshot(ticker, e, "ATR_CALC")
             return 0.0
 
@@ -1102,7 +1102,7 @@ class DeepAnalyzer:
             return result
 
         except Exception as e:
-            logger.error(f"Analysis failed: {e}")
+            logger.error(f"Analysis failed: {type(e).__name__}: {e}", exc_info=True)
             debug_tower.capture_snapshot(str(stock.get("ticker", "SYSTEM")), e, "ANALYZE")
             return {
                 "ticker": str(stock.get("ticker", "")),

@@ -292,7 +292,7 @@ class RealisticExecutionSimulator:
         )
 
     def _calculate_base_slippage(self, market_cap: float) -> float:
-        for tier, config in sorted(self.SLIPPAGE_BY_CAP.items(), key=lambda x: x[1]["threshold"], reverse=True):
+        for _tier, config in sorted(self.SLIPPAGE_BY_CAP.items(), key=lambda x: x[1]["threshold"], reverse=True):
             if market_cap >= config["threshold"]:
                 return float(config["slippage"])
         return float(self.SLIPPAGE_BY_CAP["small"]["slippage"])

@@ -158,7 +158,7 @@ class TestSurvivorshipStress:
 
         assert r_base and len(r_base) == len(r_stress)
         expected_drag = 0.05 * (5 / 252) * 0.6
-        for a, b in zip(r_base, r_stress):
+        for a, b in zip(r_base, r_stress, strict=False):
             assert abs((a - b) - expected_drag) < 1e-12
 
     def test_zero_rate_keeps_returns_unchanged(self) -> None:
@@ -310,7 +310,7 @@ class TestLongShort:
         r1 = long_short_returns(dates, panel, costed)
 
         assert r0 and len(r0) == len(r1)
-        for a, b in zip(r0, r1):
+        for a, b in zip(r0, r1, strict=False):
             assert a - b == pytest.approx(0.006)  # 롱+숏 2배 비용
 
     def test_insufficient_breadth_skips(self) -> None:

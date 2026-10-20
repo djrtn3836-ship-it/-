@@ -56,7 +56,7 @@ class MarketTick:
         try:
             price = abs(float(str(raw_price).replace(",", "")))
         except (ValueError, TypeError):
-            raise ValueError(f"Invalid price format: {raw_price}")
+            raise ValueError(f"Invalid price format: {raw_price}") from None
 
         try:
             volume = int(str(raw_volume).replace(",", ""))

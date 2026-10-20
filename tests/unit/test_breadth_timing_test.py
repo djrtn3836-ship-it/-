@@ -95,7 +95,7 @@ class TestRobustness:
         dates = _days(120)
         # 0~100 사이 파형
         vals = [50.0 + 45.0 * ((i % 60) - 30) / 30.0 for i in range(120)]
-        breadths = {d: v for d, v in zip(dates, vals)}
+        breadths = {d: v for d, v in zip(dates, vals, strict=False)}
         closes = [100.0 + i * 0.1 for i in range(120)]
         index = S(dates, closes, [c + 1 for c in closes], [c - 1 for c in closes])
         sw = threshold_sweep(index, breadths, 5, thresholds=(10, 50, 90))

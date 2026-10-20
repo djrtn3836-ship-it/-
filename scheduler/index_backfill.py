@@ -61,7 +61,7 @@ def _fetch_index(yf_ticker: str, period: str) -> List[Dict[str, Any]]:
         if close <= 0:
             continue
 
-        def _f(key: str, default: float) -> float:
+        def _f(key: str, default: float, row: Any = row) -> float:
             try:
                 v = float(row.get(key))
                 return v if v > 0 else default

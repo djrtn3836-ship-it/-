@@ -1753,6 +1753,11 @@ class Bootstrapper(TracedService):
                             # 🔴 2026-10-12: 차단 중 10초마다 CRITICAL 도배(로그 폭주)
                             #    → 알림 쿨다운(30분)에 맞춰 기록도 함께 억제
                             logger.critical(f"SafetyGuard triggered: {triggered}")
+                            conds = [t.get("condition") for t in triggered if isinstance(t, dict)]
+                            await self._send_error_alert(
+                                "SafetyGuard 차단 활성화",
+                                str(conds)[:200],
+                            )
                         else:
                             # 유지 중 로그도 조건이 바뀌거나 30분마다만(디버그 로그 폭주 방지)
                             _conds = sorted(
@@ -1765,12 +1770,6 @@ class Bootstrapper(TracedService):
                                 logger.debug(f"SafetyGuard 차단 유지 중: {_conds}")
                                 self._sg_last_conds = _conds
                                 self._sg_last_log_ts = _now_sg
-                        if safety_result.get("should_alert"):
-                            conds = [t.get("condition") for t in triggered if isinstance(t, dict)]
-                            await self._send_error_alert(
-                                "SafetyGuard 차단 활성화",
-                                str(conds)[:200],
-                            )
                         await asyncio.sleep(10)
                         continue
 

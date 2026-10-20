@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", default="2026-10-27")
     ap.add_argument("--drift", type=float, default=0.0, help="마지막 실측 종가 대비 가상 상승률")
+    ap.add_argument("--from-day", default=None, help="가상 가격 시작 전일(기본: 오늘)")
     args = ap.parse_args()
 
     state = pf._load_state()
@@ -78,7 +80,8 @@ def main() -> int:
     rows: dict[str, list[dict[str, Any]]] = {}
     for p in positions:
         t = str(p["ticker"])
-        hist = asyncio.run(_history(t, "2026-10-20"))
+        last_real = args.from_day or datetime.now().strftime("%Y-%m-%d")
+        hist = asyncio.run(_history(t, last_real))
         if not hist:
             print(f"[FAIL] {t} 이력 없음")
             return 1

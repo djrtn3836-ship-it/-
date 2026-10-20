@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """공시 전략 모의 포트폴리오(S146) 테스트."""
-import asyncio
 import json
 import sys
 from datetime import datetime, timedelta
@@ -40,6 +39,19 @@ def _log(tmp_path, entries):
     p.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n", encoding="utf-8")
     return p
 
+
+
+
+def test_same_day_same_ticker_single_entry(tmp_path):
+    """같은 날 동일 종목 복수 신호 → 중복 진입 금지(자금 이중 투입 버그 회귀)."""
+    db, ds = _db()
+    log = _log(tmp_path, [
+        {"date": "20220105", "ticker": "A", "name": "가", "category": "주식소각", "grade": "A_생존"},
+        {"date": "20220105", "ticker": "A", "name": "가", "category": "합병", "grade": "A_생존"},
+    ])
+    state = tmp_path / "state.json"
+    out = pf.run_portfolio(today="2022-01-05", state_path=state, watch_log=log, db=db, max_pos=5)
+    assert out["opened"] == 1 and out["positions"] == 1
 
 class TestRun:
 

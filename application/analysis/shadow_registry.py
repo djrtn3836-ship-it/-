@@ -88,7 +88,7 @@ async def low_volatility_shadow(data: Dict[str, Any]) -> Any:
                       price=price, atr=price * 0.01)
 
     rets = []
-    for prev, cur in zip(closes[-61:], closes[-60:]):
+    for prev, cur in zip(closes[-61:], closes[-60:], strict=False):
         if prev > 0:
             rets.append(math.log(cur / prev))
     if len(rets) < 20:

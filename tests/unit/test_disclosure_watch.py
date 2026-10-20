@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """공시 일일 감시(S141) 테스트 — 수집·필터·기록·중복·알림·표시."""
-import asyncio
 import json
 import sys
 from datetime import datetime

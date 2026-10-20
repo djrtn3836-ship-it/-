@@ -11,7 +11,7 @@ from __future__ import annotations
 import bisect
 import math
 import statistics
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 COMMISSION_BP = 1.5
 TAX_SELL_BP = 15.0

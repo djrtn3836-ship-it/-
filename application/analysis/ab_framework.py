@@ -506,7 +506,7 @@ class ABTestManager:
 
         variants = [
             ABVariant(name=n, traffic_weight=w)
-            for n, w in zip(variant_names, split)
+            for n, w in zip(variant_names, split, strict=False)
         ]
         test = ABTest(name=test_name, variants=variants, alpha=alpha, min_samples=min_samples)
         self._tests[test_name] = test

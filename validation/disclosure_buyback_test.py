@@ -58,7 +58,7 @@ def spearman(xs: List[float], ys: List[float]) -> Optional[float]:
 
     rx, ry = ranks(xs), ranks(ys)
     mx, my = statistics.mean(rx), statistics.mean(ry)
-    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry, strict=False))
     den = (sum((a - mx) ** 2 for a in rx) * sum((b - my) ** 2 for b in ry)) ** 0.5
     return round(num / den, 3) if den else None
 

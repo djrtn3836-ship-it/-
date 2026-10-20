@@ -154,10 +154,10 @@
       },
       "portfolio": {
         "days": 1222,
-        "cagr": 15.77,
-        "sharpe": 1.33,
-        "mdd": 15.1,
-        "total": 103.4
+        "cagr": 30.01,
+        "sharpe": 1.31,
+        "mdd": 28.0,
+        "total": 257.1
       },
       "exposure": 78.8
     },
@@ -222,20 +222,20 @@
       },
       "portfolio": {
         "days": 1222,
-        "cagr": 11.78,
-        "sharpe": 1.03,
-        "mdd": 16.6,
-        "total": 71.6
+        "cagr": 20.8,
+        "sharpe": 0.97,
+        "mdd": 30.9,
+        "total": 150.0
       },
       "exposure": 78.8,
       "capital_krw": 100000000,
       "cost": {
         "n": 1474,
-        "avg_bp": 25.4,
-        "median_bp": 25.4,
-        "p90_bp": 38.1,
-        "avg_part_pct": 0.36,
-        "p90_part_pct": 0.53
+        "avg_bp": 27.1,
+        "median_bp": 26.7,
+        "p90_bp": 39.9,
+        "avg_part_pct": 0.71,
+        "p90_part_pct": 1.06
       }
     },
     "A_cap5": {
@@ -248,20 +248,20 @@
       },
       "portfolio": {
         "days": 1222,
-        "cagr": 10.03,
-        "sharpe": 0.89,
-        "mdd": 17.3,
-        "total": 59.0
+        "cagr": 16.34,
+        "sharpe": 0.8,
+        "mdd": 32.3,
+        "total": 108.3
       },
       "exposure": 78.8,
       "capital_krw": 500000000,
       "cost": {
         "n": 1474,
-        "avg_bp": 30.0,
-        "median_bp": 28.8,
-        "p90_bp": 43.6,
-        "avg_part_pct": 1.76,
-        "p90_part_pct": 2.56
+        "avg_bp": 33.2,
+        "median_bp": 31.3,
+        "p90_bp": 48.3,
+        "avg_part_pct": 3.28,
+        "p90_part_pct": 4.92
       }
     },
     "A_cap10": {
@@ -274,20 +274,20 @@
       },
       "portfolio": {
         "days": 1222,
-        "cagr": 8.79,
-        "sharpe": 0.79,
-        "mdd": 17.8,
-        "total": 50.4
+        "cagr": 13.35,
+        "sharpe": 0.68,
+        "mdd": 33.2,
+        "total": 83.6
       },
       "exposure": 78.8,
       "capital_krw": 1000000000,
       "cost": {
         "n": 1474,
-        "avg_bp": 33.2,
-        "median_bp": 31.3,
-        "p90_bp": 48.5,
-        "avg_part_pct": 3.45,
-        "p90_part_pct": 4.98
+        "avg_bp": 37.5,
+        "median_bp": 34.3,
+        "p90_bp": 55.1,
+        "avg_part_pct": 6.24,
+        "p90_part_pct": 9.28
       }
     },
     "A_cap30": {
@@ -300,20 +300,20 @@
       },
       "portfolio": {
         "days": 1222,
-        "cagr": 5.88,
-        "sharpe": 0.56,
-        "mdd": 18.9,
-        "total": 31.9
+        "cagr": 6.89,
+        "sharpe": 0.41,
+        "mdd": 35.2,
+        "total": 38.2
       },
       "exposure": 78.8,
       "capital_krw": 3000000000,
       "cost": {
         "n": 1474,
-        "avg_bp": 41.0,
-        "median_bp": 36.5,
-        "p90_bp": 61.5,
-        "avg_part_pct": 9.8,
-        "p90_part_pct": 14.06
+        "avg_bp": 47.1,
+        "median_bp": 40.4,
+        "p90_bp": 72.5,
+        "avg_part_pct": 16.63,
+        "p90_part_pct": 23.1
       }
     },
     "random": {

@@ -602,5 +602,5 @@ class TelegramSender:
             hours, remainder = divmod(elapsed.total_seconds(), 3600)
             minutes, _ = divmod(remainder, 60)
             return f"{int(hours)}h {int(minutes)}m" if hours > 0 else f"{int(minutes)}m"
-        except:
+        except Exception:
             return "N/A"

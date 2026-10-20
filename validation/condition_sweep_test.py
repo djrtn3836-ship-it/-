@@ -196,7 +196,7 @@ def build_conditions(db_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, Any
 
     kospi = S(
         [d for d in index_full.dates if d >= WINDOW_START],
-        [c for d, c in zip(index_full.dates, index_full.close) if d >= WINDOW_START],
+        [c for d, c in zip(index_full.dates, index_full.close, strict=False) if d >= WINDOW_START],
         [], [],
     )
 

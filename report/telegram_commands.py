@@ -3,6 +3,7 @@ report/telegram_commands.py - v7.3.1 (mypy strict 완전 적용)
 """
 
 import asyncio
+import html as _html
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -261,7 +262,8 @@ class TelegramCommandHandler:
                 f"보유 {len(st.get('positions') or [])} · 청산 {len(closed)} (승률 {wins/len(closed)*100:.0f}%)" if closed else f"보유 {len(st.get('positions') or [])} · 청산 0",
             ]
             for p in st.get("positions") or []:
-                lines.append(f"· {p.get('name') or p.get('ticker')} {p.get('category')} {p.get('entry_date')} "
+                _nm = _html.escape(str(p.get('name') or p.get('ticker') or ''))
+                lines.append(f"· {_nm} {p.get('category')} {p.get('entry_date')} "
                              f"{float(p.get('entry_price', 0)):,.0f}원 (hold {p.get('hold')})")
             await update.message.reply_text(chr(10).join(lines), parse_mode="HTML")
         except Exception as e:

@@ -328,7 +328,7 @@ def run_study(
 
     years_span = max(datetime.now().year - (datetime.now().year - hist.get("years", 5) + 1) + 1, 1)
     raw_by_cat = defaultdict(int)
-    for t, info in tickers.items():
+    for _t, info in tickers.items():
         for e in info.get("events", []):
             cat = classify_title(e.get("title", ""))
             if cat:

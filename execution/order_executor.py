@@ -184,15 +184,16 @@ class OrderExecutor:
 
     async def _daily_loss_limit_check(self, request: OrderRequest) -> tuple[bool, str]:
         """일일 손실 한도 검증 (-2% 초과 시 차단)"""
-        # 오늘 손익 계산 (DB에서 outcomes 조회)
-        today = datetime.now().strftime("%Y-%m-%d")
-        decisions = await self.db.get_decisions_by_date(today)
-        _ = 0.0
-        for d in decisions:
-            # outcome 조회 (간단히)
-            # 실제로는 DB에서 outcome 테이블 조회 필요
-            pass
-        # 임시: 가상의 손실률
+        # 오늘 채점된 결정의 평균 1일 수익률을 일일 손익 대용치로 사용
+        # (Phase 1 Shadow: 실주문 없음 → 포지션 손익 대신 전략 손익으로 판정)
+        pnl = 0.0
+        if self.db:
+            try:
+                stats = await self.db.get_feedback_stats(days=1)
+                pnl = float(stats.get("avg_return") or 0.0) / 100.0
+            except Exception as e:
+                logger.debug(f"일일 손익 계산 실패(0 처리): {e}")
+        self._daily_pnl = pnl
         if self._daily_pnl < self._max_daily_loss:
             return False, f"일일 손실 한도 초과: {self._daily_pnl:.1%}"
         return True, ""

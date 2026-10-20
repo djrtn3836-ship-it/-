@@ -67,6 +67,7 @@ class DatabaseManager:
                 )
                 self._write_conn.row_factory = aiosqlite.Row
                 await self._write_conn.execute("PRAGMA journal_mode=WAL")
+                await self._write_conn.execute("PRAGMA busy_timeout=15000")
                 await self._write_conn.execute("PRAGMA synchronous=NORMAL")
                 await self._write_conn.execute("PRAGMA cache_size=-20000")
                 logger.info("DB 쓰기 커넥션 초기화 완료 (WAL 모드)")
@@ -134,7 +135,14 @@ class DatabaseManager:
         모두 지원합니다 — save_outcome()이 dict를 전달하는 실제 사용 패턴을 정확히 반영.
         """
         conn = await self._get_write_conn()
-        await conn.execute(query, params)
+        try:
+            await conn.execute(query, params)
+        except aiosqlite.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+            await asyncio.sleep(0.5)
+            conn = await self._get_write_conn()
+            await conn.execute(query, params)
         self._pending_writes += 1
 
         now = time.time()

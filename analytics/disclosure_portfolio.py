@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import statistics
 from datetime import datetime
 from pathlib import Path
@@ -73,7 +74,9 @@ def _load_state(path: Path = STATE_PATH) -> Dict[str, Any]:
 
 def _save_state(state: Dict[str, Any], path: Path = STATE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _dates_for(series: Dict[str, Any], ticker: str) -> List[str]:
@@ -207,13 +210,16 @@ def run_portfolio(
         d = str(p.get("entry_date"))
         if d > last_entry.get(key, ""):
             last_entry[key] = d
+    cands: List[Dict[str, Any]] = []
     for r in todays:
-        if len(positions) >= max_pos:
+        if len(positions) + len(cands) >= max_pos:
             break
         t = str(r["ticker"])
         if (t, day) in held_keys:
             continue
         if any(p["ticker"] == t for p in positions):
+            continue
+        if any(c["ticker"] == t for c in cands):
             continue
         prev_day = last_entry.get((t, str(r["category"])))
         if prev_day:
@@ -223,16 +229,21 @@ def run_portfolio(
         px = _price_on(series, t, day)
         if not px or px <= 0:
             continue
-        eq = cash + sum(
-            float(p["shares"]) * (_price_on(series, str(p["ticker"]), day) or float(p["entry_price"]))
-            for p in positions
-        )
-        notional = eq / max_pos
         vol = _ann_vol(series, t)
         scale = 1.0
         if sizing == "inverse_vol" and vol:
             scale = max(VOL_SCALE_MIN, min(VOL_SCALE_MAX, VOL_TARGET / vol))
-            notional *= scale
+        cands.append({"row": r, "ticker": t, "px": px, "vol": vol, "scale": scale})
+
+    # 같은 날 후보들의 scale 평균으로 정규화 → 진입 순서에 따른 자금 편향 제거
+    mean_scale = (sum(c["scale"] for c in cands) / len(cands)) if cands else 1.0
+    for c in cands:
+        r, t, px, vol, scale = c["row"], c["ticker"], c["px"], c["vol"], c["scale"]
+        eq = cash + sum(
+            float(p["shares"]) * (_price_on(series, str(p["ticker"]), day) or float(p["entry_price"]))
+            for p in positions
+        )
+        notional = (eq / max_pos) * (scale / mean_scale)
         if notional > cash:
             notional = cash
         if notional <= 0:

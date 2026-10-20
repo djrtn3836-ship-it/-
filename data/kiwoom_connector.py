@@ -806,13 +806,13 @@ class KiwoomConnectorV512:
             if self._ws is not None:
                 try:
                     if hasattr(self._ws, "closed"):
-                        ws_ok = not getattr(self._ws, "closed")
+                        ws_ok = not self._ws.closed
                     elif hasattr(self._ws, "open"):
-                        ws_ok = bool(getattr(self._ws, "open"))
+                        ws_ok = bool(self._ws.open)
                     elif hasattr(self._ws, "state"):
                         try:
                             from websockets.protocol import State
-                            ws_ok = getattr(self._ws, "state") == State.OPEN
+                            ws_ok = self._ws.state == State.OPEN
                         except Exception:
                             ws_ok = True
                     else:

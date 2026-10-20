@@ -730,7 +730,7 @@ async def main() -> None:
         await performance_tracker.start()
         logger.info("✅ PerformanceTracker 시작됨 (5분 간격 성과 갱신)")
 
-        _container.order_executor  # OrderExecutor 초기화 (Paper Mode)
+        _ = _container.order_executor  # OrderExecutor 초기화 (Paper Mode)
         logger.info("✅ OrderExecutor 초기화 완료 (Paper Mode)")
 
         calibrator = ExecutionCalibrator(_db, sender)

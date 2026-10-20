@@ -40,7 +40,7 @@ def macd(
     ema_fast = ema(values, fast)
     ema_slow = ema(values, slow)
     macd_line: List[Optional[float]] = [
-        (f - s) if (f is not None and s is not None) else None for f, s in zip(ema_fast, ema_slow)
+        (f - s) if (f is not None and s is not None) else None for f, s in zip(ema_fast, ema_slow, strict=False)
     ]
 
     # 시그널은 MACD 라인이 존재하는 구간에서만 EMA
@@ -49,11 +49,11 @@ def macd(
     if len(valid) >= signal:
         seq = [v for _, v in valid]
         ema_seq = ema(seq, signal)
-        for (idx, _), sv in zip(valid, ema_seq):
+        for (idx, _), sv in zip(valid, ema_seq, strict=False):
             signal_line[idx] = sv
 
     hist: List[Optional[float]] = [
-        (m - s) if (m is not None and s is not None) else None for m, s in zip(macd_line, signal_line)
+        (m - s) if (m is not None and s is not None) else None for m, s in zip(macd_line, signal_line, strict=False)
     ]
     return macd_line, signal_line, hist
 
@@ -98,7 +98,7 @@ def stochastic(
     if len(valid) >= d_period:
         seq = [v for _, v in valid]
         d_seq = sma(seq, d_period)
-        for (idx, _), dv in zip(valid, d_seq):
+        for (idx, _), dv in zip(valid, d_seq, strict=False):
             d_line[idx] = dv
     return k_line, d_line
 
@@ -107,7 +107,7 @@ def volume_ratio(volumes: Sequence[float], period: int = 20) -> List[Optional[fl
     """거래량 / 거래량 SMA(period)."""
     avg = sma(volumes, period)
     out: List[Optional[float]] = []
-    for v, a in zip(volumes, avg):
+    for v, a in zip(volumes, avg, strict=False):
         if a is None or a <= 0:
             out.append(None)
         else:
@@ -192,7 +192,7 @@ def compute_filters(bars: Sequence[Dict[str, Any]]) -> Dict[str, List[bool]]:
         a = atr14[i]
         calm_mask.append(bool(a is not None and closes[i] > 0 and (a / closes[i]) <= 0.06))
 
-    both = [m and c for m, c in zip(ma_mask, calm_mask)]
+    both = [m and c for m, c in zip(ma_mask, calm_mask, strict=False)]
     return {"none": none_mask, "ma200": ma_mask, "atr_calm": calm_mask, "ma200_atr": both}
 
 
@@ -310,8 +310,8 @@ class EnsembleEvaluator:
 
     def _net_score(self, results: Sequence[Any]) -> float:
         total_weight = sum(s.weight for s in self.strategies) or 1.0
-        buy = sum(s.weight * r.score for s, r in zip(self.strategies, results) if r.action == "BUY")
-        sell = sum(s.weight * r.score for s, r in zip(self.strategies, results) if r.action == "SELL")
+        buy = sum(s.weight * r.score for s, r in zip(self.strategies, results, strict=False) if r.action == "BUY")
+        sell = sum(s.weight * r.score for s, r in zip(self.strategies, results, strict=False) if r.action == "SELL")
         return (buy - sell) / total_weight
 
     async def net_scores(self, bars: Sequence[Dict[str, Any]]) -> List[Optional[float]]:
@@ -323,7 +323,7 @@ class EnsembleEvaluator:
         indicators = compute_indicators(bars, warmup=self.warmup)
 
         scores: List[Optional[float]] = []
-        for bar, ind in zip(bars, indicators):
+        for bar, ind in zip(bars, indicators, strict=False):
             if not ind.ready:
                 scores.append(None)
                 continue

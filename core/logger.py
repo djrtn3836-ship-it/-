@@ -55,8 +55,8 @@ class Colors:
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        dt = datetime.fromtimestamp(record.created)
-        timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}Z"
+        dt = datetime.fromtimestamp(record.created).astimezone()
+        timestamp = dt.isoformat(timespec="milliseconds")
 
         log_entry: dict[str, Any] = {
             "timestamp": timestamp,

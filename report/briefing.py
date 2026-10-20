@@ -221,7 +221,7 @@ async def _system_section(db: Any) -> List[str]:
         pass
     try:
         total = 0
-        for table, attr in (("decisions", "count_decisions"),):
+        for _table, attr in (("decisions", "count_decisions"),):
             if hasattr(db, attr):
                 total = int(await getattr(db, attr)() or 0)
         if total:

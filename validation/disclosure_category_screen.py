@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from validation.disclosure_event_study import (
-    CATEGORY_ORDER,
     HISTORY_PATH,
     KOSPI,
     build_events,

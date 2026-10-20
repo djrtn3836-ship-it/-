@@ -384,7 +384,7 @@ class BatchFeatureComputer:
         results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
         results: Dict[str, Dict[str, float]] = {}
-        for ticker, result in zip(tickers, results_list):
+        for ticker, result in zip(tickers, results_list, strict=False):
             if isinstance(result, Exception):
                 logger.warning(f"BatchFeatureComputer: {ticker} 계산 실패: {result}")
                 results[ticker] = {}

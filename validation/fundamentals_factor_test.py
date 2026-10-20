@@ -105,7 +105,7 @@ def has_corporate_action(
     기업행위 아티팩트(yfinance 비조정 가격)일 가능성이 높다 → 해당 종목-창 제외.
     """
     prev: Optional[float] = None
-    for d, c in zip(dates, closes):
+    for d, c in zip(dates, closes, strict=False):
         if d < start or d > end:
             prev = None  # 창 경계 리셋 — 창 밖 점프와 비교 금지(테스트가 적발한 버그)
             continue

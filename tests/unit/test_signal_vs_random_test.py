@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """신호 vs 무작위 비교 도구(S136 ⑤) 테스트."""
-import json
 import sys
 from pathlib import Path
 

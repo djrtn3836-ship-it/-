@@ -37,7 +37,7 @@ async def test_sample_skips_without_monitor(tmp_path):
 def test_summarize(tmp_path):
     p = tmp_path / "s.jsonl"
     with open(p, "w", encoding="utf-8") as f:
-        for i in range(25):
+        for _i in range(25):
             f.write(json.dumps({"ts": "t", "ticker": "A", "price": 10000, "bid": 9990, "ask": 10010, "spread_bp": 20.0}) + "\n")
     s = ss.summarize(p)
     assert s["n"] == 25 and s["median_bp"] == 20.0

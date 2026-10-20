@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """공시 본문 파싱·자사주 규모 연구(S143) 테스트."""
-import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path

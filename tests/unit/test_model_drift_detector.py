@@ -190,9 +190,9 @@ class TestModelDriftDetectorObserve:
 
     def test_force_baseline_reset(self):
         d = ModelDriftDetector(baseline_size=10, window_size=10)
-        for i in range(10):
+        for _ in range(10):
             d.observe("s4", 0.5, True)
-        for i in range(10):
+        for _ in range(10):
             d.observe("s4", 0.9, False)
         d.force_baseline_reset("s4")
         assert d.strategy_status("s4")["baseline_samples"] == 10

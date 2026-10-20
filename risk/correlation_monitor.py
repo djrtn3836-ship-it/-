@@ -112,7 +112,7 @@ async def compute_correlation_report(
         return {"status": "insufficient_data", "common_dates": len(common_dates)}
 
     # 공통 거래일 기준으로 날짜별 수익률을 만들어 투입(날짜 정렬 보장)
-    for prev_d, cur_d in zip(common_dates, common_dates[1:]):
+    for prev_d, cur_d in zip(common_dates, common_dates[1:], strict=False):
         batch: Dict[str, float] = {}
         for code, prices in series.items():
             prev_p, cur_p = prices.get(prev_d), prices.get(cur_d)

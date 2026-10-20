@@ -324,14 +324,14 @@ def alpha_beta(
     mx, my = statistics.fmean(x), statistics.fmean(y)
 
     sxx = sum((v - mx) ** 2 for v in x)
-    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y, strict=False))
     if sxx <= 1e-15:
         return AlphaBeta(n=n, bench_mean=mx)
 
     beta = sxy / sxx
     alpha = my - beta * mx
 
-    resid = [b - (alpha + beta * a) for a, b in zip(x, y)]
+    resid = [b - (alpha + beta * a) for a, b in zip(x, y, strict=False)]
     dof = n - 2
     if dof > 0:
         s2 = sum(r * r for r in resid) / dof
@@ -391,7 +391,8 @@ def long_short_returns(
         longs = [t for t, _ in ranked[: config.top_k]]
         shorts = [t for t, _ in ranked[-config.top_k :]]
 
-        def _avg(picks: Sequence[str]) -> float:
+        def _avg(picks: Sequence[str], future_row: Dict[str, float] = future_row,
+                 cur_row: Dict[str, float] = cur_row) -> float:
             rets = [
                 future_row[t] / cur_row[t] - 1.0
                 for t in picks
