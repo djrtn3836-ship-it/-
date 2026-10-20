@@ -262,6 +262,24 @@ async def _signal_registry_section() -> List[str]:
     return out
 
 
+def _portfolio_section() -> List[str]:
+    """공시 전략 모의 포트폴리오(📊, 가상) — 실패 시 생략."""
+    try:
+        from analytics.disclosure_portfolio import load_summary
+
+        s = load_summary()
+    except Exception as e:
+        logger.debug(f"브리핑 모의포트폴리오 실패(무시): {e}")
+        return []
+    if not s:
+        return []
+    return [
+        "📊 <b>공시 전략 모의</b> (가상)",
+        f"  시작 {s.get('start')} · 누적 {float(s.get('total_pct', 0)):+.2f}% · "
+        f"보유 {s.get('positions')} · 청산 {s.get('closed')}(승률 {float(s.get('win_rate', 0)):.0f}%)",
+    ]
+
+
 def _disclosure_section(day: str) -> List[str]:
     """전일/당일 공시 신호(📢) — A/B 이벤트만. 실패 시 생략."""
     try:
@@ -310,6 +328,7 @@ async def build_briefing(
     lines += await _market_section(db)
     lines += await _signal_registry_section()
     lines += _disclosure_section(day_for_signals)
+    lines += _portfolio_section()
     lines += _regime_section()
     lines += await _signal_section(db, day_for_signals)
     if exit_soon:

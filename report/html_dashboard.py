@@ -205,12 +205,17 @@ def collect_signal_registry_section() -> Dict[str, Any]:
         latest = latest_signals()
         disc: Dict[str, Any] = {}
         try:
+            from analytics.disclosure_portfolio import load_summary as load_pf
             from scheduler.disclosure_settle import disclosure_stats
             from scheduler.disclosure_watch import events_for_day, latest_event_day
 
             day = latest_event_day()
             if day:
                 disc = {"date": day, "rows": events_for_day(day), "settled": disclosure_stats()}
+            try:
+                disc["portfolio"] = load_pf()
+            except Exception:
+                pass
         except Exception:
             disc = {}
         return {
@@ -658,12 +663,23 @@ def render_html(data: Dict[str, Any]) -> str:
         f'<div class="note">실현 성적(5거래일, KOSPI 대비)</div><table>{srows}</table>'
         if srows else '<div class="note">실현 성적: 첫 채점 대기(5거래일 경과 후 자동)</div>'
     )
+    pf = disc.get("portfolio") or {}
+    pf_block = (
+        f"<div class='note'>공시 전략 모의(가상)</div><table>"
+        f"<tr><th>누적</th><td>{_fmt(pf.get('total_pct'), 2, '%')}</td></tr>"
+        f"<tr><th>보유</th><td>{_fmt(pf.get('positions'))}종목</td></tr>"
+        f"<tr><th>청산</th><td>{_fmt(pf.get('closed'))}건 · 승률 {_fmt(pf.get('win_rate'), 1, '%')}</td></tr>"
+        f"</table>"
+        if pf else "<div class='note'>공시 전략 모의: 첫 실행 대기(16:45)</div>"
+    )
+
     disclosures_html = f"""
     <div class="card">
       <h2>13. 공시 신호 (A/B)</h2>
       <div class="note">최근 기록 {_esc(str(disc.get('date') or '—'))} · DART 전체 공시 → 유니버스 필터</div>
       <table style="margin-top:8px">{disc_rows or '<tr><td class="note">기록 없음</td></tr>'}</table>
       {disc_settled_block}
+      {pf_block}
       <div class="note">A급은 텔레그램 알림 · 매일 08:10·14:50·16:40 스캔 · 실제 주문 없음</div>
     </div>"""
 
