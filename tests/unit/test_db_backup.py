@@ -127,4 +127,4 @@ class TestSettlementOrder:
     def test_db_backup_job_registered(self):
         src = self._bootstrap_src()
         assert '"db_backup"' in src
-        assert 'self.startup_details["job_count"] = 31' in src
+        assert 'self.startup_details["job_count"] = 27' in src

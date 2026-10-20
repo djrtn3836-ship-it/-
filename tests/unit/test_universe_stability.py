@@ -236,9 +236,10 @@ class TestSchedulerRegistration:
 
         for expected in (
             "daily_report", "weekly_pdf", "momentum_report", "macro_update",
-            "market_risk_check", "data_readiness", "universe_refresh",
-            "correlation_check", "dashboard", "hyperparameter_tuning",
+            "market_risk_check", "disclosure_watch_am", "disclosure_watch_pm",
+            "correlation_check", "dashboard", "disclosure_settle",
             "alert_verifier", "phase_transition_check", "feedback_learning",
+            "sentiment_history", "disclosure_portfolio", "signal_log",
         ):
             assert expected in jobs, f"{expected} 잡이 등록되지 않음"
 

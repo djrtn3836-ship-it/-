@@ -123,8 +123,10 @@ class TestSchedulerRegistration:
     def test_jobs_registered(self):
         src = self._src()
         assert '"disk_check"' in src, "디스크 감시 잡 미등록"
-        assert '"db_maintenance"' in src, "DB 유지보수 잡 미등록"
-        assert 'self.startup_details["job_count"] = 31' in src
+        # S150: 비거래일은 main.py → 주말 유지보수 경로로 실행(스케줄러 잡 제거)
+        wm = (Path(__file__).resolve().parents[2] / "scheduler" / "weekend_maintenance.py").read_text(encoding="utf-8")
+        assert '"db_maintenance"' in wm, "DB 유지보수가 주말 유지보수에 없음"
+        assert 'self.startup_details["job_count"] = 27' in src
 
     def test_disk_check_runs_hourly_and_startup(self):
         src = self._src()

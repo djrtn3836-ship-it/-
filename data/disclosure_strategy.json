@@ -127,6 +127,91 @@
       },
       "exposure": 79.0
     },
+    "A_cost10": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 0.54,
+        "median_net": -0.17,
+        "win": 48.0
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 5.27,
+        "sharpe": 0.34,
+        "mdd": 37.0,
+        "total": 28.3
+      },
+      "exposure": 78.8
+    },
+    "A_invvol": {
+      "signals": 907,
+      "trades": {
+        "n": 907,
+        "avg_net": 1.24,
+        "median_net": 0.53,
+        "win": 55.9
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 15.77,
+        "sharpe": 1.33,
+        "mdd": 15.1,
+        "total": 103.4
+      },
+      "exposure": 78.8
+    },
+    "A_drop_top5": {
+      "signals": 862,
+      "trades": {
+        "n": 862,
+        "avg_net": 0.29,
+        "median_net": 0.3,
+        "win": 53.6
+      },
+      "portfolio": {
+        "days": 1222,
+        "cagr": 15.34,
+        "sharpe": 0.84,
+        "mdd": 27.6,
+        "total": 99.8
+      },
+      "exposure": 78.6
+    },
+    "A_2022_23": {
+      "signals": 296,
+      "trades": {
+        "n": 296,
+        "avg_net": 0.71,
+        "median_net": 0.21,
+        "win": 52.7
+      },
+      "portfolio": {
+        "days": 489,
+        "cagr": 18.05,
+        "sharpe": 1.03,
+        "mdd": 10.3,
+        "total": 38.0
+      },
+      "exposure": 82.2
+    },
+    "A_2024_26": {
+      "signals": 611,
+      "trades": {
+        "n": 611,
+        "avg_net": 1.49,
+        "median_net": 0.65,
+        "win": 57.4
+      },
+      "portfolio": {
+        "days": 680,
+        "cagr": 42.27,
+        "sharpe": 1.51,
+        "mdd": 28.9,
+        "total": 158.9
+      },
+      "exposure": 81.9
+    },
     "random": {
       "signals": 883,
       "trades": {

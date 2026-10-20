@@ -138,6 +138,7 @@ def simulate(
     max_positions: int = MAX_POS,
     cost: float = COST,
     start_cash: float = 1.0,
+    sizing: str = "equal",
 ) -> Dict[str, Any]:
     """일별 포트폴리오 시뮬레이션(종가 진입/청산, 비용 반영)."""
     by_entry: Dict[str, List[Dict[str, Any]]] = {}
@@ -174,6 +175,15 @@ def simulate(
                 p["shares"] * _close_on(p["ticker"], day, series, p["entry_price"]) for p in still
             )
             notional = equity / max_positions
+            if sizing == "inverse_vol":
+                dates_t, _, closes_t, _ = series.get(s["ticker"], ([], [], [], []))
+                i = bisect.bisect_right(dates_t, day) - 1
+                if i >= 20:
+                    rets = [closes_t[k] / closes_t[k - 1] - 1.0 for k in range(i - 19, i + 1)]
+                    sd = statistics.pstdev(rets)
+                    if sd > 0:
+                        ann = sd * (252 ** 0.5)
+                        notional *= max(0.5, min(1.5, 0.15 / ann))
             if notional > cash:
                 notional = cash
             if notional <= 0:
@@ -336,6 +346,46 @@ def run_strategy(
         simulate(sigs_all, series, k_dates)["equity"], k_dates
     )
 
+    # 스트레스: 비용 1.0% / 상위 5% 수익 제외 / 구간 분할 / 역변동성
+    for name, kw in (
+        ("A_cost10", {"cost": 0.005}),
+        ("A_invvol", {"sizing": "inverse_vol"}),
+    ):
+        sim_s = simulate(sigs_all, series, k_dates, **kw)
+        variants[name] = {
+            "signals": len(sigs_all),
+            "trades": trade_stats(sigs_all, series, cost=kw.get("cost", COST)),
+            "portfolio": metrics(sim_s["equity"], k_dates),
+            "exposure": round(sim_s["holding_days"] / max(len(k_dates), 1) * 100.0, 1),
+        }
+
+    def _net(x):
+        px_out = _close_on(x["ticker"], x["exit_date"], series, x["entry_price"])
+        return px_out / x["entry_price"] - 1.0 - 2 * COST
+
+    kept = sorted(sigs_all, key=_net, reverse=True)[max(1, len(sigs_all) // 20):]
+    sim_d = simulate(kept, series, k_dates)
+    variants["A_drop_top5"] = {
+        "signals": len(kept),
+        "trades": trade_stats(kept, series),
+        "portfolio": metrics(sim_d["equity"], k_dates),
+        "exposure": round(sim_d["holding_days"] / max(len(k_dates), 1) * 100.0, 1),
+    }
+
+    for name, lo, hi in (("A_2022_23", "2022-01-01", "2023-12-31"),
+                         ("A_2024_26", "2024-01-01", "2026-12-31")):
+        part = [x for x in sigs_all if lo <= x["entry_date"] <= hi]
+        kd = [d for d in k_dates if lo <= d <= hi]
+        if not kd:
+            continue
+        sim_p = simulate(part, series, kd)
+        variants[name] = {
+            "signals": len(part),
+            "trades": trade_stats(part, series),
+            "portfolio": metrics(sim_p["equity"], kd),
+            "exposure": round(sim_p["holding_days"] / max(len(kd), 1) * 100.0, 1),
+        }
+
     # 무작위 벤치(동일 거래수·동일 보유기간)
     rng = random.Random(42)
     base_sigs = build_signals(tickers, series, categories=set(HOLD_DAYS), entry="close")
@@ -372,6 +422,8 @@ def format_result(res: Dict[str, Any]) -> str:
     labels = {
         "A_all": "A_전체", "A_buyback": "A_자사주", "A_buyback_big": "A_자사주_대형",
         "A_next_open": "A_다음날시가", "A_cost06": "A_비용0.6%",
+        "A_cost10": "A_비용1.0%", "A_drop_top5": "A_상위5%제외",
+        "A_invvol": "A_역변동성", "A_2022_23": "A_22-23", "A_2024_26": "A_24-26",
         "A_max3": "A_동시3", "A_max10": "A_동시10",
         "random": "무작위", "kospi": "KOSPI",
     }

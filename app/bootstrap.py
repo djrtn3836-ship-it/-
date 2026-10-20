@@ -116,8 +116,6 @@ from report.daily_report import DailyReportGenerator
 from report.weekly_pdf import WeeklyPDFGenerator
 from observability.ops_monitor import OpsMonitor
 from risk.market_risk_monitor import cb_input_provider, scheduled_market_risk_check
-from scheduler.data_readiness_monitor import scheduled_data_readiness_check
-from scheduler.universe_fetcher import scheduled_universe_refresh
 from core.db_backup import backup_sqlite, last_backup_age_hours
 from core.disk_guard import check_disk
 from core.db_maintenance import maintain_sqlite
@@ -1191,7 +1189,7 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.add_job_with_retry(
             self._run_phase_transition_check,
-            CronTrigger(hour=17, minute=30, timezone="Asia/Seoul"),
+            CronTrigger(hour=17, minute=32, timezone="Asia/Seoul"),
             "phase_transition_check", sender, max_retries=2, retry_delay=5,
         )
         if calibrator is not None:
@@ -1209,11 +1207,6 @@ class Bootstrapper(TracedService):
             send_momentum_report,
             CronTrigger(day_of_week="mon-fri", hour=8, minute=30, timezone="Asia/Seoul"),
             "momentum_report", max_retries=2, retry_delay=5,
-        )
-        self.scheduler.add_job_with_retry(
-            self._run_hyperparameter_tuning,
-            CronTrigger(day_of_week="sun", hour=3, minute=0, timezone="Asia/Seoul"),
-            "hyperparameter_tuning", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
             scheduled_correlation_check,
@@ -1241,11 +1234,6 @@ class Bootstrapper(TracedService):
             "disk_check", max_retries=1, retry_delay=60,
         )
         self.scheduler.add_job_with_retry(
-            self._run_db_maintenance,
-            CronTrigger(day_of_week="sun", hour=3, minute=40, timezone="Asia/Seoul"),
-            "db_maintenance", max_retries=1, retry_delay=60,
-        )
-        self.scheduler.add_job_with_retry(
             self._run_supply_demand,
             CronTrigger(day_of_week="mon-fri", hour=16, minute=35, timezone="Asia/Seoul"),
             "supply_demand", max_retries=1, retry_delay=60,
@@ -1262,7 +1250,7 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.add_job_with_retry(
             scheduled_dashboard,
-            CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Seoul"),
+            CronTrigger(day_of_week="mon-fri", hour=17, minute=35, timezone="Asia/Seoul"),
             "dashboard", max_retries=1, retry_delay=30,
         )
         self.scheduler.add_job_with_retry(
@@ -1272,7 +1260,7 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.add_job_with_retry(
             scheduled_disclosure_portfolio,
-            CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
+            CronTrigger(day_of_week="mon-fri", hour=16, minute=47, timezone="Asia/Seoul"),
             "disclosure_portfolio", max_retries=1, retry_delay=30,
         )
         self.scheduler.add_job_with_retry(
@@ -1305,18 +1293,8 @@ class Bootstrapper(TracedService):
             CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Seoul"),
             "market_risk_check", max_retries=2, retry_delay=5,
         )
-        self.scheduler.add_job_with_retry(
-            scheduled_data_readiness_check,
-            CronTrigger(day_of_week="sun", hour=9, minute=0, timezone="Asia/Seoul"),
-            "data_readiness", max_retries=1, retry_delay=30,
-        )
-        self.scheduler.add_job_with_retry(
-            scheduled_universe_refresh,
-            CronTrigger(day_of_week="sat", hour=9, minute=0, timezone="Asia/Seoul"),
-            "universe_refresh", max_retries=2, retry_delay=60,
-        )
         self.scheduler.start()
-        self.startup_details["job_count"] = 31
+        self.startup_details["job_count"] = 27
         log_event("SCHEDULER_STARTED", {"jobs": 16})
         logger.info(
             "Scheduler started (16 jobs registered, incl. momentum_report, "
