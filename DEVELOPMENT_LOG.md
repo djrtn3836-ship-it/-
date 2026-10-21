@@ -1283,3 +1283,22 @@ S140 연구 결과를 실사용 배선.
 - ruff F/E9/B **0건**(기존 53) · bare except 1건 · unused import/loop var · zip strict · B904/B018 정리.
 - 스트레이 파일 2개(`briefing.py`·`market_breadth.py`) → `_archive/stray_2026-10-21/` 이동.
 [검증] **2056 테스트** · 28잡 · 자체점검 [OK] · 재시작 로그 `+09:00` · 청산 리허설 PASS
+
+## 2026-10-21 — Session 154: 로그 실측 점검 + 기동/로그 최적화
+### 📊 실측
+- 일 48~54k줄, **DEBUG 70~79%** (shadow/news/macro/telegram) → 디스크·가독성 낭비
+- 기동 **70초**: 195종목 × 0.3s 구독(≈60초)이 기동을 블로킹
+### ⚙️ 최적화
+1. **파일 로그 기본 INFO** — `LOG_LEVEL`을 호출 시점에 읽도록 수정(.env가 import 이후 로드되는 버그).
+   → 재기동 후 DEBUG **0줄**.
+2. **기동 70s → 10.7s** — 모니터 구독을 백그라운드 태스크로(구독 완료 68s, 장 시작 전).
+   종료 시 모니터 정리 추가(구독 해제 API 부재 시 가드).
+3. **로그 소음 억제**: DART '재무제표 없음' 기업당 1회, 드리프트 경고 30분 쿨다운,
+   중복 인스턴스 CRITICAL→WARNING, 스케줄러 로그 16→28(실제), 느린 쿼리(≥1s) 경고.
+4. **로그 유지보수**(`scripts/log_maintenance.py`) — 회전본 5MB+ gzip, 90일 초과 삭제,
+   blackbox 포함. 주말 유지보수에 편입. **실행 1회로 43.6MB 회수**(blackbox 56→13MB).
+   `.env` LOG_BACKUP_COUNT 10→5.
+### 🐭 감사 중 발견·수정(자체 유발 포함)
+- `SchedulerManager.get_jobs()` 부재로 기동 크래시 → 위임 메서드 추가.
+- `monitor.stop()`의 `unregister_realtime` 부재 → hasattr 가드.
+[검증] 2059 테스트 · 28잡 · 자체점검 [OK] · 재기동 후 DEBUG/ERROR 0 · 기동 10.7s

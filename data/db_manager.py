@@ -109,8 +109,12 @@ class DatabaseManager:
             try:
                 conn = await self._get_read_conn()
                 async with asyncio.timeout(QUERY_TIMEOUT):
+                    t0 = time.perf_counter()
                     cursor = await conn.execute(query, params)
                     rows = await cursor.fetchall()
+                    elapsed = time.perf_counter() - t0
+                    if elapsed >= 1.0:
+                        logger.warning(f"느린 쿼리 {elapsed:.2f}s: {query.strip()[:90]}")
                     return [dict(row) for row in rows]
             except (TimeoutError, aiosqlite.OperationalError) as e:
                 last_error = e

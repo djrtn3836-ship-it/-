@@ -65,6 +65,10 @@ class SchedulerManager:
         self.scheduler.shutdown()
         logger.info("⏰ Scheduler shutdown")
 
+    def get_jobs(self) -> list:
+        """등록된 잡 목록(APScheduler 위임)."""
+        return list(self.scheduler.get_jobs())
+
     def add_job_with_retry(
         self,
         coro_func: Callable[..., Awaitable[Any]],

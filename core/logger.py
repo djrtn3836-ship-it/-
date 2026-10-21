@@ -27,7 +27,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 STRUCTURED_LOGGING = os.getenv("STRUCTURED_LOGGING", "true").lower() in ("true", "1", "yes", "on")
 LOG_DIR = os.getenv("LOG_DIR", "./logs")
 LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", "10485760"))
-LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "10"))
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))
 
 
 class Colors:
@@ -149,21 +149,29 @@ def setup_logger(
     console_output: bool = True,
 ) -> logging.Logger:
     resolved_log_dir: str = log_dir or LOG_DIR
-    resolved_level: str = level or LOG_LEVEL
-    resolved_structured: bool = structured if structured is not None else STRUCTURED_LOGGING
+    # .env 가 core.logger import 이후 로드되므로 '호출 시점'에 다시 읽는다
+    resolved_level: str = (level or os.getenv("LOG_LEVEL", LOG_LEVEL)).upper()
+    resolved_structured: bool = (
+        structured
+        if structured is not None
+        else os.getenv("STRUCTURED_LOGGING", str(STRUCTURED_LOGGING)).lower() in ("true", "1", "yes", "on")
+    )
+    max_bytes = int(os.getenv("LOG_MAX_BYTES", LOG_MAX_BYTES))
+    backup_count = int(os.getenv("LOG_BACKUP_COUNT", LOG_BACKUP_COUNT))
 
     log_path = Path(resolved_log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, resolved_level.upper(), logging.DEBUG))
+    logger.propagate = False
 
     if logger.handlers:
         return logger
 
     handler_class = GzipRotatingFileHandler if use_gzip else RotatingFileHandler
     file_handler = handler_class(
-        log_path / f"{name}.log", maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+        log_path / f"{name}.log", maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
     )
     file_handler.setLevel(logging.DEBUG)
 

@@ -58,6 +58,9 @@ class DisclosureAnalysis:
     recommended_action: str = "매수"
 
 
+_NO_FIN_WARNED: set[str] = set()
+
+
 class DartConnector:
     RISK_WEIGHTS: Dict[str, int] = {
         "third_party_allotment": 30,
@@ -497,7 +500,11 @@ class DartConnector:
             except Exception as e:
                 logger.warning(f"⚠️ {corp_code} {try_year}년 재무 조회 실패: {e}")
 
-        logger.warning(f"⚠️ {corp_code} 재무제표 데이터 없음 (모든 연도 실패)")
+        if corp_code not in _NO_FIN_WARNED:
+            _NO_FIN_WARNED.add(corp_code)
+            logger.warning(f"⚠️ {corp_code} 재무제표 데이터 없음 (모든 연도 실패)")
+        else:
+            logger.debug(f"{corp_code} 재무제표 없음(반복, 로그 생략)")
         collector_status.record_failure("dart_connector", f"재무제표 없음 ({corp_code})")
         return {}
 

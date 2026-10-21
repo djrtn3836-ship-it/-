@@ -386,8 +386,14 @@ class RealtimeMonitor:
 
     async def stop(self) -> None:
         self._is_running = False
-        for ticker in self._subscribed_tickers:
-            await self.kiwoom.unregister_realtime(ticker)
+        unregister = getattr(self.kiwoom, "unregister_realtime", None)
+        for ticker in list(self._subscribed_tickers):
+            if unregister is None:
+                break
+            try:
+                await unregister(ticker)
+            except Exception as e:
+                logger.debug(f"{ticker} 구독 해제 실패(무시): {e}")
         self._subscribed_tickers.clear()
         self._latest_data.clear()
         self._history.clear()

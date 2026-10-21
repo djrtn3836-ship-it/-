@@ -55,6 +55,7 @@ async def run_maintenance(
     breadth_fn: Optional[Callable[[], Any]] = None,
     scorecard_fn: Optional[Callable[[], Any]] = None,
     check_fn: Optional[Callable[[], Any]] = None,
+    log_fn: Optional[Callable[[], Any]] = None,
     csv_path: Path = UNIVERSE_CSV,
 ) -> Dict[str, Any]:
     """비거래일 1회성 유지보수 실행. {"day":요일, "jobs":{이름:결과}} 반환."""
@@ -101,6 +102,12 @@ async def run_maintenance(
 
         check_fn = _default_self_check
 
+    if log_fn is None:
+        from scripts.log_maintenance import run as _log_run
+
+        _root = Path(__file__).resolve().parents[1]
+        log_fn = lambda: _log_run(_root / "logs")
+
     if scorecard_fn is None:
         from scheduler.weekly_scorecard import run_scorecard
 
@@ -130,6 +137,8 @@ async def run_maintenance(
     await _safe("weekly_scorecard", lambda: asyncio.to_thread(scorecard_fn))
     # S149: 데이터·상태 자체 점검(JSONL 무결성·포트폴리오 회계·job_count·BOM)
     await _safe("self_check", lambda: asyncio.to_thread(check_fn))
+    # S154: 로그 유지보수(회전본 압축·보존기간 초과 삭제) — 현재 로그는 건드리지 않음
+    await _safe("log_maintenance", lambda: asyncio.to_thread(log_fn))
 
     logger.info(f"주말 유지보수 종료: {result}")
     return result

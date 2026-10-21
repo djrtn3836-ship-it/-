@@ -310,7 +310,7 @@ class Bootstrapper(TracedService):
 
             if old_pid and old_pid != my_pid and self._is_process_alive(old_pid):
                 msg = f"이미 실행 중인 인스턴스 발견 (PID: {old_pid}) : 중복 실행을 중단합니다"
-                logger.critical(msg)
+                logger.warning(msg)
                 print(f"[ERROR] {msg}")
                 sys.exit(1)
 
@@ -810,7 +810,20 @@ class Bootstrapper(TracedService):
         if not self.kiwoom:
             raise RuntimeError("Kiwoom missing")
         self.monitor = RealtimeMonitor(self.kiwoom, self.message_queue)
-        await self.monitor.start()
+
+        # 195종목 × 0.3s ≈ 60초 구독을 백그라운드로 → 기동 시간 단축(장 시작 전 완료)
+        async def _monitor_start_bg() -> None:
+            try:
+                await self.monitor.start()
+                self.startup_details["ticker_count"] = self.monitor.get_subscribed_count()
+                logger.info("📡 RealtimeMonitor 구독 완료")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"RealtimeMonitor 시작 실패: {type(e).__name__}: {e}", exc_info=True)
+
+        self._monitor_task = asyncio.create_task(_monitor_start_bg())
+        logger.info("📡 RealtimeMonitor 구독을 백그라운드로 시작")
         # 🔧 방금 생성한 인스턴스를 명시적으로 재확인 (mypy Optional 타입 좁히기용,
         # 실제로 None일 수 없으므로 순수 타입 안전망)
         assert self.monitor is not None
@@ -824,7 +837,7 @@ class Bootstrapper(TracedService):
                 "(텔레그램 발송은 strategy_worker가 전담)"
             )
 
-        self.startup_details["ticker_count"] = self.monitor.get_subscribed_count()
+        self.startup_details["ticker_count"] = int(getattr(self.monitor, "max_subscriptions", 0) or 0)
         self.startup_details["tickers"] = self.monitor.tickers
         self.startup_details["kiwoom_connected"] = self.kiwoom.is_connected()
 
@@ -1308,9 +1321,9 @@ class Bootstrapper(TracedService):
         )
         self.scheduler.start()
         self.startup_details["job_count"] = 28
-        log_event("SCHEDULER_STARTED", {"jobs": 16})
+        log_event("SCHEDULER_STARTED", {"jobs": len(self.scheduler.get_jobs())})
         logger.info(
-            "Scheduler started (16 jobs registered, incl. momentum_report, "
+            f"Scheduler started ({len(self.scheduler.get_jobs())} jobs registered, incl. momentum_report, "
             "market_risk_check, data_readiness, universe_refresh, "
             "correlation_check, calibration_settle, dashboard)"
         )
@@ -2217,6 +2230,21 @@ class Bootstrapper(TracedService):
 
     async def shutdown(self) -> None:
         self._shutdown_requested = True
+        # 백그라운드 구독 중이면 취소 후 모니터 정지(웹소켓 정리)
+        task = getattr(self, "_monitor_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        if self.monitor is not None:
+            try:
+                await self.monitor.stop()
+            except Exception as e:
+                logger.warning(f"RealtimeMonitor stop failed: {e}")
         log_event("SYSTEM_SHUTDOWN", {})
         debug_tower.log("SYSTEM", "SYSTEM_SHUTDOWN", {})
 

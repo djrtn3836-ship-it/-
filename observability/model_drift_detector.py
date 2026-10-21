@@ -9,6 +9,7 @@ Model Drift Detection: 전략 예측 성능 저하 자동 감지
 """
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -221,6 +222,7 @@ class ModelDriftDetector:
         self._baseline_size = baseline_size
         self._psi_bins = psi_bins
 
+        self._last_warn_at: Dict[str, float] = {}
         self._pred_windows: Dict[str, deque[float]] = {}
         self._pred_baselines: Dict[str, List[float]] = {}
         self._win_trackers: Dict[str, _WinRateTracker] = {}
@@ -289,10 +291,13 @@ class ModelDriftDetector:
                 self._recent_reports.append(report)
 
                 if drift_level in (DriftLevel.DRIFT, DriftLevel.CRITICAL):
-                    logger.warning(
-                        f"[{strategy_name}] {drift_level.value} 감지: {drift_reason} "
-                        f"(PSI={psi:.3f}, WinRateDrop={win_rate_drop:+.1%})"
-                    )
+                    _now = time.time()
+                    if _now - self._last_warn_at.get(strategy_name, 0.0) >= 1800:
+                        logger.warning(
+                            f"[{strategy_name}] {drift_level.value} 감지: {drift_reason} "
+                            f"(PSI={psi:.3f}, WinRateDrop={win_rate_drop:+.1%})"
+                        )
+                        self._last_warn_at[strategy_name] = _now
                 return report
 
             return None
